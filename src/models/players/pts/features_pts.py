@@ -225,6 +225,9 @@ class PointsFeatureEngineer:
         # 🚀 REVOLUCIONARIO: FEATURES DE ENSEMBLE INTELIGENTE (MÁXIMA PRIORIDAD)
         self._create_revolutionary_ensemble_features(df)
         
+        # 🎯 NUEVO: FEATURES ULTRA-CRÍTICAS PARA 97% EFECTIVIDAD
+        self._create_ultra_critical_range_features(df)
+        
         # ACTUALIZAR CACHE
         self._last_data_hash = current_hash
         
@@ -924,53 +927,47 @@ class PointsFeatureEngineer:
         return validation_results
     
     def _get_historical_series(self, df: pd.DataFrame, column: str, window: int, 
-                              operation: str = 'mean', min_periods: int = 1) -> pd.Series:
+                              operation: str = 'mean', min_periods: int = 1, q: float = None) -> pd.Series:
         """
         Obtener serie histórica de una columna usando shift(1) para evitar data leakage
+        MEJORADO: Soporte para múltiples operaciones incluyendo quantiles
         """
         if column not in df.columns:
-            logger.warning(f"Columna {column} no encontrada para serie histórica")
+            logger.warning(f"Columna {column} no encontrada")
             return pd.Series(0, index=df.index)
         
-        # Cache key para evitar recálculos
-        cache_key = f"{column}_{window}_{operation}_{min_periods}"
-        if cache_key in self._cached_calculations:
-            logger.debug(f"Usando cache para {cache_key}")
-            return self._cached_calculations[cache_key]
+        # Usar shift(1) para evitar data leakage
+        shifted_series = df.groupby('Player')[column].shift(1)
         
-        try:
-            # Usar shift(1) para evitar data leakage
-            shifted_series = df.groupby('Player')[column].shift(1)
-            
-            # Aplicar operación de ventana
-            if operation == 'mean':
-                result = shifted_series.groupby(df['Player']).rolling(
-                    window=window, min_periods=min_periods
-                ).mean().reset_index(0, drop=True)
-            elif operation == 'std':
-                result = shifted_series.groupby(df['Player']).rolling(
-                    window=window, min_periods=min_periods
-                ).std().reset_index(0, drop=True)
-            elif operation == 'sum':
-                result = shifted_series.groupby(df['Player']).rolling(
-                    window=window, min_periods=min_periods
-                ).sum().reset_index(0, drop=True)
+        # Aplicar operación de rolling window
+        rolling_obj = shifted_series.groupby(df['Player']).rolling(window, min_periods=min_periods)
+        
+        if operation == 'mean':
+            result = rolling_obj.mean()
+        elif operation == 'std':
+            result = rolling_obj.std()
+        elif operation == 'max':
+            result = rolling_obj.max()
+        elif operation == 'min':
+            result = rolling_obj.min()
+        elif operation == 'sum':
+            result = rolling_obj.sum()
+        elif operation == 'quantile':
+            if q is not None:
+                result = rolling_obj.quantile(q)
             else:
-                result = shifted_series.groupby(df['Player']).rolling(
-                    window=window, min_periods=min_periods
-                ).mean().reset_index(0, drop=True)
-            
-            # Rellenar NaN con 0 para el primer juego de cada jugador
-            result = result.fillna(0)
-            
-            # Guardar en cache
-            self._cached_calculations[cache_key] = result
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error calculando serie histórica para {column}: {str(e)}")
-            return pd.Series(0, index=df.index)
+                result = rolling_obj.quantile(0.5)  # mediana por defecto
+        else:
+            logger.warning(f"Operación {operation} no soportada, usando mean")
+            result = rolling_obj.mean()
+        
+        # Reset index para mantener estructura original
+        result = result.reset_index(0, drop=True)
+        
+        # Rellenar valores NaN con 0 o valor por defecto
+        result = result.fillna(0)
+        
+        return result
     
     def _clear_cache(self):
         """Limpiar cache de cálculos"""
@@ -2418,14 +2415,125 @@ class PointsFeatureEngineer:
 
     def _create_revolutionary_ensemble_features(self, df: pd.DataFrame) -> None:
         """
-        REVOLUCIONARIO: Crear features de ensemble inteligente nunca antes vistas.
-        Estas features combinan múltiples predictores de manera sofisticada.
+        REVOLUCIONARIO: Features de ensemble ultra-avanzadas para stacking
+        Diseñadas para capturar patrones complejos que modelos individuales no detectan
         """
-        logger.info("🚀 Creando FEATURES REVOLUCIONARIAS DE ENSEMBLE INTELIGENTE...")
-        
-        if 'PTS' not in df.columns:
+        if self._check_feature_exists(df, 'ensemble_confidence_score'):
             return
         
+        logger.info("Creando features revolucionarias de ensemble...")
+        
+        # 1. CONFIDENCE SCORE ULTRA-AVANZADO
+        # Combinar múltiples indicadores de confianza
+        confidence_components = []
+        
+        # Componente 1: Consistencia histórica
+        if 'pts_hist_std_5g' in df.columns:
+            consistency = 1.0 / (1.0 + df['pts_hist_std_5g'])
+            confidence_components.append(consistency * 0.3)
+        
+        # Componente 2: Tendencia reciente
+        if 'pts_trend_5g' in df.columns:
+            trend_stability = 1.0 / (1.0 + np.abs(df['pts_trend_5g']))
+            confidence_components.append(trend_stability * 0.25)
+        
+        # Componente 3: Minutos estables
+        if 'mp_hist_std_5g' in df.columns:
+            minutes_stability = 1.0 / (1.0 + df['mp_hist_std_5g'])
+            confidence_components.append(minutes_stability * 0.2)
+        
+        # Componente 4: Eficiencia de tiro
+        if 'shooting_efficiency_5g' in df.columns:
+            shooting_confidence = df['shooting_efficiency_5g']
+            confidence_components.append(shooting_confidence * 0.25)
+        
+        # Combinar componentes
+        if confidence_components:
+            df['ensemble_confidence_score'] = np.sum(confidence_components, axis=0)
+            df['ensemble_confidence_score'] = df['ensemble_confidence_score'].clip(0, 1)
+            self._register_feature('ensemble_confidence_score', 'meta_stacking')
+        
+        # 2. FEATURES DE VOLATILIDAD ULTRA-ESPECÍFICAS
+        # Detectar patrones de volatilidad que afectan predicción
+        
+        # Volatilidad adaptativa (más peso a juegos recientes)
+        if 'PTS' in df.columns:
+            pts_volatility_components = []
+            for window in [3, 5, 10]:
+                pts_std = self._get_historical_series(df, 'PTS', window, 'std')
+                pts_mean = self._get_historical_series(df, 'PTS', window, 'mean')
+                cv = pts_std / (pts_mean + 0.1)  # Coeficiente de variación
+                pts_volatility_components.append(cv)
+            
+            # Combinar volatilidades con pesos decrecientes
+            weights = [0.5, 0.3, 0.2]
+            df['pts_adaptive_volatility'] = sum(w * v for w, v in zip(weights, pts_volatility_components))
+            self._register_feature('pts_adaptive_volatility', 'meta_stacking')
+        
+        # 3. FEATURES DE MOMENTUM ULTRA-AVANZADAS
+        # Capturar momentum en múltiples escalas temporales
+        
+        if 'PTS' in df.columns:
+            # Momentum a corto plazo (últimos 3 juegos)
+            pts_recent = self._get_historical_series(df, 'PTS', 3, 'mean')
+            pts_baseline = self._get_historical_series(df, 'PTS', 10, 'mean')
+            df['pts_short_momentum'] = (pts_recent - pts_baseline) / (pts_baseline + 0.1)
+            self._register_feature('pts_short_momentum', 'meta_stacking')
+            
+            # Momentum a medio plazo (últimos 5 vs 15 juegos)
+            pts_medium = self._get_historical_series(df, 'PTS', 5, 'mean')
+            pts_long_baseline = self._get_historical_series(df, 'PTS', 15, 'mean')
+            df['pts_medium_momentum'] = (pts_medium - pts_long_baseline) / (pts_long_baseline + 0.1)
+            self._register_feature('pts_medium_momentum', 'meta_stacking')
+        
+        # 4. FEATURES DE CONTEXTO SITUACIONAL ULTRA-ESPECÍFICAS
+        
+        # Rendimiento en situaciones específicas
+        if 'is_home' in df.columns and 'PTS' in df.columns:
+            # Diferencia de rendimiento casa vs visitante
+            home_pts = df.groupby('Player')['PTS'].transform(
+                lambda x: x.shift(1).rolling(10, min_periods=1).mean() if len(x) > 1 else x.mean()
+            )
+            # Simplificar el cálculo para evitar problemas
+            df['home_away_pts_diff'] = np.where(df['is_home'] == 1, 0.1, -0.1) * home_pts
+            self._register_feature('home_away_pts_diff', 'meta_stacking')
+        
+        # 5. FEATURES DE INTERACCIÓN ULTRA-COMPLEJAS
+        
+        # Interacción entre usage rate y eficiencia
+        if 'usage_rate_5g' in df.columns and 'shooting_efficiency_5g' in df.columns:
+            df['usage_efficiency_interaction'] = df['usage_rate_5g'] * df['shooting_efficiency_5g']
+            self._register_feature('usage_efficiency_interaction', 'meta_stacking')
+        
+        # Interacción entre minutos y descanso
+        if 'mp_hist_avg_5g' in df.columns and 'days_rest' in df.columns:
+            df['minutes_rest_interaction'] = df['mp_hist_avg_5g'] * np.log(df['days_rest'] + 1)
+            self._register_feature('minutes_rest_interaction', 'meta_stacking')
+        
+        logger.info("Features revolucionarias de ensemble creadas")
+
+    def _create_ultra_critical_range_features(self, df: pd.DataFrame) -> None:
+        """
+        NUEVO: Features ULTRA-ESPECÍFICAS para rangos críticos (20+ puntos) 
+        Diseñadas específicamente para alcanzar 97% efectividad en alto scoring.
+        """
+        logger.info("Creando features ULTRA-CRÍTICAS para rangos de alto scoring...")
+        
+        if 'PTS' not in df.columns:
+            logger.warning("PTS no disponible - saltando features de rangos críticos")
+            return
+        
+        # 1. FEATURES DE DETECCIÓN DE ALTO SCORING
+        
+        # Probabilidad histórica de alto scoring (20+ puntos)
+        pts_20plus_history = (df.groupby('Player')['PTS'].shift(1) >= 20).astype(int)
+        df['high_scoring_probability'] = pts_20plus_history.groupby(df['Player']).rolling(
+            10, min_periods=1
+        ).mean().reset_index(0, drop=True)
+        self._register_feature('high_scoring_probability', 'scoring')
+        
+        # Frecuencia de juegos explosivos (30+ puntos) en últimos 20 juegos
+        pts_30plus_history = (df.groupby('Player')['PTS'].shift(1) >= 30).astype(int)
         # ==================== ENSEMBLE TEMPORAL MULTI-ESCALA ====================
         
         # Feature 1: Predictor de ensemble temporal (combina múltiples ventanas)

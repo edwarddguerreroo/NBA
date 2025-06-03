@@ -588,10 +588,10 @@ Estado: ✅ PRODUCCIÓN
             try:
                 feature_importance = self.model.get_feature_importance(20)
                 importance_df = pd.DataFrame([
-                    {'feature': k, 'importance': v} 
+                {'feature': k, 'importance': v} 
                     for k, v in feature_importance.items()
-                ]).sort_values('importance', ascending=False)
-                
+            ]).sort_values('importance', ascending=False)
+            
                 importance_path = os.path.normpath(os.path.join(self.output_dir, 'feature_importance.csv'))
                 importance_df.to_csv(importance_path, index=False)
             except Exception as e:
