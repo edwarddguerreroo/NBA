@@ -297,10 +297,26 @@ class PointsFeatureEngineer:
                 df['is_wing_player'] = (df['is_shooting_guard'] | df['is_small_forward']).astype(int)
         else:
             # Estimar posiciones basadas en estadísticas
-            ast_avg = df.get('AST', 0)
-            three_attempts = df.get('3PA', 0)
-            fg_attempts = df.get('FGA', 0)
-            rebounds = df.get('TRB', 0)
+            # Usar valores por defecto si las columnas no existen
+            if 'AST' in df.columns:
+                ast_avg = df['AST']
+            else:
+                ast_avg = pd.Series([0] * len(df), index=df.index)
+                
+            if '3PA' in df.columns:
+                three_attempts = df['3PA']
+            else:
+                three_attempts = pd.Series([0] * len(df), index=df.index)
+                
+            if 'FGA' in df.columns:
+                fg_attempts = df['FGA']
+            else:
+                fg_attempts = pd.Series([0] * len(df), index=df.index)
+                
+            if 'TRB' in df.columns:
+                rebounds = df['TRB']
+            else:
+                rebounds = pd.Series([0] * len(df), index=df.index)
             
             if self._register_feature('is_guard', 'contextual'):
                 df['is_guard'] = ((ast_avg > 3) | (three_attempts > 4)).astype(int)
@@ -312,7 +328,8 @@ class PointsFeatureEngineer:
                 df['is_small_forward'] = ((fg_attempts > 6) & (rebounds > 4) & (three_attempts > 2)).astype(int)
             
             if self._register_feature('is_wing_player', 'contextual'):
-                df['is_wing_player'] = (df['is_shooting_guard'] | df['is_small_forward']).astype(int)
+                df['is_wing_player'] = (df.get('is_shooting_guard', pd.Series([0] * len(df), index=df.index)) | 
+                                       df.get('is_small_forward', pd.Series([0] * len(df), index=df.index))).astype(int)
         
         # Boost específico para posiciones anotadoras
         if self._register_feature('scorer_position_boost', 'contextual'):
@@ -741,15 +758,12 @@ class PointsFeatureEngineer:
         df['scoring_range'] = df['scoring_ceiling'] - df['scoring_floor']
         
         # 12. CONFIDENCE-WEIGHTED PREDICTION - Predicción ponderada por confianza
-        confidence_factors = [
-            df.get('pts_consistency_5g', 0.5),
-            df.get('usage_rate_5g', 20) / 30,  # Normalizado
-            (df.get('mp_hist_avg_5g', 25) / 35),  # Normalizado
-        ]
+        pts_consistency = df.get('pts_consistency_5g', 0.5)
+        usage_normalized = df.get('usage_rate_5g', 20) / 30  # Normalizado
+        minutes_normalized = df.get('mp_hist_avg_5g', 25) / 35  # Normalizado
         
-        # Convertir a array numpy para evitar ambigüedad
-        confidence_array = np.array(confidence_factors)
-        avg_confidence = np.mean(confidence_array, axis=0)
+        # Calcular confianza promedio elemento por elemento
+        avg_confidence = (pts_consistency + usage_normalized + minutes_normalized) / 3
         df['confidence_weighted_prediction'] = df['elite_scorer_composite'] * avg_confidence
         
         # ==================== TIER 6: INTERACCIONES MULTIPLICATIVAS ====================
@@ -781,41 +795,23 @@ class PointsFeatureEngineer:
         # ==================== TIER 8: FEATURES DE VALIDACIÓN CRUZADA ====================
         
         # 18. CROSS-VALIDATION SCORE - Score de validación cruzada
-        primary_features = [
-            df.get('pts_above_season_avg', 0),
-            df.get('usage_rate_5g', 20) / 100,
-            df.get('shooting_volume_5g', 10) / 15,
-            df.get('pace_adjusted_scoring', 0) / 20,
-            df.get('scoring_form_5g', 0)
-        ]
+        pts_above_avg = df.get('pts_above_season_avg', 0)
+        usage_normalized = df.get('usage_rate_5g', 20) / 100
+        volume_normalized = df.get('shooting_volume_5g', 10) / 15
+        pace_normalized = df.get('pace_adjusted_scoring', 0) / 20
+        scoring_form = df.get('scoring_form_5g', 0)
         
-        # Convertir a array numpy para evitar ambigüedad con Series
-        primary_features_array = np.array(primary_features)
-        
-        # Calcular media manejando NaN e infinitos
-        valid_mask = np.isfinite(primary_features_array)
-        df['cross_validation_score'] = np.where(
-            valid_mask.any(axis=0),
-            np.nanmean(np.where(valid_mask, primary_features_array, np.nan), axis=0),
-            0
-        )
+        # Calcular score de validación cruzada elemento por elemento
+        df['cross_validation_score'] = (pts_above_avg + usage_normalized + volume_normalized + pace_normalized + scoring_form) / 5
         
         # 19. ENSEMBLE PREDICTION - Predicción de ensemble
-        ensemble_components = [
-            df['elite_scorer_composite'],
-            df['pace_scoring_power'] / 2,
-            df['opportunity_maximizer'] * 15,
-            df['confidence_weighted_prediction']
-        ]
+        elite_composite = df['elite_scorer_composite']
+        pace_power = df['pace_scoring_power'] / 2
+        opportunity_max = df['opportunity_maximizer'] * 15
+        confidence_pred = df['confidence_weighted_prediction']
         
-        # Convertir a array numpy para ensemble
-        ensemble_array = np.array(ensemble_components)
-        valid_ensemble_mask = np.isfinite(ensemble_array)
-        df['ensemble_scoring_prediction'] = np.where(
-            valid_ensemble_mask.any(axis=0),
-            np.nanmean(np.where(valid_ensemble_mask, ensemble_array, np.nan), axis=0),
-            0
-        )
+        # Calcular predicción de ensemble elemento por elemento
+        df['ensemble_scoring_prediction'] = (elite_composite + pace_power + opportunity_max + confidence_pred) / 4
         
         # 20. FINAL STACKED PREDICTOR - Predictor final apilado
         df['final_stacked_predictor'] = (
@@ -1561,20 +1557,30 @@ class PointsFeatureEngineer:
         )
         
         # 9. Cumulative minutes load (fatigue proxy)
-        df['cumulative_minutes'] = df.groupby('Player')['MP'].cumsum()
-        df['avg_minutes_last_5'] = df.groupby('Player')['MP'].rolling(
-            window=5, min_periods=1
-        ).mean().reset_index(0, drop=True)
+        if 'MP' in df.columns:
+            df['cumulative_minutes'] = df.groupby('Player')['MP'].cumsum()
+            df['avg_minutes_last_5'] = df.groupby('Player')['MP'].rolling(
+                window=5, min_periods=1
+            ).mean().reset_index(0, drop=True)
+        else:
+            # Usar valores por defecto si MP no existe
+            df['cumulative_minutes'] = df.groupby('Player').cumcount() * 25  # Asumiendo 25 min promedio
+            df['avg_minutes_last_5'] = 25.0  # Valor por defecto
         
         # 10. Performance momentum indicators
-        df['pts_last_3_avg'] = df.groupby('Player')['PTS'].rolling(
-            window=3, min_periods=1
-        ).mean().shift(1).reset_index(0, drop=True)
-        
-        df['pts_trend_last_5'] = df.groupby('Player')['PTS'].rolling(
-            window=5, min_periods=2
-        ).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) >= 2 else 0
-        ).shift(1).reset_index(0, drop=True)
+        if 'PTS' in df.columns:
+            df['pts_last_3_avg'] = df.groupby('Player')['PTS'].rolling(
+                window=3, min_periods=1
+            ).mean().shift(1).reset_index(0, drop=True)
+            
+            df['pts_trend_last_5'] = df.groupby('Player')['PTS'].rolling(
+                window=5, min_periods=2
+            ).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) >= 2 else 0
+            ).shift(1).reset_index(0, drop=True)
+        else:
+            # Usar valores por defecto si PTS no existe
+            df['pts_last_3_avg'] = 15.0  # Valor por defecto
+            df['pts_trend_last_5'] = 0.0  # Sin tendencia
         
         # 11. Opponent strength (si hay datos de equipos)
         if hasattr(self, 'teams_df') and self.teams_df is not None:
@@ -2740,7 +2746,7 @@ class PointsFeatureEngineer:
                 elif 'score' in feature:
                     df[feature] = np.clip(df[feature], 0, 1)  # Límites para scores
         
-        logger.info(f"🎯 ENSEMBLE REVOLUCIONARIO CREADO: {len(ensemble_features)} features")
-        logger.info("  🔥 temporal_ensemble_predictor: Combina múltiples ventanas temporales")
-        logger.info("  🔥 final_ensemble_predictor: Predictor ensemble definitivo")
-        logger.info("  🔥 ensemble_confidence_score: Score de confianza del ensemble")
+        logger.info(f"ENSEMBLE REVOLUCIONARIO CREADO: {len(ensemble_features)} features")
+        logger.info("  temporal_ensemble_predictor: Combina múltiples ventanas temporales")
+        logger.info("  final_ensemble_predictor: Predictor ensemble definitivo")
+        logger.info("  ensemble_confidence_score: Score de confianza del ensemble")

@@ -1810,6 +1810,18 @@ class XGBoostPTSModel(StackingPTSModel):
             )
             self.best_params = self.best_params_per_model[best_model_name]
         
+        # NUEVO: Calcular y guardar cutoff_date para compatibilidad con trainer
+        if 'Date' in df.columns:
+            df_sorted = df.sort_values('Date').reset_index(drop=True)
+            split_idx = int(len(df_sorted) * 0.8)  # Mismo split que en _temporal_split
+            self.cutoff_date = df_sorted.iloc[split_idx]['Date']
+            logger.info(f"Cutoff date establecido: {self.cutoff_date}")
+        else:
+            # Si no hay columna Date, usar fecha actual como fallback
+            from datetime import datetime
+            self.cutoff_date = datetime.now()
+            logger.warning("No se encontró columna 'Date', usando fecha actual como cutoff_date")
+        
         return result
     
     def get_feature_importance(self, top_n: int = 20) -> Dict[str, float]:
