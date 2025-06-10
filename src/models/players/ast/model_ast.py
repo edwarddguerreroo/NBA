@@ -1,9 +1,9 @@
 """
-Modelo de Predicción de Rebotes Totales (TRB)
-============================================
+Modelo de Predicción de Asistencias (AST)
+========================================
 
-Sistema avanzado de stacking ensemble para predicción de rebotes totales
-que capturará un jugador NBA en su próximo partido.
+Sistema avanzado de stacking ensemble para predicción de asistencias
+que realizará un jugador NBA en su próximo partido.
 
 CARACTERÍSTICAS PRINCIPALES:
 - Stacking ensemble con XGBoost, LightGBM, CatBoost, Gradient Boosting
@@ -12,13 +12,19 @@ CARACTERÍSTICAS PRINCIPALES:
 - Regularización avanzada (L1/L2, Dropout, Early Stopping)
 - División temporal para evitar data leakage
 - Meta-learner adaptativo para stacking
-- Features especializadas para rebotes
+- Features especializadas para asistencias
 
 ARQUITECTURA:
 1. Modelos Base: XGBoost, LightGBM, CatBoost, GradientBoosting, Ridge
 2. Meta-learner: Ridge con regularización L2
 3. Validación: TimeSeriesSplit cronológico
 4. Optimización: Optuna (Bayesian Optimization)
+
+ESPECIALIZACIÓN PARA ASISTENCIAS:
+- Enfoque en visión de cancha y Basketball IQ
+- Features de control del balón y ritmo de juego
+- Contexto de equipo (calidad de tiradores)
+- Historial de pases y situaciones de juego
 """
 
 import pandas as pd
@@ -50,24 +56,25 @@ from optuna.samplers import TPESampler
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # Local imports
-from .features_trb import ReboundsFeatureEngineer
+from .features_ast import AssistsFeatureEngineer
 
 warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
 
-class StackingTRBModel:
+class StackingASTModel:
     """
-    Modelo de Stacking Ensemble para Predicción de Rebotes Totales
+    Modelo de Stacking Ensemble para Predicción de Asistencias
     ULTRA-OPTIMIZADO con regularización balanceada y validación temporal
+    Especializado en características de playmakers y visión de cancha
     """
     
     def __init__(self, enable_neural_network: bool = True, enable_svr: bool = False, 
                  enable_gpu: bool = False, random_state: int = 42, teams_df: pd.DataFrame = None):
         """
-        Inicializar el modelo de stacking para TRB
+        Inicializar el modelo de stacking para AST
         
         Args:
-            enable_neural_network: Habilitar red neuronal (más lento pero mejor)
+            enable_neural_network: Habilitar red neuronal (mejor para patrones complejos)
             enable_svr: Habilitar SVR (muy lento, deshabilitado por defecto)
             enable_gpu: Usar GPU para XGBoost/LightGBM si está disponible
             random_state: Semilla para reproducibilidad
@@ -82,7 +89,7 @@ class StackingTRBModel:
         # Configuración de modelos
         self.base_models = {}
         self.stacking_model = None
-        self.feature_engineer = ReboundsFeatureEngineer(teams_df=teams_df)
+        self.feature_engineer = AssistsFeatureEngineer(teams_df=teams_df)
         self.scaler = StandardScaler()
         
         # Métricas y resultados
@@ -92,21 +99,21 @@ class StackingTRBModel:
         self.best_params_per_model = {}
         
         # Configuración de optimización
-        self.n_trials = 50  # Trials para optimización bayesiana
-        self.cv_folds = 5   # Folds para validación cruzada temporal
+        self.n_trials = 25  # Reducido de 50 a 25 para mayor velocidad
+        self.cv_folds = 3   # Reducido de 5 a 3 para mayor velocidad
         
         # Configurar modelos base
         self._setup_base_models()
         
         # Mostrar ensemble final
         model_names = list(self.base_models.keys())
-        logger.info(f"Modelo TRB inicializado - Ensemble: {', '.join(model_names)}")
+        logger.info(f"Modelo AST inicializado - Ensemble: {', '.join(model_names)}")
         logger.info(f"Configuración: NN={enable_neural_network}, SVR={enable_svr}, GPU={enable_gpu}")
     
     def _setup_base_models(self):
-        """Configurar modelos base con hiperparámetros optimizados para rebotes"""
+        """Configurar modelos base con hiperparámetros optimizados para asistencias"""
         
-        # XGBoost - Excelente para features categóricas y no lineales
+        # XGBoost - Excelente para features de Basketball IQ y patrones complejos
         self.base_models['xgboost'] = {
             'model': xgb.XGBRegressor(
                 random_state=self.random_state,
@@ -115,18 +122,17 @@ class StackingTRBModel:
                 n_jobs=-1
             ),
             'param_space': {
-                'n_estimators': (100, 500),
-                'max_depth': (3, 8),
-                'learning_rate': (0.01, 0.3),
-                'subsample': (0.7, 1.0),
-                'colsample_bytree': (0.7, 1.0),
-                'reg_alpha': (0, 10),
-                'reg_lambda': (1, 10),
-                'min_child_weight': (1, 10)
+                'n_estimators': (100, 300),  # Rango reducido
+                'max_depth': (3, 6),         # Rango reducido
+                'learning_rate': (0.05, 0.2), # Rango reducido
+                'subsample': (0.8, 1.0),     # Rango reducido
+                'colsample_bytree': (0.8, 1.0), # Rango reducido
+                'reg_alpha': (0, 3),         # Rango reducido
+                'reg_lambda': (1, 5)         # Rango reducido
             }
         }
         
-        # LightGBM - Rápido y eficiente para datasets grandes
+        # LightGBM - Rápido y eficiente para features de visión de cancha
         self.base_models['lightgbm'] = {
             'model': lgb.LGBMRegressor(
                 random_state=self.random_state,
@@ -137,19 +143,18 @@ class StackingTRBModel:
                 verbose=-1
             ),
             'param_space': {
-                'n_estimators': (100, 500),
-                'max_depth': (3, 8),
-                'learning_rate': (0.01, 0.3),
-                'subsample': (0.7, 1.0),
-                'colsample_bytree': (0.7, 1.0),
-                'reg_alpha': (0, 10),
-                'reg_lambda': (1, 10),
-                'min_child_samples': (5, 50),
-                'num_leaves': (10, 100)
+                'n_estimators': (100, 300),  # Rango reducido
+                'max_depth': (3, 6),         # Rango reducido
+                'learning_rate': (0.05, 0.2), # Rango reducido
+                'subsample': (0.8, 1.0),     # Rango reducido
+                'colsample_bytree': (0.8, 1.0), # Rango reducido
+                'reg_alpha': (0, 3),         # Rango reducido
+                'reg_lambda': (1, 5),        # Rango reducido
+                'num_leaves': (15, 50)       # Rango reducido
             }
         }
         
-        # CatBoost - Excelente para features categóricas sin preprocessing
+        # CatBoost - Excelente para features categóricas de contexto de equipo
         self.base_models['catboost'] = {
             'model': cb.CatBoostRegressor(
                 random_state=self.random_state,
@@ -159,68 +164,62 @@ class StackingTRBModel:
                 allow_writing_files=False
             ),
             'param_space': {
-                'iterations': (100, 500),
-                'depth': (3, 8),
-                'learning_rate': (0.01, 0.3),
-                'l2_leaf_reg': (1, 10),
-                'subsample': (0.7, 1.0),
-                'colsample_bylevel': (0.7, 1.0),
-                'min_data_in_leaf': (1, 50)
+                'iterations': (100, 250),    # Rango reducido
+                'depth': (3, 6),             # Rango reducido
+                'learning_rate': (0.05, 0.2), # Rango reducido
+                'l2_leaf_reg': (1, 5),       # Rango reducido
+                'subsample': (0.8, 1.0)      # Rango reducido
             }
         }
         
-        # Gradient Boosting - Robusto y estable
+        # Gradient Boosting - Robusto para features de control del balón
         self.base_models['gradient_boosting'] = {
             'model': GradientBoostingRegressor(
                 random_state=self.random_state
             ),
             'param_space': {
-                'n_estimators': (100, 300),
-                'max_depth': (3, 6),
-                'learning_rate': (0.01, 0.2),
-                'subsample': (0.7, 1.0),
-                'max_features': (0.7, 1.0),
-                'alpha': (0.1, 0.9)  # Quantile para robustez
+                'n_estimators': (100, 200),  # Rango reducido
+                'max_depth': (3, 5),         # Rango reducido
+                'learning_rate': (0.05, 0.15), # Rango reducido
+                'subsample': (0.8, 1.0),     # Rango reducido
+                'max_features': (0.8, 1.0)   # Rango reducido
             }
         }
         
-        # Ridge - Regularización L2 para estabilidad
+        # Ridge - Regularización L2 para estabilidad en features de historial
         self.base_models['ridge'] = {
             'model': Ridge(random_state=self.random_state),
             'param_space': {
-                'alpha': (0.1, 100.0),
-                'fit_intercept': [True, False],
-                'solver': ['auto', 'svd', 'cholesky', 'lsqr']
+                'alpha': (0.1, 10.0),        # Rango reducido
+                'fit_intercept': [True, False]
             }
         }
         
-        # Neural Network (opcional)
+        # Neural Network (opcional) - Excelente para patrones complejos de Basketball IQ
         if self.enable_neural_network:
             self.base_models['neural_network'] = {
                 'model': MLPRegressor(
                     random_state=self.random_state,
-                    max_iter=1000,
+                    max_iter=500,  # Reducido de 1000
                     early_stopping=True,
                     validation_fraction=0.1
                 ),
                 'param_space': {
-                    'hidden_layer_sizes': [(50,), (100,), (50, 25), (100, 50)],
-                    'alpha': (0.0001, 0.1),
-                    'learning_rate_init': (0.001, 0.01),
-                    'beta_1': (0.8, 0.99),
-                    'beta_2': (0.9, 0.999)
+                    'hidden_layer_sizes': [(32,), (64,), (32, 16)],  # Arquitecturas más simples
+                    'alpha': (0.001, 0.05),     # Rango reducido
+                    'learning_rate_init': (0.001, 0.005)  # Rango reducido
                 }
             }
         
-        # SVR (opcional, muy lento)
+        # SVR (opcional) - Excelente para relaciones no lineales en asistencias
         if self.enable_svr:
             self.base_models['svr'] = {
                 'model': SVR(),
                 'param_space': {
-                    'C': (0.1, 100.0),
-                    'epsilon': (0.01, 1.0),
+                    'C': (0.1, 50.0),
+                    'epsilon': (0.01, 0.5),
                     'gamma': ['scale', 'auto'],
-                    'kernel': ['rbf', 'linear']
+                    'kernel': ['rbf', 'linear', 'poly']
                 }
             }
     
@@ -251,7 +250,7 @@ class StackingTRBModel:
     
     def train(self, df: pd.DataFrame) -> Dict[str, float]:
         """
-        Entrenamiento completo del modelo Stacking TRB
+        Entrenamiento completo del modelo Stacking AST
         
         Args:
             df: DataFrame con datos de jugadores y estadísticas
@@ -259,7 +258,7 @@ class StackingTRBModel:
         Returns:
             Dict con métricas de validación
         """
-        logger.info("Iniciando entrenamiento del modelo TRB...")
+        logger.info("Iniciando entrenamiento del modelo AST...")
         
         # Verificar orden cronológico
         if 'Date' in df.columns:
@@ -267,26 +266,26 @@ class StackingTRBModel:
                 logger.info("Ordenando datos cronológicamente...")
                 df = df.sort_values(['Player', 'Date']).reset_index(drop=True)
         
-        # Generar features especializadas para rebotes
+        # Generar features especializadas para asistencias
         logger.info("Generando características especializadas...")
         features = self.feature_engineer.generate_all_features(df)  # Modificar DataFrame directamente
         
         if not features:
-            raise ValueError("No se pudieron generar features para TRB")
+            raise ValueError("No se pudieron generar features para AST")
         
         logger.info(f"Features seleccionadas: {len(features)}")
         
         # Preparar datos (ahora df tiene las features)
         X = df[features].fillna(0)
-        y = df['TRB']
+        y = df['AST']
         
         # División temporal
         train_data, test_data = self._temporal_split(df)
         
         X_train = train_data[features].fillna(0)
-        y_train = train_data['TRB']
+        y_train = train_data['AST']
         X_test = test_data[features].fillna(0)
-        y_test = test_data['TRB']
+        y_test = test_data['AST']
         
         logger.info(f"Entrenamiento: {X_train.shape[0]} muestras, Prueba: {X_test.shape[0]} muestras")
         
@@ -315,18 +314,18 @@ class StackingTRBModel:
         rmse = np.sqrt(mean_squared_error(y_test, y_pred))
         r2 = r2_score(y_test, y_pred)
         
-        # Métricas específicas para rebotes
-        accuracy_1reb = np.mean(np.abs(y_test - y_pred) <= 1) * 100
-        accuracy_2reb = np.mean(np.abs(y_test - y_pred) <= 2) * 100
-        accuracy_3reb = np.mean(np.abs(y_test - y_pred) <= 3) * 100
+        # Métricas específicas para asistencias
+        accuracy_1ast = np.mean(np.abs(y_test - y_pred) <= 1) * 100
+        accuracy_2ast = np.mean(np.abs(y_test - y_pred) <= 2) * 100
+        accuracy_3ast = np.mean(np.abs(y_test - y_pred) <= 3) * 100
         
         self.validation_metrics = {
             'mae': mae,
             'rmse': rmse,
             'r2': r2,
-            'accuracy_1reb': accuracy_1reb,
-            'accuracy_2reb': accuracy_2reb,
-            'accuracy_3reb': accuracy_3reb
+            'accuracy_1ast': accuracy_1ast,
+            'accuracy_2ast': accuracy_2ast,
+            'accuracy_3ast': accuracy_3ast
         }
         
         # Calcular importancia de features
@@ -339,9 +338,9 @@ class StackingTRBModel:
         logger.info(f"MAE: {self.validation_metrics['mae']:.4f}")
         logger.info(f"RMSE: {self.validation_metrics['rmse']:.4f}")
         logger.info(f"R²: {self.validation_metrics['r2']:.4f}")
-        logger.info(f"Accuracy ±1reb: {accuracy_1reb:.1f}%")
-        logger.info(f"Accuracy ±2reb: {accuracy_2reb:.1f}%")
-        logger.info(f"Accuracy ±3reb: {accuracy_3reb:.1f}%")
+        logger.info(f"Accuracy ±1ast: {accuracy_1ast:.1f}%")
+        logger.info(f"Accuracy ±2ast: {accuracy_2ast:.1f}%")
+        logger.info(f"Accuracy ±3ast: {accuracy_3ast:.1f}%")
         logger.info("=" * 50)
         
         return self.validation_metrics
@@ -450,164 +449,97 @@ class StackingTRBModel:
     
     def _setup_stacking_model(self):
         """
-        Configurar el modelo de stacking con meta-learner optimizado
-        STACKING AVANZADO ESPECIALIZADO BASADO EN FEATURES IMPORTANTES
+        Configurar el modelo de stacking SIMPLIFICADO Y OPTIMIZADO para AST
+        ENFOQUE: Menos complejidad, más precisión
         """
-        # STACKING ESPECIALIZADO POR GRUPOS DE FEATURES
-        # Basado en las top features identificadas: orb_rate, trb_avg_3g, scoring_role, etc.
+        # SIMPLIFICAR ARQUITECTURA - SOLO MODELOS BASE MÁS EFECTIVOS
         
-        # GRUPO 1: MODELOS ESPECIALIZADOS EN REBOTES HISTÓRICOS
-        # Para features como: trb_avg_3g, trb_per_minute_10g, orb_rate
-        rebounding_specialists = [
-            ('xgb_rebounding', xgb.XGBRegressor(
-                n_estimators=300,
-                max_depth=6,
+        # GRUPO 1: MODELOS PRINCIPALES OPTIMIZADOS PARA AST
+        main_models = [
+            # XGBoost optimizado para asistencias
+            ('xgb_ast', xgb.XGBRegressor(
+                n_estimators=200,  # Reducido para evitar overfitting
+                max_depth=4,       # Menos profundidad para generalizar mejor
                 learning_rate=0.1,
                 subsample=0.8,
                 colsample_bytree=0.8,
-                reg_alpha=2,
-                reg_lambda=5,
+                reg_alpha=1,       # Regularización L1 moderada
+                reg_lambda=2,      # Regularización L2 moderada
                 random_state=self.random_state,
                 tree_method='gpu_hist' if self.enable_gpu else 'hist'
             )),
-            ('lgb_rebounding', lgb.LGBMRegressor(
-                n_estimators=300,
-                max_depth=6,
+            
+            # LightGBM optimizado para asistencias
+            ('lgb_ast', lgb.LGBMRegressor(
+                n_estimators=200,  # Reducido para evitar overfitting
+                max_depth=4,       # Menos profundidad
                 learning_rate=0.1,
                 subsample=0.8,
                 colsample_bytree=0.8,
-                reg_alpha=2,
-                reg_lambda=5,
-                num_leaves=50,
+                reg_alpha=1,
+                reg_lambda=2,
+                num_leaves=15,     # Reducido significativamente
                 random_state=self.random_state,
                 verbose=-1
-            ))
-        ]
-        
-        # GRUPO 2: MODELOS ESPECIALIZADOS EN CONTEXTO DE JUEGO
-        # Para features como: scoring_role, orb_minutes_interaction, interior_play_index
-        context_specialists = [
-            ('catboost_context', cb.CatBoostRegressor(
-                iterations=300,
-                depth=6,
+            )),
+            
+            # CatBoost para features categóricas
+            ('catboost_ast', cb.CatBoostRegressor(
+                iterations=150,    # Reducido
+                depth=4,           # Menos profundidad
                 learning_rate=0.1,
-                l2_leaf_reg=5,
+                l2_leaf_reg=2,
                 subsample=0.8,
                 random_state=self.random_state,
                 verbose=False,
                 allow_writing_files=False
             )),
-            ('gb_context', GradientBoostingRegressor(
-                n_estimators=200,
-                max_depth=5,
-                learning_rate=0.1,
-                subsample=0.8,
-                max_features=0.8,
-                alpha=0.2,
+            
+            # Ridge para estabilidad
+            ('ridge_ast', Ridge(
+                alpha=1.0,         # Regularización moderada
+                fit_intercept=True,
                 random_state=self.random_state
             ))
         ]
         
-        # GRUPO 3: MODELOS ESPECIALIZADOS EN INTERACCIONES COMPLEJAS
-        # Para features de interacción y volatilidad
-        interaction_specialists = []
-        
+        # Agregar Neural Network solo si está habilitado
         if self.enable_neural_network:
-            interaction_specialists.append(
-                ('mlp_interactions', MLPRegressor(
-                    hidden_layer_sizes=(128, 64, 32),
+            main_models.append(
+                ('mlp_ast', MLPRegressor(
+                    hidden_layer_sizes=(32, 16),  # Arquitectura más simple
                     activation='relu',
                     solver='adam',
-                    alpha=0.01,  # Regularización L2
+                    alpha=0.01,        # Regularización moderada
                     learning_rate='adaptive',
                     learning_rate_init=0.001,
-                    max_iter=500,
+                    max_iter=300,      # Menos iteraciones
                     early_stopping=True,
                     validation_fraction=0.1,
-                    n_iter_no_change=20,
+                    n_iter_no_change=15,
                     random_state=self.random_state
                 ))
             )
         
-        # Agregar Ridge como estabilizador
-        interaction_specialists.append(
-            ('ridge_interactions', Ridge(
-                alpha=10.0,
-                fit_intercept=True,
-                random_state=self.random_state
-            ))
-        )
-        
-        # COMBINAR TODOS LOS ESPECIALISTAS
-        all_specialists = rebounding_specialists + context_specialists + interaction_specialists
-        
-        # META-LEARNER AVANZADO CON MÚLTIPLES NIVELES
-        # Nivel 1: Ridge con regularización moderada
-        meta_learner_l1 = Ridge(
-            alpha=5.0,
+        # META-LEARNER SIMPLE Y EFECTIVO
+        meta_learner = Ridge(
+            alpha=0.5,  # Regularización ligera para permitir aprendizaje
             fit_intercept=True,
             random_state=self.random_state
         )
         
-        # STACKING PRINCIPAL - CORREGIDO PARA EVITAR ERROR DE CV
+        # STACKING SIMPLE - UN SOLO NIVEL
         self.stacking_model = StackingRegressor(
-            estimators=all_specialists,
-            final_estimator=meta_learner_l1,
-            cv=3,  # Usar entero en lugar de TimeSeriesSplit para evitar error
-            n_jobs=1,  # Reducir paralelización para evitar conflictos
-            passthrough=False  # Solo usar predicciones de base models
+            estimators=main_models,
+            final_estimator=meta_learner,
+            cv=3,              # CV simple
+            n_jobs=1,          # Sin paralelización para evitar conflictos
+            passthrough=False  # Solo predicciones de modelos base
         )
         
-        # STACKING SECUNDARIO (NIVEL 2) - ENSEMBLE DE ENSEMBLES
-        # Crear un segundo nivel de stacking para máxima precisión
+        logger.info(f"Stacking SIMPLIFICADO configurado: {len(main_models)} modelos base")
         
-        # Modelos del primer nivel (ya optimizados)
-        level1_models = [
-            ('stacking_primary', self.stacking_model),
-            ('xgb_final', xgb.XGBRegressor(
-                n_estimators=400,
-                max_depth=5,
-                learning_rate=0.08,
-                subsample=0.85,
-                colsample_bytree=0.85,
-                reg_alpha=3,
-                reg_lambda=7,
-                random_state=self.random_state,
-                tree_method='gpu_hist' if self.enable_gpu else 'hist'
-            )),
-            ('lgb_final', lgb.LGBMRegressor(
-                n_estimators=400,
-                max_depth=5,
-                learning_rate=0.08,
-                subsample=0.85,
-                colsample_bytree=0.85,
-                reg_alpha=3,
-                reg_lambda=7,
-                num_leaves=40,
-                random_state=self.random_state,
-                verbose=-1
-            ))
-        ]
-        
-        # Meta-learner final ultra-conservador
-        meta_learner_final = Ridge(
-            alpha=15.0,  # Alta regularización para estabilidad
-            fit_intercept=True,
-            random_state=self.random_state
-        )
-        
-        # STACKING FINAL (NIVEL 2) - CORREGIDO PARA EVITAR ERROR DE CV
-        self.final_stacking_model = StackingRegressor(
-            estimators=level1_models,
-            final_estimator=meta_learner_final,
-            cv=2,  # Usar entero en lugar de TimeSeriesSplit para evitar error
-            n_jobs=1,  # Reducir paralelización para evitar conflictos
-            passthrough=True  # Incluir features originales en nivel final
-        )
-        
-        logger.info(f"Stacking configurado: {len(all_specialists)} modelos especializados")
-        
-        return self.final_stacking_model
+        return self.stacking_model
     
     def _perform_temporal_cross_validation(self, X_train: pd.DataFrame, y_train: pd.Series):
         """Realizar validación cruzada temporal para evaluar estabilidad"""
@@ -723,7 +655,7 @@ class StackingTRBModel:
             df: DataFrame con datos de jugadores
             
         Returns:
-            Array con predicciones de TRB
+            Array con predicciones de AST
         """
         if self.stacking_model is None:
             raise ValueError("Modelo no entrenado. Ejecutar train() primero.")
@@ -735,7 +667,7 @@ class StackingTRBModel:
         # Realizar predicciones usando el modelo principal entrenado
         predictions = self.stacking_model.predict(X)
         
-        # Asegurar que las predicciones sean no negativas (rebotes no pueden ser negativos)
+        # Asegurar que las predicciones sean no negativas (asistencias no pueden ser negativas)
         predictions = np.maximum(predictions, 0)
         
         return predictions
@@ -772,7 +704,7 @@ class StackingTRBModel:
     def get_model_summary(self) -> Dict[str, Any]:
         """Obtener resumen del modelo"""
         return {
-            'model_type': 'Stacking Ensemble TRB',
+            'model_type': 'Stacking Ensemble AST',
             'base_models': list(self.base_models.keys()),
             'validation_metrics': self.validation_metrics,
             'cv_scores': self.cv_scores,
@@ -781,16 +713,16 @@ class StackingTRBModel:
         }
 
 
-class XGBoostTRBModel:
+class XGBoostASTModel:
     """
-    Modelo XGBoost simplificado para TRB con compatibilidad con el sistema existente
-    Mantiene la interfaz del modelo de PTS pero optimizado para rebotes
+    Modelo XGBoost simplificado para AST con compatibilidad con el sistema existente
+    Mantiene la interfaz del modelo de PTS pero optimizado para asistencias
     """
     
-    def __init__(self, enable_neural_network: bool = True, enable_svr: bool = True, 
-                 enable_gpu: bool = True, random_state: int = 42, teams_df: pd.DataFrame = None):
-        """Inicializar modelo XGBoost TRB con stacking ensemble"""
-        self.stacking_model = StackingTRBModel(
+    def __init__(self, enable_neural_network: bool = True, enable_svr: bool = False, 
+                 enable_gpu: bool = False, random_state: int = 42, teams_df: pd.DataFrame = None):
+        """Inicializar modelo XGBoost AST con stacking ensemble"""
+        self.stacking_model = StackingASTModel(
             enable_neural_network=enable_neural_network,
             enable_svr=enable_svr,
             enable_gpu=enable_gpu,
@@ -804,7 +736,7 @@ class XGBoostTRBModel:
         self.best_params = {}
         self.cutoff_date = None
         
-        logger.info("Modelo XGBoost TRB inicializado con stacking completo")
+        logger.info("Modelo XGBoost AST inicializado con stacking completo")
     
     def train(self, df: pd.DataFrame) -> Dict[str, float]:
         """

@@ -1,15 +1,15 @@
 """
-Trainer Completo para Modelo XGBoost TRB
+Trainer Completo para Modelo XGBoost AST
 ========================================
 
 Trainer que integra carga de datos, entrenamiento del modelo XGBoost
-y generación completa de métricas y visualizaciones para predicción de rebotes NBA.
+y generación completa de métricas y visualizaciones para predicción de asistencias NBA.
 
 Características:
 - Integración completa con data loader
 - Entrenamiento automatizado con optimización bayesiana
 - Generación de dashboard PNG unificado con todas las métricas
-- Métricas detalladas específicas para rebotes
+- Métricas detalladas específicas para asistencias
 - Análisis de feature importance
 - Validación cruzada cronológica
 """
@@ -30,7 +30,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # Imports del proyecto
 from src.preprocessing.data_loader import NBADataLoader
-from src.models.players.trb.model_trb import XGBoostTRBModel
+from src.models.players.ast.model_ast import XGBoostASTModel
 
 warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
@@ -43,9 +43,9 @@ plt.rcParams['savefig.dpi'] = 300
 plt.rcParams['font.size'] = 10
 
 
-class XGBoostTRBTrainer:
+class XGBoostASTTrainer:
     """
-    Trainer completo para modelo XGBoost de predicción de rebotes NBA.
+    Trainer completo para modelo XGBoost de predicción de asistencias NBA.
     
     Integra carga de datos, entrenamiento, evaluación y visualizaciones.
     """
@@ -54,12 +54,12 @@ class XGBoostTRBTrainer:
                  game_data_path: str,
                  biometrics_path: str,
                  teams_path: str,
-                 output_dir: str = "results/trb_model",
-                 n_trials: int = 50,  # Menos trials para TRB
+                 output_dir: str = "results/ast_model",
+                 n_trials: int = 50,  # Trials para optimización bayesiana
                  cv_folds: int = 5,
                  random_state: int = 42):
         """
-        Inicializa el trainer completo para TRB.
+        Inicializa el trainer completo para AST.
         
         Args:
             game_data_path: Ruta a datos de partidos
@@ -83,7 +83,7 @@ class XGBoostTRBTrainer:
         except Exception as e:
             logger.error(f"Error creando directorio {self.output_dir}: {e}")
             # Crear directorio alternativo en caso de error
-            self.output_dir = os.path.normpath("results_trb_model")
+            self.output_dir = os.path.normpath("results_ast_model")
             os.makedirs(self.output_dir, exist_ok=True)
             logger.info(f"Usando directorio alternativo: {self.output_dir}")
         
@@ -91,7 +91,7 @@ class XGBoostTRBTrainer:
         self.data_loader = NBADataLoader(
             game_data_path, biometrics_path, teams_path
         )
-        self.model = XGBoostTRBModel(
+        self.model = XGBoostASTModel(
             enable_neural_network=True,
             enable_svr=False,  # Deshabilitado para mayor velocidad
             enable_gpu=False,
@@ -109,7 +109,7 @@ class XGBoostTRBTrainer:
         self.training_results = None
         self.predictions = None
         
-        logger.info(f"Trainer XGBoost TRB inicializado - Output: {self.output_dir}")
+        logger.info(f"Trainer XGBoost AST inicializado - Output: {self.output_dir}")
     
     def load_and_prepare_data(self) -> pd.DataFrame:
         """
@@ -136,14 +136,14 @@ class XGBoostTRBTrainer:
         logger.info(f"Rango de fechas: {self.df['Date'].min()} a {self.df['Date'].max()}")
         
         # Verificar target
-        if 'TRB' not in self.df.columns:
-            raise ValueError("Columna 'TRB' no encontrada en los datos")
+        if 'AST' not in self.df.columns:
+            raise ValueError("Columna 'AST' no encontrada en los datos")
         
         # Estadísticas del target
-        trb_stats = self.df['TRB'].describe()
-        logger.info(f"Estadísticas TRB - Media: {trb_stats['mean']:.2f}, "
-                   f"Mediana: {trb_stats['50%']:.2f}, "
-                   f"Max: {trb_stats['max']:.0f}")
+        ast_stats = self.df['AST'].describe()
+        logger.info(f"Estadísticas AST - Media: {ast_stats['mean']:.2f}, "
+                   f"Mediana: {ast_stats['50%']:.2f}, "
+                   f"Max: {ast_stats['max']:.0f}")
         
         return self.df
     
@@ -154,29 +154,29 @@ class XGBoostTRBTrainer:
         Returns:
             Dict: Resultados del entrenamiento
         """
-        logger.info("Iniciando entrenamiento del modelo XGBoost TRB...")
+        logger.info("Iniciando entrenamiento del modelo XGBoost AST...")
         
         if self.df is None:
             raise ValueError("Datos no cargados. Ejecutar load_and_prepare_data() primero")
         
         # Entrenar modelo
         start_time = datetime.now()
-        logger.info("Entrenando modelo TRB con stacking ensemble...")
+        logger.info("Entrenando modelo AST con stacking ensemble...")
         self.training_results = self.model.train(self.df)
         training_duration = (datetime.now() - start_time).total_seconds()
         
-        logger.info(f"Modelo TRB completado en {training_duration:.1f} segundos")
+        logger.info(f"Modelo AST completado en {training_duration:.1f} segundos")
         
         # Mostrar resultados del entrenamiento
         logger.info("=" * 50)
-        logger.info("RESULTADOS DEL ENTRENAMIENTO TRB")
+        logger.info("RESULTADOS DEL ENTRENAMIENTO AST")
         logger.info("=" * 50)
         logger.info(f"MAE: {self.training_results.get('mae', 0):.4f}")
         logger.info(f"RMSE: {self.training_results.get('rmse', 0):.4f}")
         logger.info(f"R²: {self.training_results.get('r2', 0):.4f}")
-        logger.info(f"Accuracy ±1reb: {self.training_results.get('accuracy_1reb', 0):.1f}%")
-        logger.info(f"Accuracy ±2reb: {self.training_results.get('accuracy_2reb', 0):.1f}%")
-        logger.info(f"Accuracy ±3reb: {self.training_results.get('accuracy_3reb', 0):.1f}%")
+        logger.info(f"Accuracy ±1ast: {self.training_results.get('accuracy_1ast', 0):.1f}%")
+        logger.info(f"Accuracy ±2ast: {self.training_results.get('accuracy_2ast', 0):.1f}%")
+        logger.info(f"Accuracy ±3ast: {self.training_results.get('accuracy_3ast', 0):.1f}%")
         logger.info("=" * 50)
         
         # Generar predicciones
@@ -189,7 +189,7 @@ class XGBoostTRBTrainer:
             # Obtener índices de los datos de prueba para alinear predicciones
             test_indices = test_data.index
             
-            y_true = test_data['TRB'].values
+            y_true = test_data['AST'].values
             # Alinear predicciones con los datos de prueba usando los índices
             y_pred = self.predictions[test_indices] if len(self.predictions) == len(self.df) else self.predictions[:len(y_true)]
             
@@ -206,21 +206,21 @@ class XGBoostTRBTrainer:
             rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
             r2 = 1 - np.sum((y_true - y_pred) ** 2) / np.sum((y_true - np.mean(y_true)) ** 2)
             
-            # Métricas específicas para rebotes
-            accuracy_1reb = np.mean(np.abs(y_true - y_pred) <= 1) * 100
-            accuracy_2reb = np.mean(np.abs(y_true - y_pred) <= 2) * 100
-            accuracy_3reb = np.mean(np.abs(y_true - y_pred) <= 3) * 100
+            # Métricas específicas para asistencias
+            accuracy_1ast = np.mean(np.abs(y_true - y_pred) <= 1) * 100
+            accuracy_2ast = np.mean(np.abs(y_true - y_pred) <= 2) * 100
+            accuracy_3ast = np.mean(np.abs(y_true - y_pred) <= 3) * 100
             
             logger.info(f"Métricas finales - MAE: {mae:.3f}, RMSE: {rmse:.3f}, R²: {r2:.3f}")
-            logger.info(f"Accuracy ±1reb: {accuracy_1reb:.1f}%, ±2reb: {accuracy_2reb:.1f}%, ±3reb: {accuracy_3reb:.1f}%")
+            logger.info(f"Accuracy ±1ast: {accuracy_1ast:.1f}%, ±2ast: {accuracy_2ast:.1f}%, ±3ast: {accuracy_3ast:.1f}%")
             
             self.training_results.update({
                 'final_mae': mae,
                 'final_rmse': rmse,
                 'final_r2': r2,
-                'final_accuracy_1reb': accuracy_1reb,
-                'final_accuracy_2reb': accuracy_2reb,
-                'final_accuracy_3reb': accuracy_3reb
+                'final_accuracy_1ast': accuracy_1ast,
+                'final_accuracy_2ast': accuracy_2ast,
+                'final_accuracy_3ast': accuracy_3ast
             })
         
         return self.training_results
@@ -236,7 +236,7 @@ class XGBoostTRBTrainer:
         
         # Crear figura principal con subplots organizados
         fig = plt.figure(figsize=(24, 16))
-        fig.suptitle('Dashboard Completo - Modelo NBA TRB Prediction', fontsize=20, fontweight='bold', y=0.98)
+        fig.suptitle('Dashboard Completo - Modelo NBA AST Prediction', fontsize=20, fontweight='bold', y=0.98)
         
         # Crear grid de subplots (4 filas x 4 columnas)
         gs = fig.add_gridspec(4, 4, hspace=0.3, wspace=0.3)
@@ -265,17 +265,17 @@ class XGBoostTRBTrainer:
         ax6 = fig.add_subplot(gs[2, 0:2])
         self._plot_cv_results_compact(ax6)
         
-        # 7. Análisis por rangos de rebotes (tercera fila, derecha)
+        # 7. Análisis por rangos de asistencias (tercera fila, derecha)
         ax7 = fig.add_subplot(gs[2, 2:4])
-        self._plot_rebounds_range_analysis_compact(ax7)
+        self._plot_assists_range_analysis_compact(ax7)
         
         # 8. Análisis temporal (cuarta fila, izquierda)
         ax8 = fig.add_subplot(gs[3, 0:2])
         self._plot_temporal_analysis_compact(ax8)
         
-        # 9. Top reboteadores predicciones (cuarta fila, derecha)
+        # 9. Top pasadores predicciones (cuarta fila, derecha)
         ax9 = fig.add_subplot(gs[3, 2:4])
-        self._plot_top_rebounders_analysis_compact(ax9)
+        self._plot_top_passers_analysis_compact(ax9)
         
         # Guardar como PNG con ruta normalizada
         png_path = os.path.normpath(os.path.join(self.output_dir, 'model_dashboard_complete.png'))
@@ -301,34 +301,35 @@ class XGBoostTRBTrainer:
         mae = self.training_results.get('mae', 0)
         rmse = self.training_results.get('rmse', 0)
         r2 = self.training_results.get('r2', 0)
-        accuracy_1reb = self.training_results.get('accuracy_1reb', 0)
-        accuracy_2reb = self.training_results.get('accuracy_2reb', 0)
-        accuracy_3reb = self.training_results.get('accuracy_3reb', 0)
+        accuracy_1ast = self.training_results.get('accuracy_1ast', 0)
+        accuracy_2ast = self.training_results.get('accuracy_2ast', 0)
+        accuracy_3ast = self.training_results.get('accuracy_3ast', 0)
         
         # Crear texto de métricas
         metrics_text = f"""
-MÉTRICAS DEL MODELO TRB
+MÉTRICAS DEL MODELO AST
 
 MAE: {mae:.3f}
 RMSE: {rmse:.3f}
 R²: {r2:.3f}
 
-ACCURACY REBOTES:
-±1 reb: {accuracy_1reb:.1f}%
-±2 reb: {accuracy_2reb:.1f}%
-±3 reb: {accuracy_3reb:.1f}%
+ACCURACY ASISTENCIAS:
+±1 ast: {accuracy_1ast:.1f}%
+±2 ast: {accuracy_2ast:.1f}%
+±3 ast: {accuracy_3ast:.1f}%
 
 MODELOS BASE:
-• XGBoost
-• LightGBM  
-• CatBoost
-• Gradient Boosting
-• Ridge
+• XGBoost (Court Vision)
+• LightGBM (Court Vision)
+• CatBoost (Basketball IQ)
+• Gradient Boosting (Basketball IQ)
+• Neural Network (Interactions)
+• Ridge (Stabilizer)
 """
         
         ax.text(0.05, 0.95, metrics_text, transform=ax.transAxes, fontsize=10,
                 verticalalignment='top', fontfamily='monospace',
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.7))
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen", alpha=0.7))
         
         ax.set_title('Resumen del Modelo', fontweight='bold', fontsize=12)
     
@@ -349,7 +350,7 @@ MODELOS BASE:
         
         # Crear gráfico horizontal
         y_pos = np.arange(len(features))
-        bars = ax.barh(y_pos, importances, color='skyblue', alpha=0.8)
+        bars = ax.barh(y_pos, importances, color='lightcoral', alpha=0.8)
         
         ax.set_yticks(y_pos)
         ax.set_yticklabels([f.replace('_', ' ').title()[:20] for f in features], fontsize=8)
@@ -365,22 +366,22 @@ MODELOS BASE:
         ax.invert_yaxis()
     
     def _plot_target_distribution_compact(self, ax):
-        """Distribución compacta del target TRB."""
-        trb_values = self.df['TRB']
+        """Distribución compacta del target AST."""
+        ast_values = self.df['AST']
         
         # Histograma
-        ax.hist(trb_values, bins=20, alpha=0.7, color='lightgreen', edgecolor='black')
+        ax.hist(ast_values, bins=20, alpha=0.7, color='lightcoral', edgecolor='black')
         
         # Estadísticas
-        mean_trb = trb_values.mean()
-        median_trb = trb_values.median()
+        mean_ast = ast_values.mean()
+        median_ast = ast_values.median()
         
-        ax.axvline(mean_trb, color='red', linestyle='--', label=f'Media: {mean_trb:.1f}')
-        ax.axvline(median_trb, color='blue', linestyle='--', label=f'Mediana: {median_trb:.1f}')
+        ax.axvline(mean_ast, color='red', linestyle='--', label=f'Media: {mean_ast:.1f}')
+        ax.axvline(median_ast, color='blue', linestyle='--', label=f'Mediana: {median_ast:.1f}')
         
-        ax.set_xlabel('Rebotes Totales (TRB)')
+        ax.set_xlabel('Asistencias (AST)')
         ax.set_ylabel('Frecuencia')
-        ax.set_title('Distribución de TRB', fontweight='bold')
+        ax.set_title('Distribución de AST', fontweight='bold')
         ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
     
@@ -401,7 +402,7 @@ MODELOS BASE:
             return
         
         test_indices = test_data.index
-        y_true = test_data['TRB'].values
+        y_true = test_data['AST'].values
         y_pred = self.predictions[test_indices] if len(self.predictions) == len(self.df) else self.predictions[:len(y_true)]
         
         # Ajustar dimensiones si es necesario
@@ -410,15 +411,15 @@ MODELOS BASE:
         y_pred = y_pred[:min_len]
         
         # Scatter plot
-        ax.scatter(y_true, y_pred, alpha=0.6, s=20, color='blue')
+        ax.scatter(y_true, y_pred, alpha=0.6, s=20, color='coral')
         
         # Línea perfecta
         min_val = min(min(y_true), min(y_pred))
         max_val = max(max(y_true), max(y_pred))
         ax.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2, label='Predicción Perfecta')
         
-        ax.set_xlabel('TRB Real')
-        ax.set_ylabel('TRB Predicho')
+        ax.set_xlabel('AST Real')
+        ax.set_ylabel('AST Predicho')
         ax.set_title('Predicciones vs Valores Reales', fontweight='bold')
         ax.legend()
         ax.grid(alpha=0.3)
@@ -445,7 +446,7 @@ MODELOS BASE:
             return
         
         test_indices = test_data.index
-        y_true = test_data['TRB'].values
+        y_true = test_data['AST'].values
         y_pred = self.predictions[test_indices] if len(self.predictions) == len(self.df) else self.predictions[:len(y_true)]
         
         # Ajustar dimensiones si es necesario
@@ -456,10 +457,10 @@ MODELOS BASE:
         residuals = y_true - y_pred
         
         # Scatter plot de residuos
-        ax.scatter(y_pred, residuals, alpha=0.6, s=20, color='green')
+        ax.scatter(y_pred, residuals, alpha=0.6, s=20, color='orange')
         ax.axhline(y=0, color='red', linestyle='--', lw=2)
         
-        ax.set_xlabel('TRB Predicho')
+        ax.set_xlabel('AST Predicho')
         ax.set_ylabel('Residuos (Real - Predicho)')
         ax.set_title('Análisis de Residuos', fontweight='bold')
         ax.grid(alpha=0.3)
@@ -521,12 +522,12 @@ MODELOS BASE:
         
         ax.grid(alpha=0.3)
     
-    def _plot_rebounds_range_analysis_compact(self, ax):
-        """Análisis compacto por rangos de rebotes."""
+    def _plot_assists_range_analysis_compact(self, ax):
+        """Análisis compacto por rangos de asistencias."""
         if self.predictions is None:
             ax.text(0.5, 0.5, 'Predicciones\nno disponibles', 
                    ha='center', va='center', transform=ax.transAxes)
-            ax.set_title('Análisis por Rangos de Rebotes', fontweight='bold')
+            ax.set_title('Análisis por Rangos de Asistencias', fontweight='bold')
             return
         
         # Usar datos de prueba
@@ -534,11 +535,11 @@ MODELOS BASE:
         if len(test_data) == 0:
             ax.text(0.5, 0.5, 'Datos de prueba\nno disponibles', 
                    ha='center', va='center', transform=ax.transAxes)
-            ax.set_title('Análisis por Rangos de Rebotes', fontweight='bold')
+            ax.set_title('Análisis por Rangos de Asistencias', fontweight='bold')
             return
         
         test_indices = test_data.index
-        y_true = test_data['TRB'].values
+        y_true = test_data['AST'].values
         y_pred = self.predictions[test_indices] if len(self.predictions) == len(self.df) else self.predictions[:len(y_true)]
         
         # Ajustar dimensiones si es necesario
@@ -546,20 +547,20 @@ MODELOS BASE:
         y_true = y_true[:min_len]
         y_pred = y_pred[:min_len]
         
-        # Definir rangos de rebotes
+        # Definir rangos de asistencias
         ranges = [
-            (0, 3, 'Bajo (0-3)'),
-            (4, 7, 'Medio (4-7)'),
-            (8, 12, 'Alto (8-12)'),
-            (13, 25, 'Elite (13+)')
+            (0, 2, 'Bajo (0-2)'),
+            (3, 5, 'Medio (3-5)'),
+            (6, 8, 'Alto (6-8)'),
+            (9, 20, 'Elite (9+)')
         ]
         
         range_names = []
         range_maes = []
         range_counts = []
         
-        for min_reb, max_reb, name in ranges:
-            mask = (y_true >= min_reb) & (y_true <= max_reb)
+        for min_ast, max_ast, name in ranges:
+            mask = (y_true >= min_ast) & (y_true <= max_ast)
             if np.sum(mask) > 0:
                 range_mae = np.mean(np.abs(y_true[mask] - y_pred[mask]))
                 range_names.append(name)
@@ -571,7 +572,7 @@ MODELOS BASE:
             bars = ax.bar(range_names, range_maes, alpha=0.8, color=['lightblue', 'lightgreen', 'orange', 'red'])
             
             ax.set_ylabel('MAE')
-            ax.set_title('MAE por Rango de Rebotes', fontweight='bold')
+            ax.set_title('MAE por Rango de Asistencias', fontweight='bold')
             ax.tick_params(axis='x', rotation=45)
             
             # Agregar valores en las barras
@@ -598,7 +599,7 @@ MODELOS BASE:
             return
         
         test_indices = test_data.index
-        y_true = test_data['TRB'].values
+        y_true = test_data['AST'].values
         y_pred = self.predictions[test_indices] if len(self.predictions) == len(self.df) else self.predictions[:len(y_true)]
         
         # Ajustar dimensiones si es necesario
@@ -636,11 +637,11 @@ MODELOS BASE:
             
             ax.grid(axis='y', alpha=0.3)
     
-    def _plot_top_rebounders_analysis_compact(self, ax):
-        """Análisis compacto de top reboteadores."""
-        # Obtener top reboteadores por promedio
+    def _plot_top_passers_analysis_compact(self, ax):
+        """Análisis compacto de top pasadores."""
+        # Obtener top pasadores por promedio
         player_stats = self.df.groupby('Player').agg({
-            'TRB': ['mean', 'count']
+            'AST': ['mean', 'count']
         }).reset_index()
         
         player_stats.columns = ['Player', 'mean', 'count']
@@ -648,17 +649,17 @@ MODELOS BASE:
         # Filtrar jugadores con al menos 10 juegos
         player_stats = player_stats[player_stats['count'] >= 10]
         
-        # Top 10 reboteadores
-        top_rebounders = player_stats.nlargest(10, 'mean')
+        # Top 10 pasadores
+        top_passers = player_stats.nlargest(10, 'mean')
         
-        if len(top_rebounders) > 0:
-            players = [p[:15] + '...' if len(p) > 15 else p for p in top_rebounders['Player']]
-            means = top_rebounders['mean']
+        if len(top_passers) > 0:
+            players = [p[:15] + '...' if len(p) > 15 else p for p in top_passers['Player']]
+            means = top_passers['mean']
             
             bars = ax.barh(players, means, alpha=0.8, color='lightsteelblue')
             
-            ax.set_xlabel('Promedio TRB')
-            ax.set_title('Top 10 Reboteadores', fontweight='bold')
+            ax.set_xlabel('Promedio AST')
+            ax.set_title('Top 10 Pasadores', fontweight='bold')
             
             # Agregar valores en las barras
             for i, (bar, val) in enumerate(zip(bars, means)):
@@ -676,12 +677,12 @@ MODELOS BASE:
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Guardar modelo
-        model_path = os.path.normpath(os.path.join(self.output_dir, 'xgboost_trb_model.pkl'))
+        model_path = os.path.normpath(os.path.join(self.output_dir, 'xgboost_ast_model.pkl'))
         self.model.save_model(model_path)
         
         # Guardar reporte completo
         report = {
-            'model_type': 'XGBoost TRB Stacking Ensemble',
+            'model_type': 'XGBoost AST Stacking Ensemble',
             'training_results': self.training_results,
             'model_summary': self.model.stacking_model.get_model_summary(),
             'timestamp': datetime.now().isoformat()
@@ -692,9 +693,9 @@ MODELOS BASE:
         
         # Guardar predicciones
         if self.predictions is not None:
-            predictions_df = self.df[['Player', 'Date', 'Team', 'TRB']].copy()
-            predictions_df['TRB_predicted'] = self.predictions
-            predictions_df['error'] = self.predictions - self.df['TRB']
+            predictions_df = self.df[['Player', 'Date', 'Team', 'AST']].copy()
+            predictions_df['AST_predicted'] = self.predictions
+            predictions_df['error'] = self.predictions - self.df['AST']
             predictions_df['abs_error'] = np.abs(predictions_df['error'])
             
             predictions_path = os.path.normpath(os.path.join(self.output_dir, 'predictions.csv'))
@@ -712,7 +713,7 @@ MODELOS BASE:
         
         # Crear resumen de archivos generados
         files_summary = {
-            'model_file': 'xgboost_trb_model.pkl',
+            'model_file': 'xgboost_ast_model.pkl',
             'dashboard_image': 'model_dashboard_complete.png',
             'training_report': 'training_report.json',
             'predictions': 'predictions.csv',
@@ -741,7 +742,7 @@ MODELOS BASE:
         Returns:
             Dict: Resultados completos del entrenamiento
         """
-        logger.info("Iniciando pipeline de entrenamiento TRB...")
+        logger.info("Iniciando pipeline de entrenamiento AST...")
         
         try:
             # 1. Cargar datos
@@ -778,11 +779,11 @@ def main():
     teams_path = "data/teams.csv"
     
     # Crear y ejecutar trainer
-    trainer = XGBoostTRBTrainer(
+    trainer = XGBoostASTTrainer(
         game_data_path=game_data_path,
         biometrics_path=biometrics_path,
         teams_path=teams_path,
-        output_dir="results/trb_model",
+        output_dir="results/ast_model",
         n_trials=20,  # Reducido para pruebas más rápidas
         cv_folds=5
     )
@@ -791,11 +792,11 @@ def main():
     results = trainer.run_complete_training()
     
     print("\n" + "="*80)
-    print("RESUMEN FINAL DE ENTRENAMIENTO TRB")
+    print("RESUMEN FINAL DE ENTRENAMIENTO AST")
     print("="*80)
     
     # Mostrar información del modelo
-    print(f"\n📊 MODELO TRB (XGBoost Stacking Ensemble):")
+    print(f"\n📊 MODELO AST (XGBoost Stacking Ensemble):")
     if 'mae' in results:
         print(f"   MAE: {results['mae']:.4f}")
     if 'rmse' in results:
@@ -803,14 +804,14 @@ def main():
     if 'r2' in results:
         print(f"   R²: {results['r2']:.4f}")
     
-    # Mostrar métricas específicas de rebotes
-    print(f"\n🏀 MÉTRICAS ESPECÍFICAS DE REBOTES:")
-    if 'accuracy_1reb' in results:
-        print(f"   Accuracy ±1 rebote: {results['accuracy_1reb']:.1f}%")
-    if 'accuracy_2reb' in results:
-        print(f"   Accuracy ±2 rebotes: {results['accuracy_2reb']:.1f}%")
-    if 'accuracy_3reb' in results:
-        print(f"   Accuracy ±3 rebotes: {results['accuracy_3reb']:.1f}%")
+    # Mostrar métricas específicas de asistencias
+    print(f"\n🏀 MÉTRICAS ESPECÍFICAS DE ASISTENCIAS:")
+    if 'accuracy_1ast' in results:
+        print(f"   Accuracy ±1 asistencia: {results['accuracy_1ast']:.1f}%")
+    if 'accuracy_2ast' in results:
+        print(f"   Accuracy ±2 asistencias: {results['accuracy_2ast']:.1f}%")
+    if 'accuracy_3ast' in results:
+        print(f"   Accuracy ±3 asistencias: {results['accuracy_3ast']:.1f}%")
     
     # Mostrar métricas finales
     print(f"\n📈 MÉTRICAS FINALES (en datos de prueba):")
@@ -820,18 +821,20 @@ def main():
         print(f"   RMSE Final: {results['final_rmse']:.4f}")
     if 'final_r2' in results:
         print(f"   R² Final: {results['final_r2']:.4f}")
-    if 'final_accuracy_2reb' in results:
-        print(f"   Accuracy Final ±2reb: {results['final_accuracy_2reb']:.1f}%")
+    if 'final_accuracy_2ast' in results:
+        print(f"   Accuracy Final ±2ast: {results['final_accuracy_2ast']:.1f}%")
     
     # Mostrar información adicional
     print(f"\n📋 INFORMACIÓN ADICIONAL:")
-    print(f"   Modelos base: XGBoost, LightGBM, CatBoost, Gradient Boosting, Ridge")
+    print(f"   Especialistas Court Vision: XGBoost, LightGBM")
+    print(f"   Especialistas Basketball IQ: CatBoost, Gradient Boosting")
+    print(f"   Especialistas Interacciones: Neural Network, Ridge")
     print(f"   Meta-learner: Ridge con regularización L2")
     print(f"   Validación: Cruzada temporal (5 folds)")
     print(f"   Optimización: Bayesiana con Optuna")
     
     print("="*80)
-    print("Entrenamiento TRB completado exitosamente!")
+    print("Entrenamiento AST completado exitosamente!")
     print("="*80)
 
 

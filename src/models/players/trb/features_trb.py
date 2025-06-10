@@ -803,8 +803,6 @@ class ReboundsFeatureEngineer:
         """
         Aplica filtro de correlación para eliminar features redundantes
         """
-        logger.info("Aplicando filtro de correlación optimizado...")
-        
         # Identificar features numéricas (excluyendo protegidas)
         numeric_features = []
         for col in df.select_dtypes(include=[np.number]).columns:
@@ -812,7 +810,6 @@ class ReboundsFeatureEngineer:
                 numeric_features.append(col)
         
         if len(numeric_features) <= self.max_features:
-            logger.info(f"Features ({len(numeric_features)}) dentro del límite ({self.max_features})")
             return df
         
         # Calcular matriz de correlación
@@ -834,8 +831,6 @@ class ReboundsFeatureEngineer:
         
         # Si aún tenemos demasiadas features, usar selección basada en target
         if len(features_to_keep) > self.max_features and 'TRB' in df.columns:
-            logger.info("Aplicando selección adicional basada en target...")
-            
             # Preparar datos para selección
             X = df[features_to_keep].fillna(0)
             y = df['TRB'].fillna(df['TRB'].mean())
@@ -853,24 +848,11 @@ class ReboundsFeatureEngineer:
         final_columns = list(self.protected_features) + features_to_keep
         final_columns = [col for col in final_columns if col in df.columns]
         
-        logger.info(f"FILTRO DE CORRELACIÓN COMPLETADO:")
-        logger.info(f"  Features originales: {len(numeric_features)}")
-        logger.info(f"  Features protegidas: {len(self.protected_features)}")
-        logger.info(f"  Features finales: {len(features_to_keep)}")
+        logger.info(f"Filtro de correlación: {len(numeric_features)} -> {len(features_to_keep)} features")
         
         return df[final_columns]
     
     def _log_feature_summary(self) -> None:
         """Registra resumen de features creadas"""
-        logger.info("=" * 60)
-        logger.info("RESUMEN DE FEATURES ESPECIALIZADAS PARA REBOTES")
-        logger.info("=" * 60)
-        
-        total_features = 0
-        for category, features in self.feature_categories.items():
-            if features:
-                logger.info(f"{category.upper()}: {len(features)} features")
-                total_features += len(features)
-        
-        logger.info(f"TOTAL FEATURES CREADAS: {total_features}")
-        logger.info("=" * 60)
+        total_features = sum(len(features) for features in self.feature_categories.values())
+        logger.info(f"Features creadas: {total_features} en {len(self.feature_categories)} categorías")
