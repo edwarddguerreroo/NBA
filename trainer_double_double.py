@@ -180,7 +180,7 @@ class DoubleDoubleTrainer:
         accuracy = stacking_metrics.get('accuracy', 0) * 100
         precision = stacking_metrics.get('precision', 0) * 100
         recall = stacking_metrics.get('recall', 0) * 100
-        f1 = stacking_metrics.get('f1', 0) * 100
+        f1 = stacking_metrics.get('f1_score', 0) * 100  # CORREGIDO: usar 'f1_score' en lugar de 'f1'
         roc_auc = stacking_metrics.get('roc_auc', 0) * 100
         
         logger.info(f"Accuracy: {accuracy:.2f}%")
@@ -327,7 +327,7 @@ class DoubleDoubleTrainer:
         accuracy = stacking_metrics.get('accuracy', 0)
         precision = stacking_metrics.get('precision', 0)
         recall = stacking_metrics.get('recall', 0)
-        f1 = stacking_metrics.get('f1', 0)
+        f1 = stacking_metrics.get('f1_score', 0)
         roc_auc = stacking_metrics.get('roc_auc', 0)
         
         # Crear texto de métricas
@@ -906,7 +906,7 @@ def main():
     print(f"   Accuracy: {stacking_metrics.get('accuracy', 0):.4f}")
     print(f"   Precision: {stacking_metrics.get('precision', 0):.4f}")
     print(f"   Recall: {stacking_metrics.get('recall', 0):.4f}")
-    print(f"   F1-Score: {stacking_metrics.get('f1', 0):.4f}")
+    print(f"   F1-Score: {stacking_metrics.get('f1_score', 0):.4f}")
     print(f"   ROC-AUC: {stacking_metrics.get('roc_auc', 0):.4f}")
     
     # Mostrar información adicional

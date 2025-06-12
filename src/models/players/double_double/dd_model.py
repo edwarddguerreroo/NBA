@@ -79,6 +79,195 @@ from src.models.players.double_double.features_dd import DoubleDoubleFeatureEngi
 warnings.filterwarnings('ignore')
 
 
+class DoubleDoubleImbalanceHandler:
+    """
+    Manejador especializado para el desbalance extremo en predicción de double-doubles.
+    
+    Considera la naturaleza específica de los double-doubles:
+    - Solo ciertos jugadores (centers, power forwards, algunos guards) los logran regularmente
+    - La mayoría de jugadores nunca o rara vez logran double-doubles
+    - Necesitamos estratificar por tipo de jugador y rol
+    """
+    
+    def __init__(self):
+        self.logger = logging.getLogger(f"{__name__}.ImbalanceHandler")
+        self.player_profiles = {}
+        self.position_weights = {}
+        self.role_based_thresholds = {}
+        
+    def analyze_player_profiles(self, df: pd.DataFrame) -> Dict[str, Dict]:
+        """
+        Analiza perfiles de jugadores para entender patrones de double-double.
+        
+        Returns:
+            Dict con perfiles de jugadores categorizados
+        """
+        self.logger.info("Analizando perfiles de jugadores para double-doubles...")
+        
+        # Análisis por jugador
+        player_stats = df.groupby('Player').agg({
+            'double_double': ['sum', 'count', 'mean'],
+            'PTS': 'mean',
+            'TRB': 'mean', 
+            'AST': 'mean',
+            'MP': 'mean',
+            'is_started': 'mean' if 'is_started' in df.columns else lambda x: 0.5
+        }).round(3)
+        
+        player_stats.columns = ['dd_total', 'games_played', 'dd_rate', 'avg_pts', 'avg_trb', 'avg_ast', 'avg_mp', 'starter_rate']
+        player_stats = player_stats.reset_index()
+        
+        # Categorizar jugadores por capacidad de double-double
+        def categorize_dd_ability(row):
+            dd_rate = row['dd_rate']
+            games = row['games_played']
+            
+            # Solo considerar jugadores con suficientes juegos
+            if games < 10:
+                return 'insufficient_data'
+            elif dd_rate >= 0.4:  # 40%+ de double-doubles
+                return 'elite_dd_producer'
+            elif dd_rate >= 0.15:  # 15-40% de double-doubles
+                return 'regular_dd_producer'
+            elif dd_rate >= 0.05:  # 5-15% de double-doubles
+                return 'occasional_dd_producer'
+            else:  # <5% de double-doubles
+                return 'rare_dd_producer'
+        
+        player_stats['dd_category'] = player_stats.apply(categorize_dd_ability, axis=1)
+        
+        # Análisis por categoría
+        category_analysis = player_stats.groupby('dd_category').agg({
+            'Player': 'count',
+            'dd_rate': ['mean', 'std'],
+            'avg_pts': 'mean',
+            'avg_trb': 'mean',
+            'avg_ast': 'mean',
+            'starter_rate': 'mean'
+        }).round(3)
+        
+        self.logger.info("Distribución de jugadores por capacidad de double-double:")
+        for category in category_analysis.index:
+            count = category_analysis.loc[category, ('Player', 'count')]
+            avg_rate = category_analysis.loc[category, ('dd_rate', 'mean')]
+            self.logger.info(f"  {category}: {count} jugadores (DD rate promedio: {avg_rate:.1%})")
+        
+        # Guardar perfiles para uso posterior
+        self.player_profiles = player_stats.set_index('Player')['dd_category'].to_dict()
+        
+        return {
+            'player_stats': player_stats,
+            'category_analysis': category_analysis,
+            'player_profiles': self.player_profiles
+        }
+    
+    def create_stratified_weights(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Crea pesos estratificados basados en el perfil del jugador.
+        
+        Returns:
+            Array con pesos por muestra
+        """
+        if not self.player_profiles:
+            self.analyze_player_profiles(df)
+        
+        # Pesos base por categoría (más conservadores)
+        category_weights = {
+            'elite_dd_producer': 1.0,      # Sin penalización
+            'regular_dd_producer': 1.2,    # Ligero boost
+            'occasional_dd_producer': 2.0, # Boost moderado
+            'rare_dd_producer': 4.0,       # Boost significativo pero no extremo
+            'insufficient_data': 2.5       # Peso intermedio
+        }
+        
+        # Crear pesos por muestra
+        sample_weights = []
+        for _, row in df.iterrows():
+            player = row['Player']
+            is_dd = row['double_double']
+            
+            # Peso base por categoría del jugador
+            category = self.player_profiles.get(player, 'insufficient_data')
+            base_weight = category_weights[category]
+            
+            # Ajuste por clase
+            if is_dd == 1:
+                # Double-doubles: peso base según categoría
+                weight = base_weight
+            else:
+                # No double-doubles: peso reducido para jugadores que nunca los hacen
+                if category == 'rare_dd_producer':
+                    weight = 0.3  # Reducir importancia de casos negativos de jugadores que nunca hacen DD
+                elif category == 'occasional_dd_producer':
+                    weight = 0.6
+                else:
+                    weight = 1.0
+            
+            sample_weights.append(weight)
+        
+        self.logger.info(f"Pesos estratificados creados para {len(sample_weights)} muestras")
+        self.logger.info(f"Peso promedio clase positiva: {np.mean([w for w, dd in zip(sample_weights, df['double_double']) if dd == 1]):.2f}")
+        self.logger.info(f"Peso promedio clase negativa: {np.mean([w for w, dd in zip(sample_weights, df['double_double']) if dd == 0]):.2f}")
+        
+        return np.array(sample_weights)
+    
+    def get_position_based_thresholds(self, df: pd.DataFrame) -> Dict[str, float]:
+        """
+        Calcula thresholds específicos por posición/rol.
+        
+        Returns:
+            Dict con thresholds por tipo de jugador
+        """
+        # Inferir posición aproximada basada en estadísticas
+        def infer_position(row):
+            avg_trb = row.get('avg_trb', 0)
+            avg_ast = row.get('avg_ast', 0) 
+            avg_pts = row.get('avg_pts', 0)
+            
+            if avg_trb >= 8:
+                return 'big_man'  # Centers/Power Forwards
+            elif avg_ast >= 5:
+                return 'playmaker'  # Point Guards/Playmaking Guards
+            elif avg_pts >= 15:
+                return 'scorer'  # Shooting Guards/Small Forwards
+            else:
+                return 'role_player'  # Bench players/specialists
+        
+        # Análisis por posición inferida
+        if not hasattr(self, 'player_profiles') or not self.player_profiles:
+            self.analyze_player_profiles(df)
+        
+        # Agregar posición inferida a player_stats
+        player_stats = df.groupby('Player').agg({
+            'TRB': 'mean',
+            'AST': 'mean', 
+            'PTS': 'mean',
+            'double_double': 'mean'
+        }).round(3)
+        
+        player_stats['position_type'] = player_stats.apply(infer_position, axis=1)
+        
+        # Thresholds por posición (más conservadores)
+        position_thresholds = {}
+        for pos_type in player_stats['position_type'].unique():
+            pos_players = player_stats[player_stats['position_type'] == pos_type]
+            avg_dd_rate = pos_players['double_double'].mean()
+            
+            # Threshold más conservador basado en la tasa promedio de la posición
+            if avg_dd_rate >= 0.3:  # Posiciones con alta tasa de DD
+                threshold = 0.25
+            elif avg_dd_rate >= 0.1:  # Posiciones con tasa moderada
+                threshold = 0.15
+            else:  # Posiciones con baja tasa de DD
+                threshold = 0.08
+            
+            position_thresholds[pos_type] = threshold
+            self.logger.info(f"Threshold para {pos_type}: {threshold:.3f} (DD rate promedio: {avg_dd_rate:.1%})")
+        
+        self.role_based_thresholds = position_thresholds
+        return position_thresholds
+
+
 class OptimizedLogger:
     """Sistema de logging optimizado para modelos NBA"""
     
@@ -945,6 +1134,9 @@ class DoubleDoubleAdvancedModel:
         # Inicializar logger PRIMERO
         self.logger = OptimizedLogger.get_logger(f"{__name__}.DoubleDoubleAdvancedModel")
         
+        # Manejador de desbalance especializado
+        self.imbalance_handler = DoubleDoubleImbalanceHandler()
+        
         # Componentes del modelo
         self.scaler = StandardScaler()
         
@@ -996,7 +1188,8 @@ class DoubleDoubleAdvancedModel:
         
         # PARTE 4: CLASS WEIGHTS REBALANCEADOS - Más conservadores para reducir falsos positivos
         # Ratio original: 10.6:1, pero usaremos pesos más moderados para mejor precision
-        class_weight_conservative = {0: 1.0, 1: 18.0}  # Aumentado para mejor precision
+        # NOTA: Los pesos específicos se calcularán dinámicamente por el imbalance_handler
+        class_weight_conservative = {0: 1.0, 1: 15.0}  # Reducido para usar con sample_weights
         
         # CORRECCIÓN 2: Modelos con regularización optimizada para precisión
         self.models = {
@@ -1564,6 +1757,24 @@ class DoubleDoubleAdvancedModel:
         
         logger.info(f"Entrenamiento configurado: {X.shape[0]} muestras, {X.shape[1]} features especializadas EXCLUSIVAS")
         
+        # PARTE 1: ANÁLISIS DE PERFILES DE JUGADORES Y DESBALANCE
+        self.logger.info("=== ANÁLISIS DE DESBALANCE ESPECÍFICO PARA DOUBLE-DOUBLES ===")
+        
+        # Analizar perfiles de jugadores
+        profile_analysis = self.imbalance_handler.analyze_player_profiles(df_with_features)
+        
+        # Crear pesos estratificados
+        sample_weights = self.imbalance_handler.create_stratified_weights(df_with_features)
+        
+        # Calcular thresholds por posición
+        position_thresholds = self.imbalance_handler.get_position_based_thresholds(df_with_features)
+        
+        # Guardar análisis para uso posterior
+        self.training_results['player_profile_analysis'] = profile_analysis
+        self.training_results['position_thresholds'] = position_thresholds
+        
+        self.logger.info("Análisis de desbalance completado")
+        
         # PARTE 5: FEATURE SELECTION - Seleccionar las mejores features para evitar overfitting
         if X.shape[1] > 30:  # Solo aplicar si tenemos más de 30 features
             self.logger.info("Aplicando selección de features para evitar overfitting...")
@@ -1604,8 +1815,12 @@ class DoubleDoubleAdvancedModel:
         if self.optimize_hyperparams and BAYESIAN_AVAILABLE:
             self._optimize_with_bayesian(X_train, y_train)
         
-        # Entrenar modelos individuales
-        individual_results = self._train_individual_models(X_train, y_train, X_val, y_val)
+        # Preparar sample weights para entrenamiento (alinear con X_train)
+        train_indices = X_train.index if hasattr(X_train, 'index') else range(len(X_train))
+        sample_weights_train = sample_weights[train_indices] if len(sample_weights) == len(df_with_features) else None
+        
+        # Entrenar modelos individuales con sample weights
+        individual_results = self._train_individual_models(X_train, y_train, X_val, y_val, sample_weights_train)
         
         # Entrenar modelo de stacking
         self.stacking_model.fit(X_train, y_train)
@@ -1685,7 +1900,7 @@ class DoubleDoubleAdvancedModel:
         # Seleccionar el mejor threshold basado en F1 score y precision mínima MEJORADA
         best_method = None
         best_f1 = 0
-        min_precision_required = 0.35  # Precision mínima aumentada para mejor calidad
+        min_precision_required = 0.45  # Precision mínima aumentada para reducir falsos positivos
         
         for method, result in threshold_results.items():
             if 'error' not in result:
@@ -1711,10 +1926,10 @@ class DoubleDoubleAdvancedModel:
             self.logger.warning("Todos los métodos avanzados fallaron, usando método legacy")
             self.optimal_threshold = self._calculate_optimal_threshold(y_val, stacking_proba)
         
-        # Validación final del threshold con rangos más conservadores
-        if self.optimal_threshold < 0.25:
-            self.logger.warning(f"Threshold muy bajo ({self.optimal_threshold:.4f}), ajustando a 0.35 para mejor precision")
-            self.optimal_threshold = 0.35
+        # Validación final del threshold con rangos más conservadores para reducir falsos positivos
+        if self.optimal_threshold < 0.35:
+            self.logger.warning(f"Threshold muy bajo ({self.optimal_threshold:.4f}), ajustando a 0.45 para reducir falsos positivos")
+            self.optimal_threshold = 0.45
         elif self.optimal_threshold > 0.8:
             self.logger.warning(f"Threshold muy alto ({self.optimal_threshold:.4f}), ajustando a 0.65")
             self.optimal_threshold = 0.65
@@ -1754,29 +1969,52 @@ class DoubleDoubleAdvancedModel:
         
         return self.training_results
     
-    def _train_individual_models(self, X_train, y_train, X_val, y_val) -> Dict:
-        """Entrenar modelos individuales con early stopping"""
+    def _train_individual_models(self, X_train, y_train, X_val, y_val, sample_weights=None) -> Dict:
+        """Entrenar modelos individuales con early stopping y sample weights estratificados"""
         
         results = {}
         
         for name, model in self.models.items():
             try:
                 if name in ['xgboost', 'lightgbm']:
-                    # Modelos con early stopping
+                    # Modelos con early stopping y sample weights
                     if name == 'xgboost':
-                        model.fit(
-                            X_train, y_train,
-                            eval_set=[(X_val, y_val)],
-                            verbose=False
-                        )
+                        fit_params = {
+                            'eval_set': [(X_val, y_val)],
+                            'verbose': False
+                        }
+                        if sample_weights is not None:
+                            fit_params['sample_weight'] = sample_weights
+                        
+                        model.fit(X_train, y_train, **fit_params)
                     else:  # lightgbm
-                        model.fit(
-                            X_train, y_train,
-                            eval_set=[(X_val, y_val)],
-                            callbacks=[lgb.early_stopping(10), lgb.log_evaluation(0)]
-                        )
+                        fit_params = {
+                            'eval_set': [(X_val, y_val)],
+                            'callbacks': [lgb.early_stopping(10), lgb.log_evaluation(0)]
+                        }
+                        if sample_weights is not None:
+                            fit_params['sample_weight'] = sample_weights
+                        
+                        model.fit(X_train, y_train, **fit_params)
+                elif name in ['random_forest', 'extra_trees', 'gradient_boosting']:
+                    # Modelos sklearn que soportan sample_weight
+                    fit_params = {}
+                    if sample_weights is not None:
+                        fit_params['sample_weight'] = sample_weights
+                    
+                    model.fit(X_train, y_train, **fit_params)
+                elif name == 'catboost':
+                    # CatBoost con sample weights
+                    fit_params = {
+                        'verbose': False,
+                        'plot': False
+                    }
+                    if sample_weights is not None:
+                        fit_params['sample_weight'] = sample_weights
+                    
+                    model.fit(X_train, y_train, **fit_params)
                 else:
-                    # Otros modelos
+                    # Otros modelos (neural_network no soporta sample_weight directamente)
                     model.fit(X_train, y_train)
                 
                 # Evaluar modelo
@@ -1796,7 +2034,14 @@ class DoubleDoubleAdvancedModel:
                 
                 # Guardar feature importance si está disponible
                 if hasattr(model, 'feature_importances_'):
-                    self.feature_importance[name] = model.feature_importances_
+                    # Asegurar que feature_importance es un dict
+                    if not hasattr(self, 'feature_importance') or not isinstance(self.feature_importance, dict):
+                        self.feature_importance = {}
+                    
+                    self.feature_importance[name] = {
+                        'importances': model.feature_importances_.tolist(),
+                        'feature_names': list(X_train.columns) if hasattr(X_train, 'columns') else [f'feature_{i}' for i in range(len(model.feature_importances_))]
+                    }
                 
             except Exception as e:
                 logger.error(f"Error entrenando {name}: {str(e)}")
@@ -1805,21 +2050,70 @@ class DoubleDoubleAdvancedModel:
         return results
     
     def predict(self, df: pd.DataFrame) -> np.ndarray:
-        """Predecir clases usando threshold óptimo si está disponible"""
+        """Predecir clases usando thresholds adaptativos por posición/rol"""
         probabilities = self.predict_proba(df)
         
-        # Usar threshold óptimo si está disponible, sino usar 0.5
-        threshold = getattr(self, 'optimal_threshold', 0.5)
+        # Usar threshold óptimo global como fallback
+        default_threshold = getattr(self, 'optimal_threshold', 0.5)
         
-        # Logging para debug
-        self.logger.info(f"Prediciendo con threshold: {threshold:.4f}")
-        self.logger.info(f"Probabilidades - Min: {probabilities[:, 1].min():.4f}, Max: {probabilities[:, 1].max():.4f}")
-        
-        # USAR >= en lugar de > para incluir casos límite
-        predictions = (probabilities[:, 1] >= threshold).astype(int)
+        # Intentar usar thresholds específicos por posición si están disponibles
+        if hasattr(self, 'training_results') and 'position_thresholds' in self.training_results:
+            position_thresholds = self.training_results['position_thresholds']
+            
+            # Inferir posición para cada jugador en el DataFrame de predicción
+            predictions = np.zeros(len(df), dtype=int)
+            
+            # Agrupar por jugador para inferir posición
+            player_stats = df.groupby('Player').agg({
+                'TRB': 'mean',
+                'AST': 'mean', 
+                'PTS': 'mean'
+            }).round(3)
+            
+            def infer_position(row):
+                avg_trb = row.get('TRB', 0)
+                avg_ast = row.get('AST', 0) 
+                avg_pts = row.get('PTS', 0)
+                
+                if avg_trb >= 8:
+                    return 'big_man'
+                elif avg_ast >= 5:
+                    return 'playmaker'
+                elif avg_pts >= 15:
+                    return 'scorer'
+                else:
+                    return 'role_player'
+            
+            player_stats['position_type'] = player_stats.apply(infer_position, axis=1)
+            player_positions = player_stats['position_type'].to_dict()
+            
+            # Aplicar threshold específico por posición
+            for i, row in df.iterrows():
+                player = row['Player']
+                position = player_positions.get(player, 'role_player')
+                threshold = position_thresholds.get(position, default_threshold)
+                
+                predictions[i] = (probabilities[i, 1] >= threshold).astype(int)
+            
+            # Logging para debug
+            position_counts = {}
+            for pos, thresh in position_thresholds.items():
+                count = sum(1 for p in player_positions.values() if p == pos)
+                position_counts[pos] = count
+                
+            self.logger.info(f"Prediciendo con thresholds adaptativos por posición:")
+            for pos, thresh in position_thresholds.items():
+                count = position_counts.get(pos, 0)
+                self.logger.info(f"  {pos}: threshold={thresh:.3f} ({count} jugadores)")
+            
+        else:
+            # Fallback al threshold global
+            self.logger.info(f"Prediciendo con threshold global: {default_threshold:.4f}")
+            predictions = (probabilities[:, 1] >= default_threshold).astype(int)
         
         positive_predictions = predictions.sum()
         self.logger.info(f"Predicciones positivas: {positive_predictions} de {len(predictions)}")
+        self.logger.info(f"Probabilidades - Min: {probabilities[:, 1].min():.4f}, Max: {probabilities[:, 1].max():.4f}")
         
         return predictions
     
@@ -2382,6 +2676,34 @@ class DoubleDoubleAdvancedModel:
     def _calculate_feature_importance(self, feature_columns: List[str]) -> Dict[str, Any]:
         """Calcular importancia de features de todos los modelos"""
         
+        # Si ya tenemos feature importance de los modelos individuales, usarla
+        if hasattr(self, 'feature_importance') and self.feature_importance:
+            self.logger.info(f"Usando feature importance ya calculada para {len(self.feature_importance)} modelos")
+            
+            # Calcular importancia promedio si no existe
+            if 'average' not in self.feature_importance:
+                valid_models = []
+                for name, info in self.feature_importance.items():
+                    if isinstance(info, dict) and 'importances' in info:
+                        valid_models.append(info)
+                
+                if valid_models:
+                    avg_importance = np.zeros(len(feature_columns))
+                    for info in valid_models:
+                        importances = np.array(info['importances'])
+                        if len(importances) == len(feature_columns):
+                            avg_importance += importances
+                    
+                    avg_importance /= len(valid_models)
+                    self.feature_importance['average'] = {
+                        'importances': avg_importance.tolist(),
+                        'feature_names': feature_columns
+                    }
+                    self.logger.info("Importancia promedio calculada exitosamente")
+            
+            return self.feature_importance
+        
+        # Si no tenemos feature importance, calcularla desde los modelos
         importance_summary = {}
         
         for name, model_info in self.training_results['individual_models'].items():
@@ -2393,6 +2715,7 @@ class DoubleDoubleAdvancedModel:
                         'importances': model.feature_importances_.tolist(),
                         'feature_names': feature_columns
                     }
+                    self.logger.info(f"Feature importance extraída de {name}")
         
         # Calcular importancia promedio
         if importance_summary:
@@ -2409,6 +2732,7 @@ class DoubleDoubleAdvancedModel:
                     'importances': avg_importance.tolist(),
                     'feature_names': feature_columns
                 }
+                self.logger.info(f"Importancia promedio calculada desde {count} modelos")
         
         self.feature_importance = importance_summary
         return importance_summary
@@ -2658,7 +2982,7 @@ class DoubleDoubleAdvancedModel:
             thresholds = np.linspace(threshold_min, threshold_max, 100)
             best_score = 0
             best_threshold = prob_mean  # Usar media como default
-            min_precision = 0.10  # REDUCIDO: Precision mínima más realista
+            min_precision = 0.25  # AUMENTADO: Precision mínima para reducir falsos positivos
             
             self.logger.info(f"Probando thresholds en rango [{threshold_min:.3f}, {threshold_max:.3f}]")
             
@@ -2675,8 +2999,8 @@ class DoubleDoubleAdvancedModel:
                 
                 # Solo considerar si precision >= mínima
                 if precision >= min_precision:
-                    # Score combinado: 60% F1 + 40% Recall (priorizar recall)
-                    combined_score = 0.6 * f1 + 0.4 * recall
+                    # Score combinado: 70% Precision + 30% F1 (priorizar precision para reducir falsos positivos)
+                    combined_score = 0.7 * precision + 0.3 * f1
                     
                     if combined_score > best_score:
                         best_score = combined_score
@@ -2703,8 +3027,8 @@ class DoubleDoubleAdvancedModel:
             # Encontrar threshold que maximice F1 con precision mínima
             f1_scores = 2 * (precision * recall) / (precision + recall + 1e-8)
             
-            # CORRECCIÓN: Precision mínima más realista
-            min_precision = 0.08
+            # CORRECCIÓN: Precision mínima aumentada para reducir falsos positivos
+            min_precision = 0.20
             valid_indices = precision >= min_precision
             
             if np.any(valid_indices):
