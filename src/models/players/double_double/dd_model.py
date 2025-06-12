@@ -79,6 +79,130 @@ from src.models.players.double_double.features_dd import DoubleDoubleFeatureEngi
 warnings.filterwarnings('ignore')
 
 
+class PositionSpecializedClassifier:
+    """
+    Clasificador especializado por posición para double-doubles.
+    
+    Cada posición tiene patrones diferentes:
+    - Centers: Alta tasa DD (15-25%), principalmente PTS+TRB
+    - Power Forwards: Tasa media DD (8-15%), PTS+TRB o TRB+AST
+    - Small Forwards: Tasa baja DD (3-8%), más versátiles
+    - Guards: Tasa muy baja DD (1-5%), principalmente PTS+AST
+    """
+    
+    def __init__(self):
+        self.logger = logging.getLogger(f"{__name__}.PositionSpecialized")
+        self.position_models = {}
+        self.position_thresholds = {}
+        self.position_features = {}
+        self.position_stats = {}
+        
+    def categorize_position(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Categorizar jugadores por posición simplificada"""
+        df = df.copy()
+        
+        def simplify_position(pos):
+            if pd.isna(pos):
+                return 'Unknown'
+            pos = str(pos).upper()
+            if 'C' in pos:
+                return 'Center'
+            elif 'PF' in pos or 'F-C' in pos:
+                return 'PowerForward'
+            elif 'SF' in pos or 'F' in pos:
+                return 'SmallForward'
+            elif 'PG' in pos or 'SG' in pos or 'G' in pos:
+                return 'Guard'
+            else:
+                return 'Unknown'
+        
+        if 'Pos' in df.columns:
+            df['Position_Category'] = df['Pos'].apply(simplify_position)
+        else:
+            # Inferir posición por estadísticas si no está disponible
+            df['Position_Category'] = self._infer_position_by_stats(df)
+        
+        return df
+    
+    def _infer_position_by_stats(self, df: pd.DataFrame) -> pd.Series:
+        """Inferir posición basada en estadísticas promedio del jugador"""
+        player_stats = df.groupby('Player').agg({
+            'TRB': 'mean',
+            'AST': 'mean',
+            'PTS': 'mean',
+            'BLK': 'mean'
+        }).round(2)
+        
+        def infer_position(row):
+            trb_avg = row.get('TRB', 0)
+            ast_avg = row.get('AST', 0)
+            pts_avg = row.get('PTS', 0)
+            blk_avg = row.get('BLK', 0)
+            
+            # Centers: Muchos rebotes y bloqueos
+            if trb_avg >= 8 and blk_avg >= 0.8:
+                return 'Center'
+            # Power Forwards: Buenos rebotes, pocos assists
+            elif trb_avg >= 6 and ast_avg <= 3:
+                return 'PowerForward'
+            # Guards: Muchos assists, pocos rebotes
+            elif ast_avg >= 4 and trb_avg <= 5:
+                return 'Guard'
+            # Small Forwards: Balanceados
+            else:
+                return 'SmallForward'
+        
+        player_positions = player_stats.apply(infer_position, axis=1).to_dict()
+        return df['Player'].map(player_positions).fillna('Unknown')
+    
+    def analyze_position_patterns(self, df: pd.DataFrame) -> Dict[str, Dict]:
+        """Analizar patrones de double-double por posición"""
+        df = self.categorize_position(df)
+        
+        # Crear columna double_double si no existe
+        if 'double_double' not in df.columns:
+            df['double_double'] = ((df['PTS'] >= 10) & (df['TRB'] >= 10)) | \
+                                 ((df['PTS'] >= 10) & (df['AST'] >= 10)) | \
+                                 ((df['TRB'] >= 10) & (df['AST'] >= 10))
+            df['double_double'] = df['double_double'].astype(int)
+        
+        position_analysis = {}
+        
+        for position in ['Center', 'PowerForward', 'SmallForward', 'Guard']:
+            pos_data = df[df['Position_Category'] == position]
+            
+            if len(pos_data) > 0:
+                dd_rate = pos_data['double_double'].mean()
+                total_games = len(pos_data)
+                total_dds = pos_data['double_double'].sum()
+                unique_players = pos_data['Player'].nunique()
+                
+                # Estadísticas promedio por posición
+                avg_stats = pos_data.groupby('Player').agg({
+                    'PTS': 'mean',
+                    'TRB': 'mean', 
+                    'AST': 'mean',
+                    'MP': 'mean'
+                }).mean()
+                
+                position_analysis[position] = {
+                    'dd_rate': dd_rate,
+                    'total_games': total_games,
+                    'total_dds': total_dds,
+                    'unique_players': unique_players,
+                    'avg_pts': avg_stats['PTS'],
+                    'avg_trb': avg_stats['TRB'],
+                    'avg_ast': avg_stats['AST'],
+                    'avg_mp': avg_stats['MP'],
+                    'games_per_player': total_games / unique_players if unique_players > 0 else 0
+                }
+                
+                self.logger.info(f"{position}: {dd_rate:.3f} DD rate, {unique_players} jugadores, {total_games} juegos")
+        
+        self.position_stats = position_analysis
+        return position_analysis
+
+
 class DoubleDoubleImbalanceHandler:
     """
     Manejador especializado para el desbalance extremo en predicción de double-doubles.
@@ -1116,6 +1240,108 @@ class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
         return self
 
 
+class NeuralNetworkWrapper(BaseEstimator, ClassifierMixin):
+    """Wrapper para red neuronal compatible con sklearn - definido globalmente para pickle"""
+    
+    def __init__(self, nn_model):
+        self.nn_model = nn_model
+        self.classes_ = np.array([0, 1])  # Para compatibilidad con sklearn
+        self.logger = OptimizedLogger.get_logger(f"{__name__}.NeuralNetworkWrapper")
+        
+    def fit(self, X, y):
+        """Entrenar la red neuronal con manejo robusto de errores"""
+        try:
+            # Asegurar que y sea 1D
+            if hasattr(y, 'values'):
+                y = y.values
+            y = np.asarray(y).flatten()
+            
+            # Verificar que X e y tengan las dimensiones correctas
+            if len(X) != len(y):
+                raise ValueError(f"X y y tienen dimensiones incompatibles: {len(X)} vs {len(y)}")
+            
+            # Entrenar el modelo con manejo de errores de gradientes
+            self.logger.info(f"Entrenando red neuronal con {X.shape[0]} muestras, {X.shape[1]} features")
+            
+            # Verificar si el modelo ya está entrenado
+            if hasattr(self.nn_model, 'is_fitted') and self.nn_model.is_fitted:
+                self.logger.info("Red neuronal ya entrenada, saltando entrenamiento")
+                return self
+            
+            self.nn_model.fit(X, y)
+            self.logger.info("Red neuronal entrenada exitosamente")
+            return self
+            
+        except Exception as e:
+            self.logger.error(f"Error entrenando red neuronal en stacking: {e}")
+            # Crear un modelo dummy que siempre predice la clase mayoritaria
+            self._is_dummy = True
+            self._majority_class = int(np.bincount(y.astype(int)).argmax()) if len(y) > 0 else 0
+            self.logger.info(f"Usando modelo dummy con clase mayoritaria: {self._majority_class}")
+            return self
+    
+    def predict(self, X):
+        """Predecir clases"""
+        try:
+            if hasattr(self, '_is_dummy') and self._is_dummy:
+                return np.full(X.shape[0], self._majority_class)
+            
+            if not self.nn_model.is_fitted:
+                return np.full(X.shape[0], 0)
+            
+            return self.nn_model.predict(X)
+        except Exception as e:
+            self.logger.error(f"Error en predict NN stacking: {e}")
+            return np.full(X.shape[0], 0)
+    
+    def predict_proba(self, X):
+        """Predecir probabilidades"""
+        try:
+            if hasattr(self, '_is_dummy') and self._is_dummy:
+                # Retornar probabilidades dummy
+                proba = np.zeros((X.shape[0], 2))
+                proba[:, self._majority_class] = 1.0
+                return proba
+            
+            if not self.nn_model.is_fitted:
+                # Retornar probabilidades por defecto
+                proba = np.zeros((X.shape[0], 2))
+                proba[:, 0] = 0.9  # 90% probabilidad clase 0
+                proba[:, 1] = 0.1  # 10% probabilidad clase 1
+                return proba
+            
+            # Obtener probabilidades del modelo
+            proba_nn = self.nn_model.predict_proba(X)
+            
+            # Asegurar que sea 2D con 2 columnas
+            if proba_nn.shape[1] == 2:
+                return proba_nn
+            else:
+                # Si solo tiene 1 columna, crear la segunda
+                proba = np.zeros((proba_nn.shape[0], 2))
+                proba[:, 1] = proba_nn[:, 0]  # Probabilidad clase positiva
+                proba[:, 0] = 1 - proba[:, 1]  # Probabilidad clase negativa
+                return proba
+                
+        except Exception as e:
+            self.logger.error(f"Error en predict_proba NN stacking: {e}")
+            # Retornar probabilidades por defecto
+            proba = np.zeros((X.shape[0], 2))
+            proba[:, 0] = 0.9
+            proba[:, 1] = 0.1
+            return proba
+    
+    def get_params(self, deep=True):
+        """Parámetros del wrapper"""
+        return {'nn_model': self.nn_model}
+        
+    def set_params(self, **params):
+        """Establecer parámetros"""
+        if 'nn_model' in params:
+            self.nn_model = params['nn_model']
+        return self
+
+
 class DoubleDoubleAdvancedModel:
     """
     Modelo avanzado para predicción de double double con stacking y optimización bayesiana
@@ -1136,6 +1362,9 @@ class DoubleDoubleAdvancedModel:
         
         # Manejador de desbalance especializado
         self.imbalance_handler = DoubleDoubleImbalanceHandler()
+        
+        # NUEVO: Clasificador especializado por posición
+        self.position_classifier = PositionSpecializedClassifier()
         
         # Componentes del modelo
         self.scaler = StandardScaler()
@@ -1295,95 +1524,7 @@ class DoubleDoubleAdvancedModel:
     def _setup_stacking_model(self):
         """Configurar modelo de stacking con TODOS LOS MODELOS (ML/DL) y manejo correcto de NN"""
         
-        # Wrapper para la Red Neuronal compatible con scikit-learn
-        class NeuralNetworkWrapper(BaseEstimator, ClassifierMixin):
-            """Wrapper para red neuronal compatible con sklearn"""
-            
-            def __init__(self, nn_model):
-                self.nn_model = nn_model
-                self.classes_ = np.array([0, 1])  # Para compatibilidad con sklearn
-                self.logger = OptimizedLogger.get_logger(f"{__name__}.NeuralNetworkWrapper")
-                
-            def fit(self, X, y):
-                """Entrenar la red neuronal"""
-                try:
-                    # Asegurar que y sea 1D
-                    if hasattr(y, 'values'):
-                        y = y.values
-                    y = np.asarray(y).flatten()
-                    
-                    # Entrenar el modelo
-                    self.nn_model.fit(X, y)
-                    return self
-                except Exception as e:
-                    self.logger.error(f"Error entrenando red neuronal en stacking: {e}")
-                    # Crear un modelo dummy que siempre predice la clase mayoritaria
-                    self._is_dummy = True
-                    self._majority_class = 0  # Clase mayoritaria
-                    return self
-            
-            def predict(self, X):
-                """Predecir clases"""
-                try:
-                    if hasattr(self, '_is_dummy') and self._is_dummy:
-                        return np.full(X.shape[0], self._majority_class)
-                    
-                    if not self.nn_model.is_fitted:
-                        return np.full(X.shape[0], 0)
-                    
-                    return self.nn_model.predict(X)
-                except Exception as e:
-                    self.logger.error(f"Error en predict NN stacking: {e}")
-                    return np.full(X.shape[0], 0)
-            
-            def predict_proba(self, X):
-                """Predecir probabilidades"""
-                try:
-                    if hasattr(self, '_is_dummy') and self._is_dummy:
-                        # Retornar probabilidades dummy
-                        proba = np.zeros((X.shape[0], 2))
-                        proba[:, self._majority_class] = 1.0
-                        return proba
-                    
-                    if not self.nn_model.is_fitted:
-                        # Retornar probabilidades por defecto
-                        proba = np.zeros((X.shape[0], 2))
-                        proba[:, 0] = 0.9  # 90% probabilidad clase 0
-                        proba[:, 1] = 0.1  # 10% probabilidad clase 1
-                        return proba
-                    
-                    # Obtener probabilidades del modelo
-                    proba_nn = self.nn_model.predict_proba(X)
-                    
-                    # Asegurar que sea 2D con 2 columnas
-                    if proba_nn.shape[1] == 2:
-                        return proba_nn
-                    else:
-                        # Si solo tiene 1 columna, crear la segunda
-                        proba = np.zeros((proba_nn.shape[0], 2))
-                        proba[:, 1] = proba_nn[:, 0]  # Probabilidad clase positiva
-                        proba[:, 0] = 1 - proba[:, 1]  # Probabilidad clase negativa
-                        return proba
-                        
-                except Exception as e:
-                    self.logger.error(f"Error en predict_proba NN stacking: {e}")
-                    # Retornar probabilidades por defecto
-                    proba = np.zeros((X.shape[0], 2))
-                    proba[:, 0] = 0.9
-                    proba[:, 1] = 0.1
-                    return proba
-            
-            def get_params(self, deep=True):
-                """Parámetros del wrapper"""
-                return {'nn_model': self.nn_model}
-                
-            def set_params(self, **params):
-                """Establecer parámetros"""
-                if 'nn_model' in params:
-                    self.nn_model = params['nn_model']
-                return self
-        
-        # Crear wrapper para la red neuronal
+        # Crear wrapper usando la clase global
         nn_wrapper = NeuralNetworkWrapper(self.models['neural_network'])
         
         # Modelos base para stacking con REGULARIZACIÓN BALANCEADA
@@ -1492,7 +1633,49 @@ class DoubleDoubleAdvancedModel:
             ('nn_stack', nn_wrapper)
         ]
         
-        # Configurar stacking con regularización optimizada y manejo agresivo del desbalance
+        # NUEVO: META-LEARNING AVANZADO CON MÚLTIPLES NIVELES
+        # Crear meta-learners especializados
+        self.meta_learners = {
+            # Meta-learner 1: Logistic Regression (lineal, robusto)
+            'logistic': LogisticRegression(
+                class_weight={0: 1.0, 1: 20.0},
+                random_state=42,
+                max_iter=3000,
+                C=0.5,  # Balanceado
+                penalty='l2',
+                solver='liblinear',
+                fit_intercept=True
+            ),
+            
+            # Meta-learner 2: XGBoost (no-lineal, captura interacciones complejas)
+            'xgb_meta': xgb.XGBClassifier(
+                n_estimators=30,
+                max_depth=3,
+                learning_rate=0.1,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_alpha=0.1,
+                reg_lambda=0.5,
+                scale_pos_weight=20,
+                random_state=42,
+                eval_metric='logloss',
+                n_jobs=-1,
+                verbosity=0
+            ),
+            
+            # Meta-learner 3: Random Forest (ensemble robusto)
+            'rf_meta': RandomForestClassifier(
+                n_estimators=30,
+                max_depth=4,
+                min_samples_split=10,
+                min_samples_leaf=5,
+                class_weight={0: 1.0, 1: 20.0},
+                random_state=42,
+                n_jobs=-1
+            )
+        }
+        
+        # Stacking principal con meta-learner logístico
         self.stacking_model = StackingClassifier(
             estimators=[
                 ('xgb', self.models['xgboost']),
@@ -1503,19 +1686,15 @@ class DoubleDoubleAdvancedModel:
                 ('cat', self.models['catboost']),
                 ('nn', nn_wrapper)
             ],
-            final_estimator=LogisticRegression(
-                class_weight={0: 1.0, 1: 20.0},  # AUMENTADO para mejor precision
-                random_state=42,
-                max_iter=3000,  # Más iteraciones para convergencia
-                C=0.2,  # MÁS regularización para evitar overfitting
-                penalty='l2',
-                solver='liblinear',  # Mejor para datasets pequeños con desbalance
-                fit_intercept=True
-            ),
+            final_estimator=self.meta_learners['logistic'],
             cv=3,
             n_jobs=-1,
-            passthrough=False  # No pasar features originales al meta-modelo
+            passthrough=False
         )
+        
+        # Configurar meta-learning avanzado
+        self.advanced_meta_learning = True
+        self.meta_predictions = {}  # Para almacenar predicciones de cada meta-learner
     
     def _select_best_features(self, X: pd.DataFrame, y: pd.Series, max_features: int = 30) -> List[str]:
         """
@@ -1760,6 +1939,10 @@ class DoubleDoubleAdvancedModel:
         # PARTE 1: ANÁLISIS DE PERFILES DE JUGADORES Y DESBALANCE
         self.logger.info("=== ANÁLISIS DE DESBALANCE ESPECÍFICO PARA DOUBLE-DOUBLES ===")
         
+        # NUEVO: Análisis especializado por posición
+        self.logger.info("=== ANÁLISIS POR POSICIÓN ===")
+        position_analysis = self.position_classifier.analyze_position_patterns(df_with_features)
+        
         # Analizar perfiles de jugadores
         profile_analysis = self.imbalance_handler.analyze_player_profiles(df_with_features)
         
@@ -1822,13 +2005,60 @@ class DoubleDoubleAdvancedModel:
         # Entrenar modelos individuales con sample weights
         individual_results = self._train_individual_models(X_train, y_train, X_val, y_val, sample_weights_train)
         
-        # Entrenar modelo de stacking
+        # NUEVO: ENTRENAMIENTO AVANZADO DE META-LEARNERS
+        logger.info("Entrenando modelo de stacking principal...")
         self.stacking_model.fit(X_train, y_train)
         
         # Establecer modelo como entrenado ANTES de evaluar
         self.is_fitted = True
         
-        # Evaluar stacking
+        # Obtener predicciones base para meta-learning avanzado
+        if hasattr(self, 'advanced_meta_learning') and self.advanced_meta_learning:
+            logger.info("Generando predicciones base para meta-learning avanzado...")
+            base_predictions_train = self._get_base_predictions(X_train, 'train')
+            base_predictions_val = self._get_base_predictions(X_val, 'val')
+            
+            # Entrenar meta-learners adicionales (TODOS, incluyendo logistic independiente)
+            logger.info("Entrenando meta-learners especializados...")
+            for name, meta_learner in self.meta_learners.items():
+                try:
+                    logger.info(f"Entrenando meta-learner independiente: {name}")
+                    
+                    # Crear una copia independiente del meta-learner para evitar conflictos
+                    if name == 'logistic':
+                        # Crear nuevo LogisticRegression independiente del stacking
+                        from sklearn.linear_model import LogisticRegression
+                        independent_meta = LogisticRegression(
+                            class_weight={0: 1.0, 1: 20.0},
+                            random_state=42,
+                            max_iter=3000,
+                            C=0.5,
+                            penalty='l2',
+                            solver='liblinear',
+                            fit_intercept=True
+                        )
+                        independent_meta.fit(base_predictions_train, y_train)
+                        # Reemplazar en el diccionario
+                        self.meta_learners[name] = independent_meta
+                    else:
+                        # Entrenar normalmente
+                        meta_learner.fit(base_predictions_train, y_train)
+                    
+                    # Evaluar meta-learner
+                    meta_pred = self.meta_learners[name].predict(base_predictions_val)
+                    meta_proba = self.meta_learners[name].predict_proba(base_predictions_val)[:, 1]
+                    
+                    meta_acc = accuracy_score(y_val, meta_pred)
+                    meta_auc = roc_auc_score(y_val, meta_proba)
+                    
+                    logger.info(f"Meta-learner {name}: ACC={meta_acc:.3f}, AUC={meta_auc:.3f}")
+                    
+                except Exception as e:
+                    logger.error(f"Error entrenando meta-learner {name}: {e}")
+                    # Crear meta-learner dummy en caso de error
+                    self.meta_learners[name] = None
+        
+        # Evaluar stacking model principal
         stacking_pred = self.stacking_model.predict(X_val)
         stacking_proba = self.stacking_model.predict_proba(X_val)[:, 1]
         
@@ -1837,8 +2067,37 @@ class DoubleDoubleAdvancedModel:
         )
         
         OptimizedLogger.log_performance_metrics(
-            logger, stacking_metrics, "Stacking Model", "Validación"
+            logger, stacking_metrics, "Stacking Model Principal", "Validación"
         )
+        
+        # Generar predicción final combinada si está habilitado
+        if hasattr(self, 'advanced_meta_learning') and self.advanced_meta_learning:
+            logger.info("Generando predicción final combinada...")
+            try:
+                final_proba = self._combine_meta_predictions(base_predictions_val, y_val)
+                
+                # Evaluar predicción combinada
+                final_pred = (final_proba > 0.5).astype(int)
+                combined_metrics = MetricsCalculator.calculate_classification_metrics(
+                    y_val, final_pred, final_proba
+                )
+                
+                OptimizedLogger.log_performance_metrics(
+                    logger, combined_metrics, "Meta-Learning Combinado", "Validación"
+                )
+                
+                # Usar las mejores métricas (stacking vs combinado)
+                if combined_metrics['f1_score'] > stacking_metrics['f1_score']:
+                    logger.info("✅ Meta-learning combinado supera al stacking individual")
+                    stacking_metrics = combined_metrics
+                    self.use_combined_prediction = True
+                else:
+                    logger.info("✅ Stacking individual es superior")
+                    self.use_combined_prediction = False
+                    
+            except Exception as e:
+                logger.error(f"Error en meta-learning combinado: {e}")
+                self.use_combined_prediction = False
         
         # Guardar resultados con verificación de features especializadas
         results = {
@@ -1963,11 +2222,124 @@ class DoubleDoubleAdvancedModel:
         results['optimal_threshold'] = self.optimal_threshold
         results['optimal_metrics'] = optimal_metrics
         results['threshold_optimization'] = threshold_results
+        results['position_analysis'] = position_analysis
         
         logger.info(f"Entrenamiento completado con {len(feature_columns)} features especializadas EXCLUSIVAS")
         logger.info(f"Porcentaje de features especializadas: {specialized_percentage:.1f}%")
         
         return self.training_results
+    
+    def _get_base_predictions(self, X, phase='predict'):
+        """Obtener predicciones de modelos base para meta-learning avanzado"""
+        try:
+            base_predictions = []
+            
+            # Obtener predicciones de cada modelo base
+            for name, model in self.models.items():
+                try:
+                    if hasattr(model, 'predict_proba'):
+                        proba = model.predict_proba(X)
+                        if proba.shape[1] == 2:
+                            base_predictions.append(proba[:, 1])  # Probabilidad clase positiva
+                        else:
+                            base_predictions.append(proba[:, 0])
+                    else:
+                        # Fallback a predict si no hay predict_proba
+                        pred = model.predict(X)
+                        base_predictions.append(pred.astype(float))
+                        
+                except Exception as e:
+                    self.logger.warning(f"Error obteniendo predicciones de {name}: {e}")
+                    # Crear predicción dummy
+                    base_predictions.append(np.zeros(X.shape[0]))
+            
+            # Convertir a matriz
+            base_matrix = np.column_stack(base_predictions)
+            
+            self.logger.info(f"Predicciones base generadas: {base_matrix.shape} ({phase})")
+            return base_matrix
+            
+        except Exception as e:
+            self.logger.error(f"Error generando predicciones base: {e}")
+            # Fallback: matriz de ceros
+            return np.zeros((X.shape[0], len(self.models)))
+    
+    def _combine_meta_predictions(self, base_predictions, y_true=None):
+        """Combinar predicciones de múltiples meta-learners usando votación ponderada"""
+        try:
+            meta_probabilities = []
+            meta_weights = []
+            
+            # Obtener predicciones de cada meta-learner con manejo robusto
+            for name, meta_learner in self.meta_learners.items():
+                try:
+                    # Verificar que el meta-learner no sea None
+                    if meta_learner is None:
+                        self.logger.warning(f"Meta-learner {name} es None, saltando")
+                        continue
+                    
+                    # Verificar que esté entrenado
+                    if not hasattr(meta_learner, 'predict_proba'):
+                        self.logger.warning(f"Meta-learner {name} no tiene predict_proba, saltando")
+                        continue
+                    
+                    # Verificar que esté fitted
+                    from sklearn.utils.validation import check_is_fitted
+                    try:
+                        check_is_fitted(meta_learner)
+                    except:
+                        self.logger.warning(f"Meta-learner {name} no está entrenado, saltando")
+                        continue
+                    
+                    proba = meta_learner.predict_proba(base_predictions)
+                    if proba.shape[1] == 2:
+                        meta_prob = proba[:, 1]
+                    else:
+                        meta_prob = proba[:, 0]
+                    
+                    meta_probabilities.append(meta_prob)
+                    
+                    # Calcular peso basado en performance si tenemos y_true
+                    if y_true is not None:
+                        try:
+                            pred = (meta_prob > 0.5).astype(int)
+                            f1 = f1_score(y_true, pred, zero_division=0)
+                            weight = max(0.1, f1)  # Peso mínimo 0.1
+                            meta_weights.append(weight)
+                            self.logger.info(f"Meta-learner {name}: F1={f1:.3f}, Peso={weight:.3f}")
+                        except Exception as weight_error:
+                            self.logger.warning(f"Error calculando peso para {name}: {weight_error}")
+                            meta_weights.append(1.0)  # Peso por defecto
+                    else:
+                        meta_weights.append(1.0)
+                        
+                except Exception as e:
+                    self.logger.warning(f"Error en meta-learner {name}: {e}")
+                    # Predicción dummy conservadora
+                    meta_probabilities.append(np.full(base_predictions.shape[0], 0.1))
+                    meta_weights.append(0.1)
+            
+            if not meta_probabilities:
+                self.logger.error("No se pudieron obtener predicciones de meta-learners")
+                return np.full(base_predictions.shape[0], 0.1)
+            
+            # Normalizar pesos
+            meta_weights = np.array(meta_weights)
+            meta_weights = meta_weights / np.sum(meta_weights)
+            
+            # Combinar predicciones usando votación ponderada
+            meta_matrix = np.column_stack(meta_probabilities)
+            combined_proba = np.average(meta_matrix, axis=1, weights=meta_weights)
+            
+            self.logger.info(f"Meta-learners combinados: {len(meta_probabilities)} modelos")
+            self.logger.info(f"Pesos: {dict(zip(self.meta_learners.keys(), meta_weights))}")
+            
+            return combined_proba
+            
+        except Exception as e:
+            self.logger.error(f"Error combinando meta-learners: {e}")
+            # Fallback: usar solo el stacking principal
+            return self.stacking_model.predict_proba(base_predictions)[:, 1]
     
     def _train_individual_models(self, X_train, y_train, X_val, y_val, sample_weights=None) -> Dict:
         """Entrenar modelos individuales con early stopping y sample weights estratificados"""
@@ -2056,8 +2428,13 @@ class DoubleDoubleAdvancedModel:
         # Usar threshold óptimo global como fallback
         default_threshold = getattr(self, 'optimal_threshold', 0.5)
         
-        # Intentar usar thresholds específicos por posición si están disponibles
-        if hasattr(self, 'training_results') and 'position_thresholds' in self.training_results:
+        # Usar thresholds especializados por posición
+        if hasattr(self, 'training_results') and 'position_analysis' in self.training_results:
+            self.logger.info("Usando thresholds especializados por posición")
+            return self._predict_with_position_specialization(df, probabilities, default_threshold)
+        
+        # Fallback: Intentar usar thresholds básicos por posición si están disponibles
+        elif hasattr(self, 'training_results') and 'position_thresholds' in self.training_results:
             position_thresholds = self.training_results['position_thresholds']
             
             # Inferir posición para cada jugador en el DataFrame de predicción
@@ -2117,6 +2494,103 @@ class DoubleDoubleAdvancedModel:
         
         return predictions
     
+    def _predict_with_position_specialization(self, df: pd.DataFrame, probabilities: np.ndarray, default_threshold: float) -> np.ndarray:
+        """Predicción especializada usando thresholds adaptativos por posición con filtros anti-FP"""
+        
+        # Categorizar posiciones en el DataFrame de predicción
+        df_with_positions = self.position_classifier.categorize_position(df.copy())
+        
+        # Obtener análisis de posición del entrenamiento
+        position_analysis = self.training_results['position_analysis']
+        
+        # NUEVO: Calcular thresholds MÁS CONSERVADORES para reducir FP
+        position_thresholds = {}
+        for position, stats in position_analysis.items():
+            dd_rate = stats['dd_rate']
+            
+            # Thresholds más altos para reducir falsos positivos
+            if dd_rate >= 0.15:  # Centers (alta tasa)
+                position_thresholds[position] = max(0.45, default_threshold * 0.9)  # Más conservador
+            elif dd_rate >= 0.08:  # Power Forwards (tasa media)
+                position_thresholds[position] = max(0.55, default_threshold * 1.1)  # Más conservador
+            elif dd_rate >= 0.03:  # Small Forwards (tasa baja)
+                position_thresholds[position] = max(0.65, default_threshold * 1.3)  # Más conservador
+            else:  # Guards (tasa muy baja)
+                position_thresholds[position] = max(0.75, default_threshold * 1.5)  # Mucho más conservador
+        
+        # NUEVO: Aplicar thresholds específicos por posición + filtros de confianza
+        predictions = np.zeros(len(df), dtype=int)
+        position_counts = {}
+        confidence_filtered = 0
+        
+        for i, row in df_with_positions.iterrows():
+            position = row.get('Position_Category', 'Unknown')
+            threshold = position_thresholds.get(position, default_threshold)
+            probability = probabilities[i, 1]
+            
+            # FILTRO 1: Threshold básico por posición
+            base_prediction = (probability >= threshold).astype(int)
+            
+            # FILTRO 2: Filtro de confianza adicional para reducir FP
+            if base_prediction == 1:
+                # Requerir confianza mínima adicional según posición
+                if position == 'Center':
+                    min_confidence = 0.55  # Centers necesitan 55%+ confianza
+                elif position == 'PowerForward':
+                    min_confidence = 0.65  # PF necesitan 65%+ confianza
+                elif position == 'SmallForward':
+                    min_confidence = 0.75  # SF necesitan 75%+ confianza
+                else:  # Guards
+                    min_confidence = 0.85  # Guards necesitan 85%+ confianza
+                
+                # FILTRO 3: Filtro de contexto situacional adicional
+                situational_pass = True
+                
+                # Verificar features de contexto si están disponibles
+                if 'mp_hist_avg_5g' in row.index and row['mp_hist_avg_5g'] < 15:
+                    # Jugadores con pocos minutos raramente hacen DD
+                    situational_pass = False
+                
+                if 'starter_boost' in row.index and row['starter_boost'] < 0.5:
+                    # No titulares necesitan confianza extra
+                    min_confidence += 0.05
+                
+                if 'dd_rate_5g' in row.index and row['dd_rate_5g'] < 0.05:
+                    # Jugadores con muy baja tasa histórica necesitan confianza extra
+                    min_confidence += 0.10
+                
+                # Aplicar filtros combinados
+                if probability >= min_confidence and situational_pass:
+                    predictions[i] = 1
+                else:
+                    predictions[i] = 0
+                    confidence_filtered += 1
+            else:
+                predictions[i] = 0
+            
+            # Contar por posición para logging
+            if position not in position_counts:
+                position_counts[position] = {'total': 0, 'predicted_dd': 0, 'threshold': threshold, 'min_confidence': min_confidence if base_prediction == 1 else 0}
+            position_counts[position]['total'] += 1
+            position_counts[position]['predicted_dd'] += predictions[i]
+        
+        # Logging detallado por posición con filtros anti-FP
+        self.logger.info("=== PREDICCIONES POR POSICIÓN (CON FILTROS ANTI-FP) ===")
+        self.logger.info(f"Total filtrado por confianza insuficiente: {confidence_filtered}")
+        for position, counts in position_counts.items():
+            total = counts['total']
+            predicted = counts['predicted_dd']
+            threshold = counts['threshold']
+            min_conf = counts.get('min_confidence', 0)
+            rate = predicted / total * 100 if total > 0 else 0
+            
+            self.logger.info(f"{position}: {predicted}/{total} DD predichos ({rate:.1f}%), threshold={threshold:.3f}, min_conf={min_conf:.2f}")
+        
+        total_predicted = predictions.sum()
+        self.logger.info(f"Total DD predichos con especialización + filtros: {total_predicted}/{len(predictions)} ({total_predicted/len(predictions)*100:.1f}%)")
+        
+        return predictions
+    
     def predict_proba(self, df: pd.DataFrame) -> np.ndarray:
         """Predicción probabilística usando stacking model con features especializadas EXCLUSIVAS"""
         if not self.is_fitted:
@@ -2151,7 +2625,27 @@ class DoubleDoubleAdvancedModel:
         X_scaled = DataProcessor.prepare_prediction_data(X, self.scaler)
         
         logger.info(f"Predicción probabilística usando {len(feature_columns)} features especializadas EXCLUSIVAS")
-        return self.stacking_model.predict_proba(X_scaled)
+        
+        # Usar meta-learning avanzado si está habilitado
+        if hasattr(self, 'use_combined_prediction') and self.use_combined_prediction:
+            logger.info("Usando meta-learning combinado para predicción")
+            try:
+                # Obtener predicciones base
+                base_predictions = self._get_base_predictions(X_scaled, 'predict')
+                
+                # Combinar meta-learners
+                combined_proba = self._combine_meta_predictions(base_predictions)
+                
+                # Convertir a formato estándar de sklearn
+                proba_matrix = np.column_stack([1 - combined_proba, combined_proba])
+                return proba_matrix
+                
+            except Exception as e:
+                logger.error(f"Error en meta-learning combinado, usando stacking principal: {e}")
+                return self.stacking_model.predict_proba(X_scaled)
+        else:
+            # Usar stacking principal
+            return self.stacking_model.predict_proba(X_scaled)
     
     def _optimize_with_bayesian(self, X_train, y_train):
         """Optimización bayesiana de hiperparámetros"""
@@ -2674,68 +3168,112 @@ class DoubleDoubleAdvancedModel:
         return X_clean
     
     def _calculate_feature_importance(self, feature_columns: List[str]) -> Dict[str, Any]:
-        """Calcular importancia de features de todos los modelos"""
+        """Calcular importancia de features de todos los modelos - VERSIÓN CORREGIDA"""
         
-        # Si ya tenemos feature importance de los modelos individuales, usarla
+        self.logger.info("=== CALCULANDO FEATURE IMPORTANCE ===")
+        
+        # PASO 1: Verificar si ya tenemos importancias guardadas durante el entrenamiento
         if hasattr(self, 'feature_importance') and self.feature_importance:
-            self.logger.info(f"Usando feature importance ya calculada para {len(self.feature_importance)} modelos")
+            self.logger.info(f"Feature importance ya disponible para {len(self.feature_importance)} modelos")
             
-            # Calcular importancia promedio si no existe
-            if 'average' not in self.feature_importance:
-                valid_models = []
-                for name, info in self.feature_importance.items():
-                    if isinstance(info, dict) and 'importances' in info:
-                        valid_models.append(info)
-                
-                if valid_models:
-                    avg_importance = np.zeros(len(feature_columns))
-                    for info in valid_models:
-                        importances = np.array(info['importances'])
-                        if len(importances) == len(feature_columns):
-                            avg_importance += importances
-                    
-                    avg_importance /= len(valid_models)
-                    self.feature_importance['average'] = {
-                        'importances': avg_importance.tolist(),
-                        'feature_names': feature_columns
-                    }
-                    self.logger.info("Importancia promedio calculada exitosamente")
+            # Verificar que las importancias no están vacías
+            valid_models = 0
+            for name, info in self.feature_importance.items():
+                if isinstance(info, dict) and 'importances' in info:
+                    importances = info['importances']
+                    if isinstance(importances, list) and len(importances) > 0 and any(imp > 0 for imp in importances):
+                        valid_models += 1
+                        self.logger.info(f"  {name}: {len(importances)} features, max importance: {max(importances):.4f}")
             
-            return self.feature_importance
+            if valid_models > 0:
+                self.logger.info(f"Usando feature importance existente de {valid_models} modelos válidos")
+                self._calculate_average_importance(feature_columns)
+                return self.feature_importance
+            else:
+                self.logger.warning("Feature importance existente está vacía, recalculando...")
         
-        # Si no tenemos feature importance, calcularla desde los modelos
+        # PASO 2: Recalcular desde los modelos entrenados
+        self.logger.info("Extrayendo feature importance desde modelos entrenados...")
         importance_summary = {}
         
         for name, model_info in self.training_results['individual_models'].items():
             if 'model' in model_info:
                 model = model_info['model']
                 
-                if hasattr(model, 'feature_importances_'):
-                    importance_summary[name] = {
-                        'importances': model.feature_importances_.tolist(),
-                        'feature_names': feature_columns
-                    }
-                    self.logger.info(f"Feature importance extraída de {name}")
+                try:
+                    if hasattr(model, 'feature_importances_'):
+                        importances = model.feature_importances_
+                        if len(importances) > 0 and np.sum(importances) > 0:
+                            importance_summary[name] = {
+                                'importances': importances.tolist(),
+                                'feature_names': feature_columns
+                            }
+                            self.logger.info(f"  {name}: extraída correctamente, max: {np.max(importances):.4f}")
+                        else:
+                            self.logger.warning(f"  {name}: importancias vacías o cero")
+                    elif hasattr(model, 'coef_'):
+                        # Para modelos lineales como Ridge
+                        coef = np.abs(model.coef_[0] if model.coef_.ndim > 1 else model.coef_)
+                        if len(coef) > 0 and np.sum(coef) > 0:
+                            importance_summary[name] = {
+                                'importances': coef.tolist(),
+                                'feature_names': feature_columns
+                            }
+                            self.logger.info(f"  {name}: coeficientes extraídos, max: {np.max(coef):.4f}")
+                    else:
+                        self.logger.warning(f"  {name}: no tiene feature_importances_ ni coef_")
+                        
+                except Exception as e:
+                    self.logger.error(f"  {name}: error extrayendo importancia: {str(e)}")
         
-        # Calcular importancia promedio
-        if importance_summary:
-            avg_importance = np.zeros(len(feature_columns))
-            count = 0
-            
-            for name, info in importance_summary.items():
-                avg_importance += np.array(info['importances'])
-                count += 1
-            
-            if count > 0:
-                avg_importance /= count
-                importance_summary['average'] = {
-                    'importances': avg_importance.tolist(),
-                    'feature_names': feature_columns
-                }
-                self.logger.info(f"Importancia promedio calculada desde {count} modelos")
+        # PASO 3: Verificar que obtuvimos importancias válidas
+        if not importance_summary:
+            self.logger.error("No se pudo extraer feature importance de ningún modelo")
+            # Crear importancias dummy para evitar errores
+            dummy_importance = np.ones(len(feature_columns)) / len(feature_columns)
+            importance_summary['dummy'] = {
+                'importances': dummy_importance.tolist(),
+                'feature_names': feature_columns
+            }
         
+        # PASO 4: Calcular importancia promedio
         self.feature_importance = importance_summary
-        return importance_summary
+        self._calculate_average_importance(feature_columns)
+        
+        self.logger.info(f"Feature importance calculada para {len(importance_summary)} modelos")
+        return self.feature_importance
+    
+    def _calculate_average_importance(self, feature_columns: List[str]):
+        """Calcular importancia promedio de todos los modelos válidos"""
+        
+        if 'average' in self.feature_importance:
+            self.logger.info("Importancia promedio ya existe")
+            return
+        
+        valid_models = []
+        for name, info in self.feature_importance.items():
+            if isinstance(info, dict) and 'importances' in info:
+                importances = info['importances']
+                if isinstance(importances, list) and len(importances) == len(feature_columns):
+                    valid_models.append(np.array(importances))
+        
+        if valid_models:
+            # Calcular promedio
+            avg_importance = np.mean(valid_models, axis=0)
+            
+            # Normalizar para que sume 1
+            if np.sum(avg_importance) > 0:
+                avg_importance = avg_importance / np.sum(avg_importance)
+            
+            self.feature_importance['average'] = {
+                'importances': avg_importance.tolist(),
+                'feature_names': feature_columns
+            }
+            
+            self.logger.info(f"Importancia promedio calculada desde {len(valid_models)} modelos")
+            self.logger.info(f"Top 5 features: {sorted(zip(feature_columns, avg_importance), key=lambda x: x[1], reverse=True)[:5]}")
+        else:
+            self.logger.warning("No se pudo calcular importancia promedio - no hay modelos válidos")
     
     def get_feature_importance(self, top_n: int = 20) -> Dict[str, Any]:
         """Obtener top features más importantes"""

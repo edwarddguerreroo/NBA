@@ -771,49 +771,90 @@ THRESHOLD OPTIMIZADO:
             predictions_path = os.path.normpath(os.path.join(self.output_dir, 'predictions.csv'))
             predictions_df.to_csv(predictions_path, index=False)
         
-        # Guardar feature importance
         try:
             if hasattr(self.model, 'feature_importance') and self.model.feature_importance:
-                # Procesar feature importance manejando diferentes formatos
+                logger.info("Procesando feature importance para guardado...")
+                
+                # Usar el método get_feature_importance del modelo para obtener datos estructurados
+                feature_importance_data = self.model.get_feature_importance(top_n=50)
+                
                 importance_data = []
-                for k, v in self.model.feature_importance.items():
-                    if isinstance(v, dict):
-                        # Si el valor es un diccionario, extraer el valor numérico
-                        if 'importance' in v:
-                            importance_val = float(v['importance'])
-                        elif 'value' in v:
-                            importance_val = float(v['value'])
-                        elif 'score' in v:
-                            importance_val = float(v['score'])
-                        else:
-                            # Tomar el primer valor numérico encontrado
-                            importance_val = 0.0
-                            for dict_val in v.values():
-                                try:
-                                    importance_val = float(dict_val)
-                                    break
-                                except (ValueError, TypeError):
-                                    continue
-                    else:
-                        # Si es un valor numérico directo
-                        try:
-                            importance_val = float(v)
-                        except (ValueError, TypeError):
-                            importance_val = 0.0
-                    
-                    importance_data.append({'feature': k, 'importance': importance_val})
+                
+                # Procesar importancia promedio si está disponible
+                if 'average' in feature_importance_data:
+                    avg_data = feature_importance_data['average']
+                    if 'top_features' in avg_data:
+                        for feature_name, importance_val in avg_data['top_features']:
+                            importance_data.append({
+                                'feature': feature_name, 
+                                'importance': float(importance_val),
+                                'model': 'average'
+                            })
+                        logger.info(f"Procesadas {len(avg_data['top_features'])} features de importancia promedio")
+                
+                # Si no hay promedio, procesar modelos individuales
+                if not importance_data:
+                    for model_name, model_data in feature_importance_data.items():
+                        if model_name != 'average' and 'top_features' in model_data:
+                            for feature_name, importance_val in model_data['top_features'][:20]:  # Top 20 por modelo
+                                importance_data.append({
+                                    'feature': feature_name,
+                                    'importance': float(importance_val),
+                                    'model': model_name
+                                })
+                    logger.info(f"Procesadas features de {len(feature_importance_data)} modelos individuales")
+                
+                # Fallback: procesar directamente desde feature_importance si los métodos anteriores fallan
+                if not importance_data:
+                    logger.warning("Métodos estructurados fallaron, procesando directamente...")
+                    for model_name, model_info in self.model.feature_importance.items():
+                        if isinstance(model_info, dict) and 'importances' in model_info and 'feature_names' in model_info:
+                            importances = model_info['importances']
+                            feature_names = model_info['feature_names']
+                            
+                            if len(importances) == len(feature_names):
+                                for feat, imp in zip(feature_names, importances):
+                                    if imp > 0:  # Solo incluir features con importancia > 0
+                                        importance_data.append({
+                                            'feature': feat,
+                                            'importance': float(imp),
+                                            'model': model_name
+                                        })
                 
                 if importance_data:
-                    importance_df = pd.DataFrame(importance_data).sort_values('importance', ascending=False)
+                    # Crear DataFrame y ordenar por importancia
+                    importance_df = pd.DataFrame(importance_data)
+                    
+                    # Si tenemos múltiples modelos, agrupar por feature y promediar
+                    if 'model' in importance_df.columns and len(importance_df['model'].unique()) > 1:
+                        importance_df = importance_df.groupby('feature')['importance'].mean().reset_index()
+                    
+                    importance_df = importance_df.sort_values('importance', ascending=False)
+                    
                     importance_path = os.path.normpath(os.path.join(self.output_dir, 'feature_importance.csv'))
                     importance_df.to_csv(importance_path, index=False)
-                    logger.info(f"Feature importance guardado en: {importance_path}")
+                    
+                    logger.info(f"Feature importance guardado exitosamente: {len(importance_df)} features")
+                    logger.info(f"Top 5 features: {list(importance_df.head()['feature'])}")
                 else:
-                    logger.warning("No se pudieron procesar los datos de feature importance")
+                    logger.warning("No se pudieron extraer datos válidos de feature importance")
+                    # Crear archivo vacío para evitar errores
+                    empty_df = pd.DataFrame({'feature': ['no_data'], 'importance': [0.0]})
+                    importance_path = os.path.normpath(os.path.join(self.output_dir, 'feature_importance.csv'))
+                    empty_df.to_csv(importance_path, index=False)
             else:
-                logger.info("Feature importance no disponible")
+                logger.warning("Feature importance no disponible en el modelo")
+                # Crear archivo vacío
+                empty_df = pd.DataFrame({'feature': ['not_available'], 'importance': [0.0]})
+                importance_path = os.path.normpath(os.path.join(self.output_dir, 'feature_importance.csv'))
+                empty_df.to_csv(importance_path, index=False)
+                
         except Exception as e:
-            logger.warning(f"Error guardando feature importance: {str(e)}")
+            logger.error(f"Error guardando feature importance: {str(e)}")
+            # Crear archivo de error para debugging
+            error_df = pd.DataFrame({'feature': ['error'], 'importance': [0.0], 'error': [str(e)]})
+            importance_path = os.path.normpath(os.path.join(self.output_dir, 'feature_importance.csv'))
+            error_df.to_csv(importance_path, index=False)
         
         # Crear resumen de archivos generados
         files_summary = {
@@ -888,7 +929,7 @@ def main():
         game_data_path=game_data_path,
         biometrics_path=biometrics_path,
         teams_path=teams_path,
-        output_dir="results/double_double_model",
+        output_dir="trained_models/double_double_model",
         n_trials=50,
         cv_folds=5
     )
