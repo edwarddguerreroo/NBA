@@ -190,37 +190,37 @@ class DoubleDoubleTrainer:
         logger.info(f"ROC-AUC: {roc_auc:.2f}% (OBJETIVO: >94%)")
         
         # Análisis de calidad específico para DD
-        logger.info("\n📊 ANÁLISIS DE CALIDAD DOUBLE DOUBLE:")
+        logger.info("\nANÁLISIS DE CALIDAD DOUBLE DOUBLE:")
         if precision >= 45:
-            logger.info("✅ PRECISION: EXCELENTE (>45%)")
+            logger.info("PRECISION: EXCELENTE (>45%)")
         elif precision >= 35:
-            logger.info("⚠️  PRECISION: BUENA (35-45%) - Mejorable")
+            logger.info("PRECISION: BUENA (35-45%) - Mejorable")
         else:
-            logger.info("❌ PRECISION: BAJA (<35%) - REQUIERE MEJORA")
+            logger.info("PRECISION: BAJA (<35%) - REQUIERE MEJORA")
             
         if 75 <= recall <= 85:
-            logger.info("✅ RECALL: ÓPTIMO (75-85%)")
+            logger.info("RECALL: ÓPTIMO (75-85%)")
         elif recall > 85:
-            logger.info("⚠️  RECALL: ALTO (>85%) - Posible overprediction")
+            logger.info("RECALL: ALTO (>85%) - Posible overprediction")
         else:
-            logger.info("❌ RECALL: BAJO (<75%) - REQUIERE MEJORA")
+            logger.info("RECALL: BAJO (<75%) - REQUIERE MEJORA")
             
         if f1 >= 55:
-            logger.info("✅ F1-SCORE: EXCELENTE (>55%)")
+            logger.info("F1-SCORE: EXCELENTE (>55%)")
         elif f1 >= 45:
-            logger.info("⚠️  F1-SCORE: BUENO (45-55%) - Mejorable")
+            logger.info("F1-SCORE: BUENO (45-55%) - Mejorable")
         else:
-            logger.info("❌ F1-SCORE: BAJO (<45%) - REQUIERE MEJORA")
+            logger.info("F1-SCORE: BAJO (<45%) - REQUIERE MEJORA")
         
         # Análisis del threshold
         threshold = getattr(self.model, 'optimal_threshold', 0.5)
-        logger.info(f"\n🎯 THRESHOLD ÓPTIMO: {threshold:.3f}")
+        logger.info(f"\nTHRESHOLD ÓPTIMO: {threshold:.3f}")
         if threshold >= 0.35:
-            logger.info("✅ THRESHOLD: CONSERVADOR (bueno para precision)")
+            logger.info("THRESHOLD: CONSERVADOR (bueno para precision)")
         elif threshold >= 0.25:
-            logger.info("⚠️  THRESHOLD: MODERADO")
+            logger.info("THRESHOLD: MODERADO")
         else:
-            logger.info("❌ THRESHOLD: MUY BAJO (riesgo de falsos positivos)")
+            logger.info("THRESHOLD: MUY BAJO (riesgo de falsos positivos)")
         
         logger.info("=" * 60)
         
@@ -734,164 +734,113 @@ THRESHOLD OPTIMIZADO:
                    ha='center', va='center', transform=ax.transAxes)
     
     def save_results(self):
-        """Guarda todos los resultados del entrenamiento."""
-        logger.info("Guardando resultados...")
+        """
+        Guarda todos los resultados del entrenamiento siguiendo el patrón de trainer_3pt.py
+        """
+        print("Guardando resultados...")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Intentar guardar modelo (puede fallar debido a clases locales)
-        model_path = os.path.normpath(os.path.join(self.output_dir, 'double_double_model.pkl'))
+        # Guardar modelo entrenado
+        model_path = os.path.join(self.output_dir, "dd_model.joblib")
         try:
             self.model.save_model(model_path)
-            logger.info(f"Modelo guardado exitosamente en: {model_path}")
+            print(f"Modelo guardado: {model_path}")
         except Exception as e:
-            logger.warning(f"No se pudo guardar el modelo debido a: {str(e)}")
-            logger.info("Continuando con el guardado de otros resultados...")
+            print(f"Error guardando modelo: {str(e)}")
         
-        # Guardar reporte completo
+        # Guardar métricas principales en JSON (siguiendo patrón de trainer_3pt.py)
+        if self.training_results:
+            metrics_path = os.path.join(self.output_dir, "dd_training_results.json")
+            
+            # Extraer métricas principales del stacking_metrics
+            stacking_metrics = self.training_results.get('stacking_metrics', {})
+            cv_scores = self.training_results.get('cv_scores', {})
+            
+            # Crear estructura JSON similar a trainer_3pt.py
+            json_results = {
+                'accuracy': float(stacking_metrics.get('accuracy', 0)),
+                'precision': float(stacking_metrics.get('precision', 0)),
+                'recall': float(stacking_metrics.get('recall', 0)),
+                'f1_score': float(stacking_metrics.get('f1_score', 0)),
+                'roc_auc': float(stacking_metrics.get('roc_auc', 0)),
+                'cv_accuracy_mean': float(cv_scores.get('accuracy', {}).get('mean', 0)) if isinstance(cv_scores.get('accuracy'), dict) else 0,
+                'cv_accuracy_std': float(cv_scores.get('accuracy', {}).get('std', 0)) if isinstance(cv_scores.get('accuracy'), dict) else 0,
+                'cv_precision_mean': float(cv_scores.get('precision', {}).get('mean', 0)) if isinstance(cv_scores.get('precision'), dict) else 0,
+                'cv_f1_mean': float(cv_scores.get('f1_score', {}).get('mean', 0)) if isinstance(cv_scores.get('f1_score'), dict) else 0,
+                'cv_roc_auc_mean': float(cv_scores.get('roc_auc', {}).get('mean', 0)) if isinstance(cv_scores.get('roc_auc'), dict) else 0
+            }
+            
+            with open(metrics_path, 'w') as f:
+                json.dump(json_results, f, indent=2)
+            
+            print(f"Métricas guardadas: {metrics_path}")
+        
+        # Guardar predicciones
+        if self.predictions is not None:
+            predictions_df = self.df[['Player', 'Date', 'double_double']].copy()
+            predictions_df['Predicted_DD'] = self.predictions
+            if self.prediction_probabilities is not None:
+                predictions_df['DD_Probability'] = self.prediction_probabilities
+            predictions_df['Correct'] = (predictions_df['double_double'] == predictions_df['Predicted_DD']).astype(int)
+            
+            predictions_path = os.path.join(self.output_dir, "dd_predictions.csv")
+            predictions_df.to_csv(predictions_path, index=False)
+            print(f"Predicciones guardadas: {predictions_path}")
+        
+        # Guardar feature importance
+        try:
+            feature_importance = self.model.get_feature_importance(50)
+            if feature_importance and 'average' in feature_importance:
+                avg_importance = feature_importance['average']
+                if 'top_features' in avg_importance:
+                    importance_df = pd.DataFrame(
+                        avg_importance['top_features'], 
+                        columns=['Feature', 'Importance']
+                    )
+                    importance_path = os.path.join(self.output_dir, "dd_feature_importance.csv")
+                    importance_df.to_csv(importance_path, index=False)
+                    print(f"Feature importance guardado: {importance_path}")
+        except Exception as e:
+            print(f"Error guardando feature importance: {str(e)}")
+        
+        # Guardar reporte completo (adicional)
         report = {
             'model_type': 'Double Double Advanced Ensemble',
             'training_results': self.training_results,
             'model_summary': getattr(self.model, 'training_summary', {}),
             'timestamp': datetime.now().isoformat()
         }
-        report_path = os.path.normpath(os.path.join(self.output_dir, 'training_report.json'))
+        report_path = os.path.join(self.output_dir, 'dd_training_report.json')
+        
+        # Convertir numpy arrays a listas para JSON serialization
+        def convert_numpy(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, (np.integer, np.floating)):
+                return float(obj)
+            elif isinstance(obj, dict):
+                return {k: convert_numpy(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy(item) for item in obj]
+            return obj
+        
+        report = convert_numpy(report)
+        
         with open(report_path, 'w') as f:
             json.dump(report, f, indent=2, default=str)
         
-        # Guardar predicciones
-        if self.predictions is not None:
-            predictions_df = self.df[['Player', 'Date', 'Team', 'double_double']].copy()
-            predictions_df['dd_predicted'] = self.predictions
-            if self.prediction_probabilities is not None:
-                predictions_df['dd_probability'] = self.prediction_probabilities
-                predictions_df['correct_prediction'] = (self.predictions == self.df['double_double']).astype(int)
-            
-            predictions_path = os.path.normpath(os.path.join(self.output_dir, 'predictions.csv'))
-            predictions_df.to_csv(predictions_path, index=False)
-        
-        try:
-            if hasattr(self.model, 'feature_importance') and self.model.feature_importance:
-                logger.info("Procesando feature importance para guardado...")
-                
-                # Usar el método get_feature_importance del modelo para obtener datos estructurados
-                feature_importance_data = self.model.get_feature_importance(top_n=50)
-                
-                importance_data = []
-                
-                # Procesar importancia promedio si está disponible
-                if 'average' in feature_importance_data:
-                    avg_data = feature_importance_data['average']
-                    if 'top_features' in avg_data:
-                        for feature_name, importance_val in avg_data['top_features']:
-                            importance_data.append({
-                                'feature': feature_name, 
-                                'importance': float(importance_val),
-                                'model': 'average'
-                            })
-                        logger.info(f"Procesadas {len(avg_data['top_features'])} features de importancia promedio")
-                
-                # Si no hay promedio, procesar modelos individuales
-                if not importance_data:
-                    for model_name, model_data in feature_importance_data.items():
-                        if model_name != 'average' and 'top_features' in model_data:
-                            for feature_name, importance_val in model_data['top_features'][:20]:  # Top 20 por modelo
-                                importance_data.append({
-                                    'feature': feature_name,
-                                    'importance': float(importance_val),
-                                    'model': model_name
-                                })
-                    logger.info(f"Procesadas features de {len(feature_importance_data)} modelos individuales")
-                
-                # Fallback: procesar directamente desde feature_importance si los métodos anteriores fallan
-                if not importance_data:
-                    logger.warning("Métodos estructurados fallaron, procesando directamente...")
-                    for model_name, model_info in self.model.feature_importance.items():
-                        if isinstance(model_info, dict) and 'importances' in model_info and 'feature_names' in model_info:
-                            importances = model_info['importances']
-                            feature_names = model_info['feature_names']
-                            
-                            if len(importances) == len(feature_names):
-                                for feat, imp in zip(feature_names, importances):
-                                    if imp > 0:  # Solo incluir features con importancia > 0
-                                        importance_data.append({
-                                            'feature': feat,
-                                            'importance': float(imp),
-                                            'model': model_name
-                                        })
-                
-                if importance_data:
-                    # Crear DataFrame y ordenar por importancia
-                    importance_df = pd.DataFrame(importance_data)
-                    
-                    # Si tenemos múltiples modelos, agrupar por feature y promediar
-                    if 'model' in importance_df.columns and len(importance_df['model'].unique()) > 1:
-                        importance_df = importance_df.groupby('feature')['importance'].mean().reset_index()
-                    
-                    importance_df = importance_df.sort_values('importance', ascending=False)
-                    
-                    importance_path = os.path.normpath(os.path.join(self.output_dir, 'feature_importance.csv'))
-                    importance_df.to_csv(importance_path, index=False)
-                    
-                    logger.info(f"Feature importance guardado exitosamente: {len(importance_df)} features")
-                    logger.info(f"Top 5 features: {list(importance_df.head()['feature'])}")
-                else:
-                    logger.warning("No se pudieron extraer datos válidos de feature importance")
-                    # Crear archivo vacío para evitar errores
-                    empty_df = pd.DataFrame({'feature': ['no_data'], 'importance': [0.0]})
-                    importance_path = os.path.normpath(os.path.join(self.output_dir, 'feature_importance.csv'))
-                    empty_df.to_csv(importance_path, index=False)
-            else:
-                logger.warning("Feature importance no disponible en el modelo")
-                # Crear archivo vacío
-                empty_df = pd.DataFrame({'feature': ['not_available'], 'importance': [0.0]})
-                importance_path = os.path.normpath(os.path.join(self.output_dir, 'feature_importance.csv'))
-                empty_df.to_csv(importance_path, index=False)
-                
-        except Exception as e:
-            logger.error(f"Error guardando feature importance: {str(e)}")
-            # Crear archivo de error para debugging
-            error_df = pd.DataFrame({'feature': ['error'], 'importance': [0.0], 'error': [str(e)]})
-            importance_path = os.path.normpath(os.path.join(self.output_dir, 'feature_importance.csv'))
-            error_df.to_csv(importance_path, index=False)
-        
-        # Crear resumen de archivos generados
-        files_summary = {
-            'model_file': 'double_double_model.pkl',
-            'dashboard_image': 'model_dashboard_complete.png',
-            'training_report': 'training_report.json',
-            'predictions': 'predictions.csv',
-            'feature_importance': 'feature_importance.csv',
-            'output_directory': os.path.normpath(self.output_dir),
-            'generation_timestamp': datetime.now().isoformat()
-        }
-        
-        summary_path = os.path.normpath(os.path.join(self.output_dir, 'files_summary.json'))
-        with open(summary_path, 'w') as f:
-            json.dump(files_summary, f, indent=2)
-        
-        logger.info(f"Resultados guardados en: {os.path.normpath(self.output_dir)}")
-        logger.info("Archivos generados:")
-        if os.path.exists(model_path):
-            logger.info(f"  • Modelo: {model_path}")
-        logger.info(f"  • Dashboard PNG: {os.path.normpath(os.path.join(self.output_dir, 'model_dashboard_complete.png'))}")
-        logger.info(f"  • Reporte: {report_path}")
-        if self.predictions is not None:
-            logger.info(f"  • Predicciones: {predictions_path}")
-        logger.info(f"  • Resumen: {summary_path}")
+        print(f"Archivos guardados en: {self.output_dir}")
     
     def run_complete_training(self):
         """
-        Ejecuta el pipeline completo de entrenamiento.
-        
-        Returns:
-            Dict: Resultados completos del entrenamiento
+        Ejecuta el pipeline completo de entrenamiento para Double Double.
         """
-        logger.info("Iniciando pipeline de entrenamiento Double Double...")
+        print("Iniciando entrenamiento Double Double...")
         
         try:
-            # 1. Cargar datos
+            # 1. Cargar y preparar datos
             self.load_and_prepare_data()
             
             # 2. Entrenar modelo
@@ -903,23 +852,45 @@ THRESHOLD OPTIMIZADO:
             # 4. Guardar resultados
             self.save_results()
             
-            logger.info("Pipeline ejecutado exitosamente!")
+            # Resumen final
+            if results:
+                stacking_metrics = results.get('stacking_metrics', {})
+                print("\nRESUMEN FINAL DEL MODELO DOUBLE DOUBLE")
+                print(f"Accuracy: {stacking_metrics.get('accuracy', 'N/A'):.4f}")
+                print(f"Precision: {stacking_metrics.get('precision', 'N/A'):.4f}")
+                print(f"Recall: {stacking_metrics.get('recall', 'N/A'):.4f}")
+                print(f"F1-Score: {stacking_metrics.get('f1_score', 'N/A'):.4f}")
+                print(f"ROC-AUC: {stacking_metrics.get('roc_auc', 'N/A'):.4f}")
+            
             return results
             
         except Exception as e:
-            logger.error(f"Error en pipeline de entrenamiento: {str(e)}")
+            print(f"Error: {str(e)}")
             raise
 
 
 def main():
-    """Función principal para ejecutar el trainer."""
-    # Configurar logging
+    """
+    Función principal para ejecutar el entrenamiento completo de Double Double.
+    """
+    # Configurar logging ultra-silencioso
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        level=logging.ERROR,
+        format='%(asctime)s - %(levelname)s - %(message)s'
     )
     
-    # Rutas de datos correctas
+    # Solo mensajes críticos del trainer principal
+    main_logger = logging.getLogger(__name__)
+    main_logger.setLevel(logging.WARNING)
+    
+    # Silenciar librerías externas
+    logging.getLogger('sklearn').setLevel(logging.ERROR)
+    logging.getLogger('xgboost').setLevel(logging.ERROR)
+    logging.getLogger('lightgbm').setLevel(logging.ERROR)
+    logging.getLogger('catboost').setLevel(logging.ERROR)
+    logging.getLogger('optuna').setLevel(logging.ERROR)
+    
+    # Rutas de datos (ajustar según tu configuración)
     game_data_path = "data/players.csv"
     biometrics_path = "data/height.csv"
     teams_path = "data/teams.csv"
@@ -929,9 +900,10 @@ def main():
         game_data_path=game_data_path,
         biometrics_path=biometrics_path,
         teams_path=teams_path,
-        output_dir="trained_models/double_double_model",
+        output_dir="results/double_double_model",
         n_trials=50,
-        cv_folds=5
+        cv_folds=5,
+        random_state=42
     )
     
     # Ejecutar pipeline completo
@@ -943,7 +915,7 @@ def main():
     
     # Mostrar información del modelo
     stacking_metrics = results.get('stacking_metrics', {})
-    print(f"\n📊 MODELO DOUBLE DOUBLE (Advanced Ensemble):")
+    print(f"\nMODELO DOUBLE DOUBLE (Advanced Ensemble):")
     print(f"   Accuracy: {stacking_metrics.get('accuracy', 0):.4f}")
     print(f"   Precision: {stacking_metrics.get('precision', 0):.4f}")
     print(f"   Recall: {stacking_metrics.get('recall', 0):.4f}")
@@ -951,7 +923,7 @@ def main():
     print(f"   ROC-AUC: {stacking_metrics.get('roc_auc', 0):.4f}")
     
     # Mostrar información adicional
-    print(f"\n📋 INFORMACIÓN ADICIONAL:")
+    print(f"\nINFORMACIÓN ADICIONAL:")
     print(f"   Modelos Base: XGBoost, LightGBM, CatBoost, Random Forest, Neural Network, Logistic Regression")
     print(f"   Features Especializadas: {results.get('specialized_features_used', 0)}")
     print(f"   Muestras Entrenamiento: {results.get('training_samples', 0)}")

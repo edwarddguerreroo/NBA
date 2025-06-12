@@ -677,14 +677,27 @@ MODELO ENSEMBLE:
 
 
 def main():
-    """Función principal para ejecutar el trainer."""
-    # Configurar logging
+    """
+    Función principal para ejecutar el entrenamiento completo de IS_WIN.
+    """
+    # Configurar logging ultra-silencioso
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        level=logging.ERROR,
+        format='%(asctime)s - %(levelname)s - %(message)s'
     )
     
-    # Rutas de datos correctas
+    # Solo mensajes críticos del trainer principal
+    main_logger = logging.getLogger(__name__)
+    main_logger.setLevel(logging.WARNING)
+    
+    # Silenciar librerías externas
+    logging.getLogger('sklearn').setLevel(logging.ERROR)
+    logging.getLogger('xgboost').setLevel(logging.ERROR)
+    logging.getLogger('lightgbm').setLevel(logging.ERROR)
+    logging.getLogger('catboost').setLevel(logging.ERROR)
+    logging.getLogger('optuna').setLevel(logging.ERROR)
+    
+    # Rutas de datos (ajustar según tu configuración)
     game_data_path = "data/players.csv"
     biometrics_path = "data/height.csv"
     teams_path = "data/teams.csv"
@@ -695,41 +708,18 @@ def main():
         biometrics_path=biometrics_path,
         teams_path=teams_path,
         output_dir="results/is_win_model",
-        n_trials=20,  # Reducido para pruebas más rápidas
-        cv_folds=5
+        n_trials=50,
+        cv_folds=5,
+        random_state=42
     )
     
     # Ejecutar pipeline completo
     results = trainer.run_complete_training()
     
-    print("\n" + "="*80)
-    print("RESUMEN FINAL DE ENTRENAMIENTO IS WIN")
-    print("="*80)
+    print("Entrenamiento Is Win Model completado!")
+    print(f"Resultados: {trainer.output_dir}")
     
-    # Mostrar información del modelo
-    print(f"\n📊 MODELO IS WIN (Ensemble de Clasificación):")
-    if 'accuracy' in results:
-        print(f"   Accuracy: {results['accuracy']:.4f}")
-    if 'precision' in results:
-        print(f"   Precision: {results['precision']:.4f}")
-    if 'recall' in results:
-        print(f"   Recall: {results['recall']:.4f}")
-    if 'f1_score' in results:
-        print(f"   F1-Score: {results['f1_score']:.4f}")
-    if 'auc_roc' in results:
-        print(f"   AUC-ROC: {results['auc_roc']:.4f}")
-    
-    # Mostrar información adicional
-    print(f"\n📋 INFORMACIÓN ADICIONAL:")
-    print(f"   Modelos Base: XGBoost, LightGBM, Random Forest")
-    print(f"   Neural Network, Logistic Regression, SVM")
-    print(f"   Meta-learner: Ensemble optimizado")
-    print(f"   Validación: Cruzada estratificada (5 folds)")
-    print(f"   Optimización: Bayesiana con GPU support")
-    
-    print("="*80)
-    print("Entrenamiento Is Win completado exitosamente!")
-    print("="*80)
+    return results
 
 
 if __name__ == "__main__":

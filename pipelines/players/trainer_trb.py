@@ -765,14 +765,27 @@ MODELOS BASE:
 
 
 def main():
-    """Función principal para ejecutar el trainer."""
-    # Configurar logging
+    """
+    Función principal para ejecutar el entrenamiento completo de TRB.
+    """
+    # Configurar logging ultra-silencioso
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        level=logging.ERROR,
+        format='%(asctime)s - %(levelname)s - %(message)s'
     )
     
-    # Rutas de datos correctas
+    # Solo mensajes críticos del trainer principal
+    main_logger = logging.getLogger(__name__)
+    main_logger.setLevel(logging.WARNING)
+    
+    # Silenciar librerías externas
+    logging.getLogger('sklearn').setLevel(logging.ERROR)
+    logging.getLogger('xgboost').setLevel(logging.ERROR)
+    logging.getLogger('lightgbm').setLevel(logging.ERROR)
+    logging.getLogger('catboost').setLevel(logging.ERROR)
+    logging.getLogger('optuna').setLevel(logging.ERROR)
+    
+    # Rutas de datos (ajustar según tu configuración)
     game_data_path = "data/players.csv"
     biometrics_path = "data/height.csv"
     teams_path = "data/teams.csv"
@@ -783,56 +796,18 @@ def main():
         biometrics_path=biometrics_path,
         teams_path=teams_path,
         output_dir="results/trb_model",
-        n_trials=20,  # Reducido para pruebas más rápidas
-        cv_folds=5
+        n_trials=20,
+        cv_folds=5,
+        random_state=42
     )
     
     # Ejecutar pipeline completo
     results = trainer.run_complete_training()
     
-    print("\n" + "="*80)
-    print("RESUMEN FINAL DE ENTRENAMIENTO TRB")
-    print("="*80)
+    print("Entrenamiento TRB Model completado!")
+    print(f"Resultados: {trainer.output_dir}")
     
-    # Mostrar información del modelo
-    print(f"\n📊 MODELO TRB (XGBoost Stacking Ensemble):")
-    if 'mae' in results:
-        print(f"   MAE: {results['mae']:.4f}")
-    if 'rmse' in results:
-        print(f"   RMSE: {results['rmse']:.4f}")
-    if 'r2' in results:
-        print(f"   R²: {results['r2']:.4f}")
-    
-    # Mostrar métricas específicas de rebotes
-    print(f"\n🏀 MÉTRICAS ESPECÍFICAS DE REBOTES:")
-    if 'accuracy_1reb' in results:
-        print(f"   Accuracy ±1 rebote: {results['accuracy_1reb']:.1f}%")
-    if 'accuracy_2reb' in results:
-        print(f"   Accuracy ±2 rebotes: {results['accuracy_2reb']:.1f}%")
-    if 'accuracy_3reb' in results:
-        print(f"   Accuracy ±3 rebotes: {results['accuracy_3reb']:.1f}%")
-    
-    # Mostrar métricas finales
-    print(f"\n📈 MÉTRICAS FINALES (en datos de prueba):")
-    if 'final_mae' in results:
-        print(f"   MAE Final: {results['final_mae']:.4f}")
-    if 'final_rmse' in results:
-        print(f"   RMSE Final: {results['final_rmse']:.4f}")
-    if 'final_r2' in results:
-        print(f"   R² Final: {results['final_r2']:.4f}")
-    if 'final_accuracy_2reb' in results:
-        print(f"   Accuracy Final ±2reb: {results['final_accuracy_2reb']:.1f}%")
-    
-    # Mostrar información adicional
-    print(f"\n📋 INFORMACIÓN ADICIONAL:")
-    print(f"   Modelos base: XGBoost, LightGBM, CatBoost, Gradient Boosting, Ridge")
-    print(f"   Meta-learner: Ridge con regularización L2")
-    print(f"   Validación: Cruzada temporal (5 folds)")
-    print(f"   Optimización: Bayesiana con Optuna")
-    
-    print("="*80)
-    print("Entrenamiento TRB completado exitosamente!")
-    print("="*80)
+    return results
 
 
 if __name__ == "__main__":

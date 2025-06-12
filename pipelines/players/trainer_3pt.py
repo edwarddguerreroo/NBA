@@ -116,7 +116,7 @@ class XGBoost3PTTrainer:
         Returns:
             pd.DataFrame: Datos preparados para entrenamiento
         """
-        print("📊 Cargando datos NBA...")
+        print("Cargando datos NBA...")
         
         # Los datos ya están cargados en __init__, solo verificamos
         if self.df is None or self.teams_df is None:
@@ -175,7 +175,7 @@ class XGBoost3PTTrainer:
         """
         Genera una visualización completa en PNG con todas las métricas específicas para triples.
         """
-        print("📊 Generando visualizaciones...")
+        print("Generando visualizaciones...")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -232,7 +232,7 @@ class XGBoost3PTTrainer:
         plt.savefig(dashboard_path, dpi=300, bbox_inches='tight', facecolor='white')
         plt.close(fig)
         
-        print(f"📈 Dashboard guardado: {dashboard_path}")
+        print(f"Dashboard guardado: {dashboard_path}")
     
     def _plot_model_metrics_summary(self, ax):
         """Gráfico resumen de métricas principales del modelo"""
@@ -600,7 +600,7 @@ class XGBoost3PTTrainer:
         """
         Guarda todos los resultados del entrenamiento en archivos.
         """
-        print("💾 Guardando resultados...")
+        print("Guardando resultados...")
         
         # Guardar modelo entrenado
         model_path = os.path.join(self.output_dir, "3pt_model.joblib")
@@ -642,13 +642,13 @@ class XGBoost3PTTrainer:
             importance_path = os.path.join(self.output_dir, "3pt_feature_importance.csv")
             importance_df.to_csv(importance_path, index=False)
         
-        print(f"✅ Archivos guardados en: {self.output_dir}")
+        print(f"Archivos guardados en: {self.output_dir}")
     
     def run_complete_training(self):
         """
         Ejecuta el pipeline completo de entrenamiento para triples.
         """
-        print("🚀 Iniciando entrenamiento ultra-perfeccionado...")
+        print("Iniciando entrenamiento ultra-perfeccionado...")
         
         try:
             # 1. Cargar y preparar datos
@@ -666,7 +666,7 @@ class XGBoost3PTTrainer:
             # Resumen final
             if results:
                 training_metrics = results.get('training_metrics', {})
-                print("\n🎯 RESUMEN FINAL DEL MODELO 3PT")
+                print("\nRESUMEN FINAL DEL MODELO 3PT")
                 print(f"MAE: {training_metrics.get('mae', 'N/A'):.4f}")
                 print(f"RMSE: {training_metrics.get('rmse', 'N/A'):.4f}")
                 print(f"R²: {training_metrics.get('r2', 'N/A'):.4f}")
@@ -676,7 +676,7 @@ class XGBoost3PTTrainer:
             return results
             
         except Exception as e:
-            print(f"❌ Error: {str(e)}")
+            print(f"Error: {str(e)}")
             raise
 
 
@@ -721,7 +721,7 @@ def main():
     results = trainer.run_complete_training()
     
     print("🎉 ¡Entrenamiento ultra-perfeccionado completado!")
-    print(f"📁 Resultados: {trainer.output_dir}")
+    print(f" Resultados: {trainer.output_dir}")
     
     return results
 

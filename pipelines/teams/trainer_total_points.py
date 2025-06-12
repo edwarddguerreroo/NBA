@@ -734,14 +734,27 @@ MODELOS BASE:
 
 
 def main():
-    """Función principal para ejecutar el trainer."""
-    # Configurar logging
+    """
+    Función principal para ejecutar el entrenamiento completo de TOTAL_POINTS.
+    """
+    # Configurar logging ultra-silencioso
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        level=logging.ERROR,
+        format='%(asctime)s - %(levelname)s - %(message)s'
     )
     
-    # Rutas de datos correctas
+    # Solo mensajes críticos del trainer principal
+    main_logger = logging.getLogger(__name__)
+    main_logger.setLevel(logging.WARNING)
+    
+    # Silenciar librerías externas
+    logging.getLogger('sklearn').setLevel(logging.ERROR)
+    logging.getLogger('xgboost').setLevel(logging.ERROR)
+    logging.getLogger('lightgbm').setLevel(logging.ERROR)
+    logging.getLogger('catboost').setLevel(logging.ERROR)
+    logging.getLogger('optuna').setLevel(logging.ERROR)
+    
+    # Rutas de datos (ajustar según tu configuración)
     game_data_path = "data/players.csv"
     biometrics_path = "data/height.csv"
     teams_path = "data/teams.csv"
@@ -752,57 +765,18 @@ def main():
         biometrics_path=biometrics_path,
         teams_path=teams_path,
         output_dir="results/total_points_model",
-        n_trials=20,  # Reducido para pruebas más rápidas
-        cv_folds=5
+        n_trials=50,
+        cv_folds=5,
+        random_state=42
     )
     
     # Ejecutar pipeline completo
     results = trainer.run_complete_training()
     
-    print("\n" + "="*80)
-    print("RESUMEN FINAL DE ENTRENAMIENTO TOTAL POINTS")
-    print("="*80)
+    print("Entrenamiento Total Points Model completado!")
+    print(f"Resultados: {trainer.output_dir}")
     
-    # Mostrar información del modelo
-    print(f"\n📊 MODELO TOTAL POINTS (Ensemble de Regresión):")
-    if 'mae' in results:
-        print(f"   MAE: {results['mae']:.3f}")
-    if 'rmse' in results:
-        print(f"   RMSE: {results['rmse']:.3f}")
-    if 'r2' in results:
-        print(f"   R²: {results['r2']:.3f}")
-    
-    # Mostrar métricas específicas de puntos totales
-    print(f"\n🏀 MÉTRICAS ESPECÍFICAS DE PUNTOS TOTALES:")
-    if 'accuracy_10pts' in results:
-        print(f"   Accuracy ±10 puntos: {results['accuracy_10pts']:.1f}%")
-    if 'accuracy_20pts' in results:
-        print(f"   Accuracy ±20 puntos: {results['accuracy_20pts']:.1f}%")
-    
-    # Mostrar métricas finales
-    print(f"\n📈 MÉTRICAS FINALES (en datos de prueba):")
-    if 'final_mae' in results:
-        print(f"   MAE Final: {results['final_mae']:.3f}")
-    if 'final_rmse' in results:
-        print(f"   RMSE Final: {results['final_rmse']:.3f}")
-    if 'final_r2' in results:
-        print(f"   R² Final: {results['final_r2']:.3f}")
-    if 'final_accuracy_20pts' in results:
-        print(f"   Accuracy Final ±20pts: {results['final_accuracy_20pts']:.1f}%")
-    
-    # Mostrar información adicional
-    print(f"\n📋 INFORMACIÓN ADICIONAL:")
-    print(f"   Especialistas Game Flow: XGBoost, LightGBM")
-    print(f"   Especialistas Dynamics: CatBoost, Random Forest")
-    print(f"   Especialistas Patterns: Neural Network, Ridge")
-    print(f"   Meta-learner: Ensemble optimizado")
-    print(f"   Validación: Cruzada temporal (5 folds)")
-    print(f"   Optimización: Bayesiana avanzada")
-    print(f"   Over/Under: Analysis incluido")
-    
-    print("="*80)
-    print("Entrenamiento Total Points completado exitosamente!")
-    print("="*80)
+    return results
 
 
 if __name__ == "__main__":

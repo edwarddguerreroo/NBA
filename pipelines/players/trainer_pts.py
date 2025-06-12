@@ -274,7 +274,7 @@ Validación Cruzada:
 • MAE CV: {cv_mae_mean:.3f}
 • R² CV: {cv_r2_mean:.3f}
 
-Estado: ✅ PRODUCCIÓN
+Estado: PRODUCCIÓN
         """
         
         ax.text(0.05, 0.95, metrics_text, transform=ax.transAxes, fontsize=11,
@@ -652,14 +652,27 @@ Estado: ✅ PRODUCCIÓN
 
 
 def main():
-    """Función principal para ejecutar el trainer."""
-    # Configurar logging
+    """
+    Función principal para ejecutar el entrenamiento completo de PTS.
+    """
+    # Configurar logging ultra-silencioso
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        level=logging.ERROR,
+        format='%(asctime)s - %(levelname)s - %(message)s'
     )
     
-    # Rutas de datos correctas
+    # Solo mensajes críticos del trainer principal
+    main_logger = logging.getLogger(__name__)
+    main_logger.setLevel(logging.WARNING)
+    
+    # Silenciar librerías externas
+    logging.getLogger('sklearn').setLevel(logging.ERROR)
+    logging.getLogger('xgboost').setLevel(logging.ERROR)
+    logging.getLogger('lightgbm').setLevel(logging.ERROR)
+    logging.getLogger('catboost').setLevel(logging.ERROR)
+    logging.getLogger('optuna').setLevel(logging.ERROR)
+    
+    # Rutas de datos (ajustar según tu configuración)
     game_data_path = "data/players.csv"
     biometrics_path = "data/height.csv"
     teams_path = "data/teams.csv"
@@ -670,17 +683,18 @@ def main():
         biometrics_path=biometrics_path,
         teams_path=teams_path,
         output_dir="results/pts_model",
-        n_trials=20,  # Reducido para pruebas más rápidas
-        cv_folds=5
+        n_trials=20,
+        cv_folds=5,
+        random_state=42
     )
     
     # Ejecutar pipeline completo
     results = trainer.run_complete_training()
     
-    print("Entrenamiento completado!")
-    print(f"MAE: {results['validation_metrics']['mae']:.4f}")
-    print(f"RMSE: {results['validation_metrics']['rmse']:.4f}")
-    print(f"R²: {results['validation_metrics']['r2']:.4f}")
+    print("Entrenamiento PTS Model completado!")
+    print(f"Resultados: {trainer.output_dir}")
+    
+    return results
 
 
 if __name__ == "__main__":
