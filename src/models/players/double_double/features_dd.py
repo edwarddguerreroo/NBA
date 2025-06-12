@@ -144,6 +144,7 @@ class DoubleDoubleFeatureEngineer:
         self._create_statistical_features_simple(df)
         self._create_opponent_features_simple(df)
         self._create_biometric_features_simple(df)
+        self._create_game_context_features_advanced(df)
         
         logger.info("Features especializadas creadas en el DataFrame")
         
@@ -311,7 +312,7 @@ class DoubleDoubleFeatureEngineer:
             if 'TRB' in df.columns:
                 df['team_rebounding_importance'] = df['trb_hist_avg_5g'] / (team_avg_trb + 0.1)
         
-        # Features de fatiga y carga de trabajo
+        # Features de fatiga y carga de trabajo MEJORADAS
         if 'MP' in df.columns:
             # Carga de trabajo reciente
             recent_minutes = self._get_historical_series(df, 'MP', 3, 'mean')
@@ -320,6 +321,17 @@ class DoubleDoubleFeatureEngineer:
             
             # Indicador de alta carga de trabajo
             df['high_workload'] = (df['mp_hist_avg_5g'] >= 30).astype(int)
+            
+            # NUEVAS FEATURES DE FATIGA
+            # Back-to-back games penalty
+            if 'days_rest' in df.columns:
+                df['is_back_to_back'] = (df['days_rest'] == 0).astype(int)
+                df['fatigue_penalty'] = np.where(df['days_rest'] == 0, -0.15, 0.0)
+                df['well_rested_boost'] = np.where(df['days_rest'] >= 2, 0.05, 0.0)
+            
+            # Minutes vs season average (importante para DD)
+            df['minutes_vs_season_avg'] = (df['mp_hist_avg_5g'] - season_avg_minutes) / (season_avg_minutes + 0.1)
+            df['high_minutes_game'] = (df['mp_hist_avg_5g'] >= 32).astype(int)
         
         # Features de oportunidad de double-double
         if all(col in df.columns for col in ['pts_hist_avg_5g', 'trb_hist_avg_5g', 'ast_hist_avg_5g']):
@@ -337,7 +349,7 @@ class DoubleDoubleFeatureEngineer:
                 )
             )
         
-        # Features de forma reciente
+        # Features de forma reciente MEJORADAS
         if 'double_double' in df.columns:
             # Forma reciente en double-doubles (últimos 3 vs anteriores 7)
             recent_dd_rate = df.groupby('Player')['double_double'].shift(1).rolling(window=3, min_periods=1).mean()
@@ -347,6 +359,21 @@ class DoubleDoubleFeatureEngineer:
             # Consistencia en double-doubles
             dd_std = df.groupby('Player')['double_double'].shift(1).rolling(window=10, min_periods=2).std()
             df['dd_consistency_10g'] = 1 / (dd_std.fillna(1) + 1)
+            
+            # NUEVAS FEATURES DE RACHA Y MOMENTUM
+            # Racha actual de DD
+            dd_shifted = df.groupby('Player')['double_double'].shift(1).fillna(0)
+            df['recent_dd_streak'] = dd_shifted.groupby(df['Player']).apply(
+                lambda x: x.iloc[::-1].groupby((x.iloc[::-1] != x.iloc[::-1].shift()).cumsum()).cumcount()[::-1]
+            ).values
+            
+            # DD en últimos 2 juegos
+            df['dd_last_2_games'] = dd_shifted.rolling(window=2, min_periods=1).sum()
+            
+            # Momentum de DD (últimos 3 vs anteriores 3)
+            last_3_dd = dd_shifted.rolling(window=3, min_periods=1).mean()
+            prev_3_dd = dd_shifted.shift(3).rolling(window=3, min_periods=1).mean()
+            df['dd_momentum_6g'] = last_3_dd - prev_3_dd.fillna(0)
         
         return essential_features
     
@@ -896,3 +923,73 @@ class DoubleDoubleFeatureEngineer:
         """Limpiar cache de cálculos para liberar memoria"""
         self._cached_calculations.clear()
         logger.debug("Cache de cálculos limpiado")
+    
+    def _create_game_context_features_advanced(self, df: pd.DataFrame) -> None:
+        """Crear features avanzadas de contexto de juego para mejor precision en DD"""
+        logger.debug("Creando features avanzadas de contexto de juego...")
+        
+        # Features de contexto de juego MEJORADAS
+        if 'Home' in df.columns:
+            df['home_advantage'] = df['Home'].astype(int)
+            
+            # NUEVAS FEATURES DE CONTEXTO
+            # Home vs Away performance differential
+            if 'double_double' in df.columns:
+                home_dd_rate = df[df['Home'] == 1].groupby('Player')['double_double'].mean()
+                away_dd_rate = df[df['Home'] == 0].groupby('Player')['double_double'].mean()
+                df['home_away_dd_diff'] = df['Player'].map(home_dd_rate - away_dd_rate).fillna(0)
+        
+        # Features de rivalidad y motivación EXPANDIDAS
+        if 'Opp' in df.columns:
+            # Crear features de rivalidad (equipos de la misma división)
+            division_rivals = {
+                'ATL': ['MIA', 'ORL', 'CHA', 'WAS'],
+                'BOS': ['NYK', 'BRK', 'PHI', 'TOR'],
+                'CLE': ['DET', 'IND', 'CHI', 'MIL'],
+                'DAL': ['SAS', 'HOU', 'MEM', 'NOP'],
+                'DEN': ['UTA', 'POR', 'OKC', 'MIN'],
+                'GSW': ['LAC', 'LAL', 'SAC', 'PHX']
+            }
+            
+            df['is_division_rival'] = 0
+            for team, rivals in division_rivals.items():
+                mask = (df['Team'] == team) & (df['Opp'].isin(rivals))
+                df.loc[mask, 'is_division_rival'] = 1
+            
+            # NUEVAS FEATURES DE OPONENTE
+            # Performance vs specific opponent
+            if 'double_double' in df.columns:
+                opp_dd_rate = df.groupby(['Player', 'Opp'])['double_double'].mean()
+                df['vs_opp_dd_rate'] = df.set_index(['Player', 'Opp']).index.map(opp_dd_rate).fillna(0.1)
+            
+            # Strong vs weak opponents
+            strong_teams = ['BOS', 'MIL', 'PHI', 'CLE', 'NYK', 'DEN', 'MEM', 'SAC', 'PHX', 'LAC']
+            df['vs_strong_opponent'] = df['Opp'].isin(strong_teams).astype(int)
+        
+        # Features de forma reciente MEJORADAS
+        if 'double_double' in df.columns:
+            # Forma reciente en double-doubles (últimos 3 vs anteriores 7)
+            recent_dd_rate = df.groupby('Player')['double_double'].shift(1).rolling(window=3, min_periods=1).mean()
+            older_dd_rate = df.groupby('Player')['double_double'].shift(4).rolling(window=7, min_periods=1).mean()
+            df['dd_form_trend'] = recent_dd_rate - older_dd_rate.fillna(0)
+            
+            # Consistencia en double-doubles
+            dd_std = df.groupby('Player')['double_double'].shift(1).rolling(window=10, min_periods=2).std()
+            df['dd_consistency_10g'] = 1 / (dd_std.fillna(1) + 1)
+            
+            # NUEVAS FEATURES DE RACHA Y MOMENTUM
+            # Racha actual de DD
+            dd_shifted = df.groupby('Player')['double_double'].shift(1).fillna(0)
+            df['recent_dd_streak'] = dd_shifted.groupby(df['Player']).apply(
+                lambda x: x.iloc[::-1].groupby((x.iloc[::-1] != x.iloc[::-1].shift()).cumsum()).cumcount()[::-1]
+            ).values
+            
+            # DD en últimos 2 juegos
+            df['dd_last_2_games'] = dd_shifted.rolling(window=2, min_periods=1).sum()
+            
+            # Momentum de DD (últimos 3 vs anteriores 3)
+            last_3_dd = dd_shifted.rolling(window=3, min_periods=1).mean()
+            prev_3_dd = dd_shifted.shift(3).rolling(window=3, min_periods=1).mean()
+            df['dd_momentum_6g'] = last_3_dd - prev_3_dd.fillna(0)
+        
+        logger.debug("Features avanzadas de contexto de juego creadas")

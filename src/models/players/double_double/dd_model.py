@@ -585,7 +585,7 @@ class DoubleDoubleNeuralNetwork(nn.Module):
     
     def forward(self, x):
         """
-        Forward pass simplificado
+        Forward pass con manejo de batch size = 1
         
         Args:
             x: Tensor de entrada [batch_size, input_size]
@@ -593,8 +593,19 @@ class DoubleDoubleNeuralNetwork(nn.Module):
         Returns:
             Tensor de salida [batch_size, 1] con logits
         """
-        # Forward pass a través de todas las capas
-        return self.layers(x)
+        # Si el batch size es 1, usar eval mode para BatchNorm
+        if x.size(0) == 1:
+            # Cambiar temporalmente a eval mode para evitar error de BatchNorm
+            was_training = self.training
+            self.eval()
+            with torch.no_grad():
+                result = self.layers(x)
+            if was_training:
+                self.train()
+            return result
+        else:
+            # Forward pass normal
+            return self.layers(x)
 
 
 class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
@@ -738,8 +749,8 @@ class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
         ).to(self.device)
         
         # CORRECCIÓN CRÍTICA: Usar pos_weight mucho más agresivo para desbalance extremo
-        # Para ratio 10.6:1, necesitamos pos_weight de al menos 20-30
-        pos_weight_tensor = torch.tensor([30.0], device=self.device)  # Peso mucho más agresivo
+        # Para ratio 10.6:1, necesitamos pos_weight de al menos 35-40 para mejor precision
+        pos_weight_tensor = torch.tensor([40.0], device=self.device)  # Peso más agresivo para precision
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
         
         optimizer = optim.AdamW(
@@ -768,7 +779,11 @@ class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
                 optimizer.zero_grad()
                 
                 # Forward pass - salida directa (logits)
-                outputs = self.model(batch_X).squeeze()
+                outputs = self.model(batch_X)
+                
+                # Asegurar dimensiones correctas para BCEWithLogitsLoss
+                if outputs.dim() > 1:
+                    outputs = outputs.squeeze(-1)  # Solo eliminar la última dimensión si existe
                 
                 # CORRECCIÓN: Usar BCEWithLogitsLoss directamente con logits
                 loss = criterion(outputs, batch_y.float())
@@ -791,7 +806,11 @@ class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
             with torch.no_grad():
                 for batch_X, batch_y in val_loader:
                     # Forward pass
-                    outputs = self.model(batch_X).squeeze()
+                    outputs = self.model(batch_X)
+                    
+                    # Asegurar dimensiones correctas
+                    if outputs.dim() > 1:
+                        outputs = outputs.squeeze(-1)
                     
                     # Loss
                     loss = criterion(outputs, batch_y.float())
@@ -857,7 +876,11 @@ class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
         self.model.eval()
         with torch.no_grad():
             # Forward pass - obtener logits
-            logits = self.model(X_tensor).squeeze()
+            logits = self.model(X_tensor)
+            
+            # Asegurar dimensiones correctas
+            if logits.dim() > 1:
+                logits = logits.squeeze(-1)
             
             # Convertir logits a probabilidades usando sigmoid
             probabilities = torch.sigmoid(logits).cpu().numpy()
@@ -973,7 +996,7 @@ class DoubleDoubleAdvancedModel:
         
         # PARTE 4: CLASS WEIGHTS REBALANCEADOS - Más conservadores para reducir falsos positivos
         # Ratio original: 10.6:1, pero usaremos pesos más moderados para mejor precision
-        class_weight_conservative = {0: 1.0, 1: 12.0}  # Reducido de 20.0 a 12.0
+        class_weight_conservative = {0: 1.0, 1: 18.0}  # Aumentado para mejor precision
         
         # CORRECCIÓN 2: Modelos con regularización optimizada para precisión
         self.models = {
@@ -1069,7 +1092,7 @@ class DoubleDoubleAdvancedModel:
                 device=self.device,
                 min_memory_gb=self.min_memory_gb,
                 auto_batch_size=True,
-                pos_weight=12.0    # Conservador para mejor precision
+                pos_weight=18.0    # Aumentado para mejor precision
             )
         }
         
@@ -1288,10 +1311,10 @@ class DoubleDoubleAdvancedModel:
                 ('nn', nn_wrapper)
             ],
             final_estimator=LogisticRegression(
-                class_weight={0: 1.0, 1: 15.0},  # PARTE 4: Conservador para mejor precision
+                class_weight={0: 1.0, 1: 20.0},  # AUMENTADO para mejor precision
                 random_state=42,
-                max_iter=2000,  # Más iteraciones para convergencia
-                C=0.3,  # AUMENTADO regularización para evitar overfitting
+                max_iter=3000,  # Más iteraciones para convergencia
+                C=0.2,  # MÁS regularización para evitar overfitting
                 penalty='l2',
                 solver='liblinear',  # Mejor para datasets pequeños con desbalance
                 fit_intercept=True
@@ -1659,10 +1682,10 @@ class DoubleDoubleAdvancedModel:
                 self.logger.warning(f"Error en método {method}: {str(e)}")
                 threshold_results[method] = {'error': str(e)}
         
-        # Seleccionar el mejor threshold basado en F1 score y precision mínima
+        # Seleccionar el mejor threshold basado en F1 score y precision mínima MEJORADA
         best_method = None
         best_f1 = 0
-        min_precision_required = 0.12  # Precision mínima aceptable
+        min_precision_required = 0.35  # Precision mínima aumentada para mejor calidad
         
         for method, result in threshold_results.items():
             if 'error' not in result:
@@ -1688,13 +1711,13 @@ class DoubleDoubleAdvancedModel:
             self.logger.warning("Todos los métodos avanzados fallaron, usando método legacy")
             self.optimal_threshold = self._calculate_optimal_threshold(y_val, stacking_proba)
         
-        # Validación final del threshold
-        if self.optimal_threshold < 0.05:
-            self.logger.warning(f"Threshold muy bajo ({self.optimal_threshold:.4f}), ajustando a 0.05")
-            self.optimal_threshold = 0.05
-        elif self.optimal_threshold > 0.9:
-            self.logger.warning(f"Threshold muy alto ({self.optimal_threshold:.4f}), ajustando a 0.9")
-            self.optimal_threshold = 0.9
+        # Validación final del threshold con rangos más conservadores
+        if self.optimal_threshold < 0.25:
+            self.logger.warning(f"Threshold muy bajo ({self.optimal_threshold:.4f}), ajustando a 0.35 para mejor precision")
+            self.optimal_threshold = 0.35
+        elif self.optimal_threshold > 0.8:
+            self.logger.warning(f"Threshold muy alto ({self.optimal_threshold:.4f}), ajustando a 0.65")
+            self.optimal_threshold = 0.65
         
         # Evaluar con threshold óptimo final
         y_val_pred_optimal = (stacking_proba >= self.optimal_threshold).astype(int)
