@@ -87,8 +87,11 @@ class TotalPointsFeatureEngine:
         # Crear características basadas en jugadores (si hay datos disponibles)
         df = self._create_player_based_features(df, df_players)
         
-        # Crear características de porcentajes de tiro (NUEVA FUNCIÓN)
+        # Crear características de porcentajes de tiro
         df = self._create_shooting_percentage_features(df)
+        
+        # Crear características de patrones de mercado (NUEVA FUNCIÓN)
+        df = self._create_market_pattern_features(df)
         
         # Crear características avanzadas
         df = self._create_advanced_features(df)
@@ -1965,5 +1968,100 @@ class TotalPointsFeatureEngine:
                     df[f'fg3_pct_volume_interaction_{window}'] = df[fg3_pct_col] * df[fg3a_col]
         
         logger.info(f"Creadas {len([col for col in df.columns if 'pct' in col and col not in available_cols])} nuevas características de porcentajes de tiro")
+        
+        return df
+
+    def _create_market_pattern_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Crea características avanzadas basadas en patrones de mercado y líneas de apuestas
+        para mejorar la precisión del modelo de predicción de puntos totales.
+        
+        Args:
+            df: DataFrame con datos de equipos
+            
+        Returns:
+            DataFrame con características de patrones de mercado agregadas
+        """
+        if df.empty:
+            return df
+        
+        # Verificar si tenemos las columnas necesarias
+        if 'Date' not in df.columns or 'Team' not in df.columns:
+            logger.warning("Columnas Date o Team no encontradas para crear features de mercado")
+            return df
+        
+        # Ordenar cronológicamente
+        df = df.sort_values(['Team', 'Date'])
+        
+        # Crear características de tendencia de mercado (simuladas)
+        if 'total_points' in df.columns:
+            # Calcular la tendencia del mercado (diferencia entre predicción y resultado)
+            # Simulamos líneas de mercado como promedio móvil + bias
+            df['market_line_sim'] = df.groupby('Team')['total_points'].transform(
+                lambda x: x.rolling(10, min_periods=1).mean().shift(1) + 
+                         x.rolling(20, min_periods=1).std().shift(1) * 0.2
+            )
+            
+            # Calcular error del mercado (diferencia entre línea simulada y resultado real)
+            df['market_error'] = df['total_points'] - df['market_line_sim']
+            
+            # Tendencias de error del mercado
+            df['market_error_ma_5'] = df.groupby('Team')['market_error'].transform(
+                lambda x: x.rolling(5, min_periods=1).mean().shift(1)
+            )
+            
+            df['market_error_ma_10'] = df.groupby('Team')['market_error'].transform(
+                lambda x: x.rolling(10, min_periods=1).mean().shift(1)
+            )
+            
+            # Volatilidad del error del mercado
+            df['market_error_std_5'] = df.groupby('Team')['market_error'].transform(
+                lambda x: x.rolling(5, min_periods=1).std().shift(1)
+            )
+            
+            # Dirección del error del mercado (positivo = mercado subestima, negativo = sobrestima)
+            df['market_direction'] = df.groupby('Team')['market_error'].transform(
+                lambda x: np.sign(x.rolling(3, min_periods=1).mean().shift(1))
+            )
+            
+            # Patrón de zigzag (cambios en la dirección del error)
+            df['market_zigzag'] = df.groupby('Team')['market_direction'].transform(
+                lambda x: (x != x.shift(1)).astype(int).rolling(5, min_periods=1).mean().shift(1)
+            )
+            
+            # Eficiencia del mercado (qué tan cerca estuvo la línea del resultado)
+            df['market_efficiency'] = 1 / (1 + np.abs(df['market_error'].shift(1)))
+            
+            # Tendencia de ajuste del mercado
+            df['market_adjustment_trend'] = df.groupby('Team')['market_line_sim'].transform(
+                lambda x: x.diff().rolling(3, min_periods=1).mean().shift(1)
+            )
+            
+            # Correlación entre línea de mercado y resultado real
+            window = 10
+            df['market_correlation'] = df.groupby('Team').apply(
+                lambda g: g['market_line_sim'].rolling(window, min_periods=3).corr(g['total_points']).shift(1)
+            ).reset_index(level=0, drop=True)
+            
+            # Sesgo sistemático del mercado por día de la semana
+            if 'day_of_week' in df.columns:
+                for day in range(7):
+                    day_mask = df['day_of_week'] == day
+                    if day_mask.sum() > 10:  # Solo si tenemos suficientes datos
+                        day_bias = df.loc[day_mask, 'market_error'].mean()
+                        df[f'market_dow_{day}_bias'] = (df['day_of_week'] == day).astype(float) * day_bias
+            
+            # Características de momentum de mercado
+            df['market_momentum'] = df.groupby('Team')['market_line_sim'].transform(
+                lambda x: x.diff().rolling(3, min_periods=1).mean().shift(1)
+            )
+            
+            # Características de reversión a la media
+            df['market_mean_reversion'] = df.groupby('Team')['market_error'].transform(
+                lambda x: x.shift(1) * -0.5  # Factor de reversión
+            )
+            
+            # Eliminar la línea de mercado simulada para evitar data leakage
+            df = df.drop('market_line_sim', axis=1)
         
         return df

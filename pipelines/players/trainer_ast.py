@@ -805,7 +805,7 @@ def main():
     # Ejecutar pipeline completo
     results = trainer.run_complete_training()
     
-    print("Entrenamiento AST completado!")
+    print("Entrenamiento AST Model completado!")
     print(f"Resultados: {trainer.output_dir}")
     
     return results
