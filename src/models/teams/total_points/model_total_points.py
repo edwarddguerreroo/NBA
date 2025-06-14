@@ -177,9 +177,9 @@ class TotalPointsNeuralNet(nn.Module):
             self.dropouts.append(nn.Dropout(dropout_rate))
             prev_size = hidden_size
         
-        # Skip connections
-        self.skip1 = nn.Linear(input_size, hidden_sizes[1])
-        self.skip2 = nn.Linear(hidden_sizes[1], hidden_sizes[-1])
+        # Skip connection simple para arquitectura [64, 32]
+        if len(hidden_sizes) >= 2:
+            self.skip1 = nn.Linear(input_size, hidden_sizes[-1])  # input_size -> 32 (directo al final)
         
         # Capa de salida
         self.output = nn.Linear(hidden_sizes[-1], 1)
@@ -200,30 +200,32 @@ class TotalPointsNeuralNet(nn.Module):
                 nn.init.constant_(m.bias, 0)
     
     def forward(self, x):
-        """Forward pass con arquitectura compleja"""
-        # Guardar para skip connections
-        input_skip = x
+        """Forward pass con manejo robusto de BatchNorm"""
+        # Guardar entrada original para skip connection
+        input_original = x
         
-        # Primera mitad de la red
-        for i in range(len(self.layers) // 2):
-            x = self.layers[i](x)
-            x = self.batch_norms[i](x)
-            x = F.relu(x)
-            x = self.dropouts[i](x)
+        # Primera capa: input_size -> 64
+        x = self.layers[0](x)
         
-        # Primera skip connection
-        x = x + self.skip1(input_skip)
-        skip_mid = x
+        # BatchNorm solo si batch_size > 1
+        if x.size(0) > 1:
+            x = self.batch_norms[0](x)
+        x = F.relu(x)
+        x = self.dropouts[0](x)
         
-        # Segunda mitad de la red
-        for i in range(len(self.layers) // 2, len(self.layers)):
-            x = self.layers[i](x)
-            x = self.batch_norms[i](x)
-            x = F.leaky_relu(x, 0.1)  # Leaky ReLU para evitar neuronas muertas
-            x = self.dropouts[i](x)
+        # Segunda capa: 64 -> 32
+        x = self.layers[1](x)
         
-        # Segunda skip connection
-        x = x + self.skip2(skip_mid)
+        # BatchNorm solo si batch_size > 1
+        if x.size(0) > 1:
+            x = self.batch_norms[1](x)
+        x = F.relu(x)
+        x = self.dropouts[1](x)
+        
+        # Skip connection: input directo a la última capa
+        if hasattr(self, 'skip1'):
+            skip_out = self.skip1(input_original)
+            x = x + skip_out
         
         # Salida
         x = self.output(x)
@@ -338,10 +340,13 @@ class PyTorchTotalPointsRegressor(BaseEstimator, RegressorMixin):
         # Loss function
         criterion = nn.MSELoss()
         
-        # Crear DataLoader
+        # Crear DataLoader con drop_last para evitar batches de tamaño 1
         train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
         train_loader = DataLoader(
-            train_dataset, batch_size=self.batch_size, shuffle=True
+            train_dataset, 
+            batch_size=self.batch_size, 
+            shuffle=True,
+            drop_last=True 
         )
         
         # Entrenamiento
@@ -453,8 +458,7 @@ class PyTorchTotalPointsRegressor(BaseEstimator, RegressorMixin):
         
         return y.flatten()
 
-
-class BlendingRegressor(BaseEstimator, RegressorMixin):
+class NBATotalPointsPredictor:
     """
     Implementación avanzada de Blending para regresión.
     
@@ -851,15 +855,15 @@ class NBATotalPointsPredictor:
         # Red neuronal
         if self.use_neural_network:
             self.models['neural_network'] = PyTorchTotalPointsRegressor(
-                hidden_sizes=[256, 192, 128, 64],
-                dropout_rates=[0.3, 0.3, 0.2, 0.2],
-                epochs=250,
-                batch_size=128,
-                learning_rate=0.001,
-                weight_decay=0.01,
-                early_stopping_patience=25,
+                hidden_sizes=[64, 32],  # Red minimalista: solo 2 capas ocultas
+                dropout_rates=[0.2, 0.1],  # Dropout mínimo
+                epochs=100,  # Menos épocas
+                batch_size=32,  # Batch pequeño para mejor generalización
+                learning_rate=0.003,  # Learning rate mayor para convergencia rápida
+                weight_decay=0.005,  # Weight decay mínimo
+                early_stopping_patience=8,  # Patience muy corto
                 lr_scheduler='cosine',
-                gradient_clip=1.0,
+                gradient_clip=0.5,  # Gradient clip más suave
                 device=self.device,
                 random_state=self.random_state
             )
@@ -897,21 +901,6 @@ class NBATotalPointsPredictor:
             cv=5,
             n_jobs=-1
         )
-        
-        # Blending personalizado con calibración
-        base_models = [
-            self.models.get('xgboost'),
-            self.models.get('lightgbm'),
-            self.models.get('random_forest'),
-            self.models.get('ridge'),
-            self.models.get('huber')
-        ]
-        
-        # Filtrar modelos None
-        base_models = [model for model in base_models if model is not None]
-        
-        # Crear blending con calibración isotónica
-        self.ensemble_models['blending'] = BlendingRegressor(base_models, self.random_state)
     
     def train(self, df_teams: pd.DataFrame, df_players: pd.DataFrame = None,
               validation_split: float = 0.2) -> Dict[str, Any]:
@@ -1421,32 +1410,7 @@ class NBATotalPointsPredictor:
         
         self.ensemble_models['stacking'] = stacking_regressor
         
-        # Blending personalizado con calibración
-        logger.info("Creando Blending Ensemble...")
-        
-        # Calcular pesos basados en MAE de validación
-        model_scores = {}
-        for name, result in self.training_results.get('individual_models', {}).items():
-            if 'val_mae' in result:
-                model_scores[name] = 1 / (result['val_mae'] + 1e-6)
-        
-        # Normalizar pesos
-        total_score = sum(model_scores.values())
-        weights = {name: score/total_score for name, score in model_scores.items()}
-        
-        # Crear predicciones ponderadas
-        blend_pred_val = np.zeros_like(y_val)
-        for name, weight in weights.items():
-            if name in self.optimized_models:
-                pred = self.optimized_models[name].predict(X_val)
-                blend_pred_val += weight * pred
-        
-        results['blending'] = {
-            'val_mae': mean_absolute_error(y_val, blend_pred_val),
-            'val_rmse': np.sqrt(mean_squared_error(y_val, blend_pred_val)),
-            'val_r2': r2_score(y_val, blend_pred_val),
-            'weights': weights
-        }
+        # Blending eliminado - no aportaba valor y tenía mal rendimiento
         
         return results
     

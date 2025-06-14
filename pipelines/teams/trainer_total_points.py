@@ -851,11 +851,19 @@ MODELOS BASE:
             # Resumen final
             if self.training_results:
                 logger.info("\nRESUMEN DE RESULTADOS:")
-                logger.info(f"  - MAE Final: {self.training_results.get('final_mae', 'N/A'):.3f}")
-                logger.info(f"  - RMSE Final: {self.training_results.get('final_rmse', 'N/A'):.3f}")
-                logger.info(f"  - R² Final: {self.training_results.get('final_r2', 'N/A'):.3f}")
-                logger.info(f"  - Accuracy ±10pts: {self.training_results.get('accuracy_10pts', 'N/A'):.1f}%")
-                logger.info(f"  - Accuracy ±20pts: {self.training_results.get('accuracy_20pts', 'N/A'):.1f}%")
+                
+                # Formatear métricas con verificación de tipo
+                final_mae = self.training_results.get('final_mae', 'N/A')
+                final_rmse = self.training_results.get('final_rmse', 'N/A')
+                final_r2 = self.training_results.get('final_r2', 'N/A')
+                accuracy_10pts = self.training_results.get('accuracy_10pts', 'N/A')
+                accuracy_20pts = self.training_results.get('accuracy_20pts', 'N/A')
+                
+                logger.info(f"  - MAE Final: {final_mae:.3f}" if isinstance(final_mae, (int, float)) else f"  - MAE Final: {final_mae}")
+                logger.info(f"  - RMSE Final: {final_rmse:.3f}" if isinstance(final_rmse, (int, float)) else f"  - RMSE Final: {final_rmse}")
+                logger.info(f"  - R² Final: {final_r2:.3f}" if isinstance(final_r2, (int, float)) else f"  - R² Final: {final_r2}")
+                logger.info(f"  - Accuracy ±10pts: {accuracy_10pts:.1f}%" if isinstance(accuracy_10pts, (int, float)) else f"  - Accuracy ±10pts: {accuracy_10pts}")
+                logger.info(f"  - Accuracy ±20pts: {accuracy_20pts:.1f}%" if isinstance(accuracy_20pts, (int, float)) else f"  - Accuracy ±20pts: {accuracy_20pts}")
             
             logger.info(f"\nResultados guardados en: {self.output_dir}")
             

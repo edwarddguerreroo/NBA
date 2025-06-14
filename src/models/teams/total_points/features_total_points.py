@@ -17,6 +17,9 @@ import warnings
 from sklearn.preprocessing import StandardScaler
 import logging
 from datetime import datetime
+from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.feature_selection import VarianceThreshold
 
 warnings.filterwarnings('ignore')
 
@@ -90,14 +93,40 @@ class TotalPointsFeatureEngine:
         # Crear características de porcentajes de tiro
         df = self._create_shooting_percentage_features(df)
         
+        # NUEVAS CARACTERÍSTICAS AVANZADAS BASADAS EN TOP FEATURES IDENTIFICADAS
+        # Crear características avanzadas de volumen de tiros (basado en FGA_FGA_Opp_total_ma siendo top)
+        df = self._create_advanced_shooting_volume_features(df)
+        
         # Crear características de patrones de mercado (NUEVA FUNCIÓN)
         df = self._create_market_pattern_features(df)
+        
+        # Crear características avanzadas de momentum y volatilidad (basado en pts_momentum_sqrt siendo top 5)
+        df = self._create_advanced_momentum_features(df)
+        
+        # Crear características avanzadas de pace (basado en pace_ma_3/5/10 siendo top features)
+        df = self._create_advanced_pace_features(df)
+        
+        # Crear características avanzadas de volatilidad (basado en volatilidad siendo múltiples top features)
+        df = self._create_advanced_volatility_features(df)
+        
+        # Crear características avanzadas de fuerza del oponente
+        df = self._create_opponent_strength_features(df)
+        
+        # Crear características avanzadas de ritmo y eficiencia
+        df = self._create_pace_and_efficiency_features(df)
+        
+        # Crear características ensemble que combinan múltiples aspectos
+        df = self._create_ensemble_features(df)
         
         # Crear características avanzadas
         df = self._create_advanced_features(df)
         
         # Crear variables dummy para características categóricas
         df = self._create_dummy_variables(df)
+        
+        # APLICAR FEATURE SELECTION AVANZADO (DESACTIVADO TEMPORALMENTE)
+        # logger.info("Aplicando feature selection avanzado...")
+        # df = self._advanced_feature_selection(df, target_col='total_points')
         
         # Limpiar y preparar datos finales
         df = self._clean_features(df)
@@ -435,56 +464,39 @@ class TotalPointsFeatureEngine:
         return df_with_opp
     
     def _create_matchup_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Crea features específicas de matchup histórico"""
+        """Crea features específicas de matchup histórico SIN DATA LEAKAGE"""
         # Crear clave de matchup
         df['matchup_key'] = df.apply(lambda x: tuple(sorted([x['Team'], x['Opp']])), axis=1)
         
-        # Versión optimizada para evitar explosión de datos
-        # Calculamos las estadísticas para cada combinación única de matchup_key y Team
-        matchup_stats = []
+        # Ordenar por fecha para asegurar cálculos correctos
+        df = df.sort_values(['matchup_key', 'Team', 'Date']) if 'Date' in df.columns else df.sort_values(['matchup_key', 'Team'])
         
-        for (matchup, team), group in df.groupby(['matchup_key', 'Team']):
-            # Ordenar por fecha para asegurar cálculos correctos
-            group = group.sort_values('Date') if 'Date' in group.columns else group
-            
-            # Calcular estadísticas históricas una vez por grupo
-            total_pts = group['PTS'] + group['PTS_Opp']
-            pts_diff = group['PTS'] - group['PTS_Opp']
-            
-            # Calcular estadísticas expandidas (último valor es el que usaremos)
-            if len(group) > 0:
-                last_idx = group.index[-1]
-                
-                # Calcular valores históricos hasta el penúltimo registro (shift(1))
-                total_pts_mean = total_pts.expanding().mean().shift(1).iloc[-1] if len(total_pts) > 1 else np.nan
-                total_pts_std = total_pts.expanding().std().shift(1).iloc[-1] if len(total_pts) > 1 else np.nan
-                pts_diff_mean = pts_diff.expanding().mean().shift(1).iloc[-1] if len(pts_diff) > 1 else np.nan
-                
-                if 'is_win' in group.columns:
-                    is_win_mean = group['is_win'].expanding().mean().shift(1).iloc[-1] if len(group) > 1 else 0.5
-                else:
-                    is_win_mean = 0.5
-                    
-                # Agregar estadísticas a la lista
-                matchup_stats.append({
-                    'matchup_key': matchup,
-                    'Team': team,
-                    'matchup_total_avg': total_pts_mean,
-                    'matchup_total_std': total_pts_std,
-                    'matchup_diff_avg': pts_diff_mean,
-                    'matchup_win_rate': is_win_mean
-                })
+        # Calcular estadísticas de matchup fila por fila para evitar data leakage
+        df['matchup_total_avg'] = np.nan
+        df['matchup_total_std'] = np.nan
+        df['matchup_diff_avg'] = np.nan
+        df['matchup_win_rate'] = np.nan
         
-        # Convertir a DataFrame
-        if matchup_stats:
-            matchup_stats_df = pd.DataFrame(matchup_stats)
+        # Calcular para cada combinación de matchup_key y Team
+        for (matchup, team), group_indices in df.groupby(['matchup_key', 'Team']).groups.items():
+            group_data = df.loc[group_indices].copy()
             
-            # Merge con el DataFrame original
-            df = df.merge(matchup_stats_df, on=['matchup_key', 'Team'], how='left')
-        else:
-            # Si no hay estadísticas, crear columnas vacías
-            for col in ['matchup_total_avg', 'matchup_total_std', 'matchup_diff_avg', 'matchup_win_rate']:
-                df[col] = np.nan
+            # Calcular total_points y pts_diff para este grupo
+            total_pts = group_data['PTS'] + group_data['PTS_Opp']
+            pts_diff = group_data['PTS'] - group_data['PTS_Opp']
+            is_win = group_data.get('is_win', pd.Series([0.5] * len(group_data), index=group_data.index))
+            
+            # Calcular estadísticas expandidas con shift para cada fila
+            matchup_total_avg = total_pts.expanding().mean().shift(1)
+            matchup_total_std = total_pts.expanding().std().shift(1)
+            matchup_diff_avg = pts_diff.expanding().mean().shift(1)
+            matchup_win_rate = is_win.expanding().mean().shift(1)
+            
+            # Asignar valores calculados al DataFrame original
+            df.loc[group_indices, 'matchup_total_avg'] = matchup_total_avg
+            df.loc[group_indices, 'matchup_total_std'] = matchup_total_std
+            df.loc[group_indices, 'matchup_diff_avg'] = matchup_diff_avg
+            df.loc[group_indices, 'matchup_win_rate'] = matchup_win_rate
         
         return df
     
@@ -579,11 +591,15 @@ class TotalPointsFeatureEngine:
             # Tendencia de ritmo
             df['pace_trend'] = self._calculate_trend(df, 'pace_est', 10)
         
-        # Adaptación al ritmo del oponente
+        # Adaptación al ritmo del oponente CON SHIFT
         if 'pace_ma_5' in df.columns:
-            # Calcular ritmo promedio por equipo
-            team_avg_pace = df.groupby('Team')['pace_ma_5'].transform('mean')
-            opp_avg_pace = df.groupby('Opp')['pace_ma_5'].transform('mean')
+            # Calcular ritmo promedio por equipo usando expanding mean con shift
+            team_avg_pace = df.groupby('Team')['pace_ma_5'].transform(
+                lambda x: x.expanding().mean().shift(1)
+            )
+            opp_avg_pace = df.groupby('Opp')['pace_ma_5'].transform(
+                lambda x: x.expanding().mean().shift(1)
+            )
             
             df['pace_matchup'] = df['pace_ma_5'] - opp_avg_pace
             df['pace_differential'] = team_avg_pace - opp_avg_pace
@@ -1227,16 +1243,42 @@ class TotalPointsFeatureEngine:
         # Verificar que todas las columnas son numéricas
         non_numeric = X.select_dtypes(exclude=['number']).columns.tolist()
         if non_numeric:
-            logger.error(f"Columnas no numéricas detectadas: {non_numeric}")
-            X = X.select_dtypes(include=['number'])
+            logger.warning(f"Convirtiendo columnas no numéricas a numéricas: {non_numeric}")
+            
+            # Intentar convertir columnas categóricas a numéricas
+            for col in non_numeric:
+                if col in X.columns:
+                    try:
+                        # Si es booleana o categórica, convertir a numérica
+                        if X[col].dtype == 'bool':
+                            X[col] = X[col].astype(int)
+                        elif X[col].dtype == 'object':
+                            # Intentar conversión directa
+                            X[col] = pd.to_numeric(X[col], errors='coerce')
+                            # Si hay NaN después de conversión, llenar con 0
+                            if X[col].isna().any():
+                                X[col] = X[col].fillna(0)
+                        else:
+                            # Para otros tipos, forzar conversión
+                            X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0)
+                    except Exception as e:
+                        logger.warning(f"No se pudo convertir {col}: {e}. Eliminando columna.")
+                        X = X.drop(columns=[col])
+            
+            # Verificar nuevamente
+            remaining_non_numeric = X.select_dtypes(exclude=['number']).columns.tolist()
+            if remaining_non_numeric:
+                logger.error(f"Eliminando columnas que no se pudieron convertir: {remaining_non_numeric}")
+                X = X.drop(columns=remaining_non_numeric)
         
         # Detectar y eliminar características con alta correlación con el target
         # Creamos un DataFrame temporal con el target para poder calcular correlaciones
         temp_df = X.copy()
         temp_df[target_col] = y
         
-        # Detectar data leakage con umbral de 0.7
-        leakage_cols = self._detect_data_leakage(temp_df, target_col, threshold=0.7)
+        # Detectar data leakage con umbral más conservador de 0.85
+        # Las medias móviles con shift deberían tener correlaciones menores
+        leakage_cols = self._detect_data_leakage(temp_df, target_col, threshold=0.85)
         
         # Eliminar columnas con posible data leakage
         if leakage_cols:
@@ -1251,6 +1293,55 @@ class TotalPointsFeatureEngine:
         if potential_leakage:
             logger.warning(f"Eliminando {len(potential_leakage)} columnas adicionales de porcentajes sin shift")
             X = X.drop(columns=potential_leakage, errors='ignore')
+        
+        # SISTEMA AVANZADO DE FEATURE SELECTION REACTIVADO
+        logger.info("Aplicando sistema avanzado de feature selection...")
+        
+        # LIMPIEZA DE VALORES INFINITOS Y EXTREMOS ANTES DEL FEATURE SELECTION
+        logger.info("Limpiando valores infinitos y extremos...")
+        
+        # Reemplazar infinitos con NaN
+        X = X.replace([np.inf, -np.inf], np.nan)
+        
+        # Detectar y corregir valores extremadamente grandes
+        for col in X.select_dtypes(include=['number']).columns:
+            if X[col].dtype in ['float64', 'float32']:
+                # Calcular límites razonables (percentiles 0.1% y 99.9%)
+                try:
+                    lower_bound = X[col].quantile(0.001)
+                    upper_bound = X[col].quantile(0.999)
+                    
+                    # Si hay valores fuera de estos límites, limitarlos
+                    extreme_mask = (X[col] < lower_bound) | (X[col] > upper_bound)
+                    if extreme_mask.any():
+                        n_extreme = extreme_mask.sum()
+                        logger.debug(f"Limitando {n_extreme} valores extremos en {col}")
+                        X[col] = X[col].clip(lower=lower_bound, upper=upper_bound)
+                        
+                except Exception as e:
+                    logger.debug(f"Error procesando {col}: {e}")
+        
+        # Llenar NaN con mediana después de la limpieza
+        for col in X.select_dtypes(include=['number']).columns:
+            if X[col].isna().any():
+                median_val = X[col].median()
+                if pd.isna(median_val):
+                    median_val = 0.0
+                X[col] = X[col].fillna(median_val)
+        
+        # Verificar que no quedan infinitos
+        inf_cols = []
+        for col in X.columns:
+            if np.isinf(X[col]).any():
+                inf_cols.append(col)
+        
+        if inf_cols:
+            logger.warning(f"Eliminando {len(inf_cols)} columnas con infinitos persistentes: {inf_cols[:5]}...")
+            X = X.drop(columns=inf_cols)
+        
+        logger.info(f"Limpieza completada. Features restantes: {X.shape[1]}")
+        
+        X = self._advanced_feature_selection(X, y)
         
         # Registrar columnas finales
         self.feature_columns = list(X.columns)
@@ -1354,6 +1445,177 @@ class TotalPointsFeatureEngine:
         
         return validation_results
 
+    def _advanced_feature_selection(self, X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
+        """
+        Sistema avanzado de selección de características optimizado para puntos totales NBA.
+        
+        Implementa múltiples técnicas de selección:
+        1. Filtro de varianza (elimina features constantes/casi constantes)
+        2. Filtro de correlación (elimina features altamente correlacionadas)
+        3. Selección por información mutua
+        4. Detección avanzada de data leakage
+        5. Filtro de importancia estadística
+        
+        Args:
+            X: DataFrame con features
+            y: Series con target
+            
+        Returns:
+            DataFrame con features seleccionadas
+        """
+        logger.info(f"Iniciando feature selection avanzado con {X.shape[1]} features")
+        original_features = X.shape[1]
+        
+        # 1. FILTRO DE VARIANZA - Eliminar features constantes o casi constantes
+        from sklearn.feature_selection import VarianceThreshold
+        
+        # Eliminar features con varianza muy baja (< 0.01)
+        variance_selector = VarianceThreshold(threshold=0.01)
+        try:
+            X_variance = pd.DataFrame(
+                variance_selector.fit_transform(X),
+                columns=X.columns[variance_selector.get_support()],
+                index=X.index
+            )
+            removed_variance = original_features - X_variance.shape[1]
+            logger.info(f"Filtro de varianza: eliminadas {removed_variance} features")
+            X = X_variance
+        except Exception as e:
+            logger.warning(f"Error en filtro de varianza: {e}")
+        
+        # 2. FILTRO DE CORRELACIÓN - Eliminar features altamente correlacionadas
+        try:
+            corr_matrix = X.corr().abs()
+            upper_triangle = corr_matrix.where(
+                np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+            )
+            
+            # Encontrar features con correlación > 0.95
+            high_corr_features = [
+                column for column in upper_triangle.columns 
+                if any(upper_triangle[column] > 0.95)
+            ]
+            
+            if high_corr_features:
+                X = X.drop(columns=high_corr_features)
+                logger.info(f"Filtro de correlación: eliminadas {len(high_corr_features)} features")
+        except Exception as e:
+            logger.warning(f"Error en filtro de correlación: {e}")
+        
+        # 3. SELECCIÓN POR INFORMACIÓN MUTUA
+        try:
+            from sklearn.feature_selection import mutual_info_regression, SelectKBest
+            
+            # Calcular información mutua
+            mi_scores = mutual_info_regression(X, y, random_state=42)
+            mi_scores = pd.Series(mi_scores, index=X.columns)
+            
+            # Seleccionar top features por información mutua (top 90% para ser menos agresivo)
+            n_features_to_keep = max(int(len(mi_scores) * 0.9), 100)  # Mínimo 100 features
+            top_mi_features = mi_scores.nlargest(n_features_to_keep).index.tolist()
+            
+            X = X[top_mi_features]
+            removed_mi = len(mi_scores) - len(top_mi_features)
+            logger.info(f"Selección por información mutua: eliminadas {removed_mi} features")
+            
+        except Exception as e:
+            logger.warning(f"Error en selección por información mutua: {e}")
+        
+        # 4. DETECCIÓN AVANZADA DE DATA LEAKAGE
+        try:
+            # Crear DataFrame temporal para análisis de correlación
+            temp_df = X.copy()
+            temp_df['target'] = y
+            
+            # Calcular correlaciones con el target
+            target_correlations = temp_df.corr()['target'].abs().sort_values(ascending=False)
+            
+            # Identificar features con correlación sospechosamente alta (> 0.8)
+            suspicious_features = target_correlations[
+                (target_correlations > 0.8) & (target_correlations.index != 'target')
+            ].index.tolist()
+            
+            # Análisis adicional para confirmar data leakage
+            confirmed_leakage = []
+            for feature in suspicious_features:
+                # Verificar si el nombre sugiere data leakage
+                leakage_patterns = [
+                    'pts_current', 'total_current', 'game_total', 'actual_',
+                    'real_', 'true_', 'final_', 'result_'
+                ]
+                
+                if any(pattern in feature.lower() for pattern in leakage_patterns):
+                    confirmed_leakage.append(feature)
+                # También verificar correlación extremadamente alta (> 0.9)
+                elif target_correlations[feature] > 0.9:
+                    confirmed_leakage.append(feature)
+            
+            if confirmed_leakage:
+                X = X.drop(columns=confirmed_leakage, errors='ignore')
+                logger.warning(f"Data leakage avanzado: eliminadas {len(confirmed_leakage)} features sospechosas")
+                
+        except Exception as e:
+            logger.warning(f"Error en detección avanzada de data leakage: {e}")
+        
+        # 5. FILTRO DE IMPORTANCIA ESTADÍSTICA
+        try:
+            from scipy.stats import pearsonr
+            
+            # Calcular correlaciones estadísticamente significativas
+            significant_features = []
+            for feature in X.columns:
+                try:
+                    corr, p_value = pearsonr(X[feature].fillna(0), y)
+                    # Mantener features con p-value < 0.05 y correlación mínima
+                    if p_value < 0.05 and abs(corr) > 0.01:
+                        significant_features.append(feature)
+                except:
+                    # Si hay error, mantener la feature
+                    significant_features.append(feature)
+            
+            if len(significant_features) < X.shape[1]:
+                X = X[significant_features]
+                removed_stats = X.shape[1] - len(significant_features)
+                logger.info(f"Filtro estadístico: eliminadas {removed_stats} features no significativas")
+                
+        except Exception as e:
+            logger.warning(f"Error en filtro estadístico: {e}")
+        
+        # 6. VERIFICACIÓN FINAL DE CALIDAD
+        try:
+            # Eliminar features con demasiados valores faltantes (> 50%)
+            missing_threshold = 0.5
+            features_to_keep = []
+            
+            for feature in X.columns:
+                missing_pct = X[feature].isna().sum() / len(X)
+                if missing_pct <= missing_threshold:
+                    features_to_keep.append(feature)
+            
+            if len(features_to_keep) < X.shape[1]:
+                X = X[features_to_keep]
+                removed_missing = X.shape[1] - len(features_to_keep)
+                logger.info(f"Filtro de valores faltantes: eliminadas {removed_missing} features")
+                
+        except Exception as e:
+            logger.warning(f"Error en filtro de valores faltantes: {e}")
+        
+        # RESUMEN FINAL
+        final_features = X.shape[1]
+        reduction_pct = ((original_features - final_features) / original_features) * 100
+        
+        logger.info(f"Feature selection completado:")
+        logger.info(f"  Features originales: {original_features}")
+        logger.info(f"  Features finales: {final_features}")
+        logger.info(f"  Reducción: {reduction_pct:.1f}%")
+        
+        # Verificar que tenemos suficientes features
+        if final_features < 10:
+            logger.warning(f"Muy pocas features después de la selección ({final_features}). Revisando criterios...")
+            # En caso extremo, relajar criterios y mantener más features
+        
+        return X
+
     def _create_advanced_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Crea características avanzadas para mejorar la precisión del modelo"""
         
@@ -1384,49 +1646,72 @@ class TotalPointsFeatureEngine:
             # Crear identificador único para cada combinación de equipos
             df['matchup_id'] = df.apply(lambda x: '_'.join(sorted([x['Team'], x['Opp']])), axis=1)
             
-            # Estadísticas históricas de matchup
-            matchup_stats = df.groupby('matchup_id').agg({
-                'total_points': ['mean', 'std', 'min', 'max', 'count'],
-                'PTS': ['mean'],
-                'PTS_Opp': ['mean']
-            })
+            # Estadísticas históricas de matchup (SIN DATA LEAKAGE)
+            # Calcular estadísticas usando solo juegos ANTERIORES
+            matchup_historical = []
             
-            # Aplanar los nombres de columnas
-            matchup_stats.columns = ['_'.join(col).strip() for col in matchup_stats.columns.values]
-            matchup_stats = matchup_stats.reset_index()
+            for idx, row in df.iterrows():
+                matchup_id = row['matchup_id']
+                current_date = row.get('Date', pd.Timestamp.now())
+                
+                # Obtener juegos anteriores de este matchup
+                if 'Date' in df.columns:
+                    historical_games = df[
+                        (df['matchup_id'] == matchup_id) & 
+                        (df['Date'] < current_date)
+                    ]
+                else:
+                    # Si no hay fecha, usar índice como proxy temporal
+                    historical_games = df[
+                        (df['matchup_id'] == matchup_id) & 
+                        (df.index < idx)
+                    ]
+                
+                if len(historical_games) > 0:
+                    matchup_historical.append({
+                        'matchup_total_mean_hist': historical_games['total_points'].mean(),
+                        'matchup_total_std_hist': historical_games['total_points'].std(),
+                        'matchup_games_played': len(historical_games),
+                        'matchup_dominance_hist': historical_games['PTS'].mean() - historical_games['PTS_Opp'].mean()
+                    })
+                else:
+                    # Sin historial, usar valores neutros
+                    matchup_historical.append({
+                        'matchup_total_mean_hist': df['total_points'].mean(),
+                        'matchup_total_std_hist': df['total_points'].std(),
+                        'matchup_games_played': 0,
+                        'matchup_dominance_hist': 0
+                    })
             
-            # Fusionar de vuelta al DataFrame principal
-            df = pd.merge(df, matchup_stats, on='matchup_id', how='left')
+            # Convertir a DataFrame y fusionar
+            matchup_hist_df = pd.DataFrame(matchup_historical)
+            df = pd.concat([df, matchup_hist_df], axis=1)
             
-            # Calcular características derivadas de matchup
-            df['matchup_total_range'] = df['total_points_max'] - df['total_points_min']
-            df['matchup_total_cv'] = df['total_points_std'] / (df['total_points_mean'] + 1e-5)  # Coeficiente de variación
-            df['matchup_dominance'] = df['PTS_mean'] - df['PTS_Opp_mean']
-            
-            # Indicador de experiencia en el matchup
-            df['matchup_experience'] = np.log1p(df['total_points_count'])
+            # Características derivadas SIN data leakage
+            df['matchup_experience'] = np.log1p(df['matchup_games_played'])
+            df['matchup_consistency'] = 1 / (df['matchup_total_std_hist'] + 1)  # Inverso de volatilidad
         
-        # Características de forma y tendencia
+        # Características de forma y tendencia CON SHIFT para evitar data leakage
         if 'Date' in df.columns and 'PTS' in df.columns:
             # Forma reciente (últimos N partidos vs promedio de temporada)
             for window in [3, 5, 10]:
-                # Calcular promedio móvil
+                # Calcular promedio móvil CON SHIFT
                 df[f'pts_ma_{window}'] = df.groupby('Team')['PTS'].transform(
-                    lambda x: x.rolling(window=window, min_periods=1).mean()
+                    lambda x: x.rolling(window=window, min_periods=1).mean().shift(1)
                 )
                 
-                # Comparar con promedio de temporada
+                # Comparar con promedio de temporada CON SHIFT
                 df[f'pts_form_{window}'] = df.groupby('Team').apply(
-                    lambda x: x[f'pts_ma_{window}'] / x['PTS'].expanding().mean()
+                    lambda x: x[f'pts_ma_{window}'] / x['PTS'].expanding().mean().shift(1)
                 ).reset_index(level=0, drop=True)
                 
-                # Lo mismo para puntos totales
+                # Lo mismo para puntos totales CON SHIFT
                 df[f'total_pts_ma_{window}'] = df.groupby('Team')['total_points'].transform(
-                    lambda x: x.rolling(window=window, min_periods=1).mean()
+                    lambda x: x.rolling(window=window, min_periods=1).mean().shift(1)
                 )
                 
                 df[f'total_pts_form_{window}'] = df.groupby('Team').apply(
-                    lambda x: x[f'total_pts_ma_{window}'] / x['total_points'].expanding().mean()
+                    lambda x: x[f'total_pts_ma_{window}'] / x['total_points'].expanding().mean().shift(1)
                 ).reset_index(level=0, drop=True)
         
         # Características de interacción
@@ -1501,11 +1786,11 @@ class TotalPointsFeatureEngine:
                     
                     df.loc[df['Team'] == team, 'pace_pts_correlation'] = rolling_corrs
         
-        # 3. Características de calendario y descanso avanzadas
+        # 3. Características de calendario y descanso avanzadas CON SHIFT
         if 'days_rest' in df.columns:
-            # Efecto acumulativo del descanso (media móvil de días de descanso)
+            # Efecto acumulativo del descanso (media móvil de días de descanso) CON SHIFT
             df['rest_ma_5'] = df.groupby('Team')['days_rest'].transform(
-                lambda x: x.rolling(window=5, min_periods=1).mean()
+                lambda x: x.rolling(window=5, min_periods=1).mean().shift(1)
             )
             
             # Efecto de fatiga (inverso del descanso acumulado)
@@ -1602,24 +1887,20 @@ class TotalPointsFeatureEngine:
             if 'total_pts_ma_5' in df.columns:
                 df['overtime_pts_interaction'] = df['overtime_prob_ma5'] * df['total_pts_ma_5']
         
-        # 8. Características de oponente avanzadas
+        # 8. Características de oponente avanzadas CON SHIFT para evitar data leakage
         if 'Opp' in df.columns:
-            # Para cada equipo, calcular su efecto en los puntos totales
-            team_effects = {}
+            # Calcular efectos de equipo usando expanding mean con shift
+            df['team_total_pts_effect'] = df.groupby('Team')['total_points'].transform(
+                lambda x: x.expanding().mean().shift(1) - df['total_points'].expanding().mean().shift(1)
+            )
             
-            for team in df['Team'].unique():
-                # Puntos totales promedio cuando este equipo juega
-                team_avg = df[df['Team'] == team]['total_points'].mean()
-                # Puntos totales promedio de la liga
-                league_avg = df['total_points'].mean()
-                # Efecto del equipo
-                team_effects[team] = team_avg - league_avg
+            # Crear mapping de efectos del oponente usando datos históricos
+            df['opp_total_pts_effect'] = df.groupby('Opp')['total_points'].transform(
+                lambda x: x.expanding().mean().shift(1) - df['total_points'].expanding().mean().shift(1)
+            )
             
-            # Añadir el efecto del oponente como característica
-            df['opp_total_pts_effect'] = df['Opp'].map(team_effects)
-            
-            # Interacción entre efectos de equipo y oponente
-            df['team_opp_effect_interaction'] = df['Team'].map(team_effects) * df['opp_total_pts_effect']
+            # Interacción entre efectos de equipo y oponente (usando datos históricos)
+            df['team_opp_effect_interaction'] = df['team_total_pts_effect'] * df['opp_total_pts_effect']
         
         return df
 
@@ -1707,7 +1988,7 @@ class TotalPointsFeatureEngine:
         # Lista de columnas con posible data leakage
         leakage_cols = []
         
-        # 1. Detección por correlación directa
+        # 1. Detección por correlación directa (con excepciones para features válidas)
         correlations = numeric_df.corr()[target_col].abs().sort_values(ascending=False)
         
         # Identificar columnas con alta correlación (excluyendo el target mismo)
@@ -1715,7 +1996,23 @@ class TotalPointsFeatureEngine:
         if target_col in high_corr_cols:
             high_corr_cols.remove(target_col)
         
-        leakage_cols.extend(high_corr_cols)
+        # Filtrar features válidas que pueden tener alta correlación pero no son data leakage
+        valid_high_corr_patterns = [
+            '_ma_', '_shift', '_lag', '_trend', '_avg', '_mean', '_rolling',
+            '_ewm', '_expanding', '_hist', 'historical_', '_prev', 'previous_',
+            '_last', 'last_', '_momentum', '_streak', '_consistency'
+        ]
+        
+        # Solo agregar a leakage si no tiene patrones válidos
+        filtered_high_corr = []
+        for col in high_corr_cols:
+            has_valid_pattern = any(pattern in col.lower() for pattern in valid_high_corr_patterns)
+            if not has_valid_pattern:
+                filtered_high_corr.append(col)
+            else:
+                logger.debug(f"Manteniendo feature con alta correlación pero patrón válido: {col} (r={correlations[col]:.3f})")
+        
+        leakage_cols.extend(filtered_high_corr)
         
         # 2. Detección por análisis de componentes del target
         # Si el target es una suma de componentes, los componentes son data leakage
@@ -1727,6 +2024,10 @@ class TotalPointsFeatureEngine:
         
         # 3. Detección por nombres de columnas que indican data leakage
         leakage_patterns = [
+            # FEATURES CRÍTICAS CON DATA LEAKAGE DIRECTO
+            'total_points_max', 'total_points_min', 'total_points_std', 'total_points_count',
+            'total_points_sum', 'total_points_range', 'total_points_cv',
+            
             # Estadísticas directas de juego actual (sin shift)
             'FG', 'FGA', 'FG%', '2P', '2PA', '2P%', '3P', '3PA', '3P%',
             'FT', 'FTA', 'FT%', 'TS%', 'eFG%',
@@ -1750,8 +2051,25 @@ class TotalPointsFeatureEngine:
             'team_total_pts_players', 'avg_player_pts', 'top_scorer_pts'
         ]
         
-        # Buscar patrones de data leakage en nombres de columnas
-        pattern_leakage_cols = [col for col in df.columns if any(pattern in col for pattern in leakage_patterns)]
+        # Buscar patrones de data leakage en nombres de columnas (excluyendo features válidas)
+        pattern_leakage_cols = []
+        for col in df.columns:
+            # Verificar si contiene patrones de leakage
+            has_leakage_pattern = any(pattern in col for pattern in leakage_patterns)
+            
+            if has_leakage_pattern:
+                # Verificar si tiene indicadores de que es una feature válida (con shift/lag)
+                has_valid_indicator = any(indicator in col.lower() for indicator in [
+                    '_ma_', '_shift', '_lag', '_trend', '_avg', '_mean', '_rolling',
+                    '_ewm', '_expanding', '_hist', 'historical_', '_prev', 'previous_',
+                    '_last', 'last_', '_pct_', '_diff_ma_'
+                ])
+                
+                if not has_valid_indicator:
+                    pattern_leakage_cols.append(col)
+                else:
+                    logger.debug(f"Manteniendo feature con patrón de leakage pero indicador válido: {col}")
+        
         leakage_cols.extend(pattern_leakage_cols)
         
         # 4. Detección por análisis de información mutua (más sofisticado que correlación)
@@ -2063,5 +2381,520 @@ class TotalPointsFeatureEngine:
             
             # Eliminar la línea de mercado simulada para evitar data leakage
             df = df.drop('market_line_sim', axis=1)
+        
+        return df
+
+    def _create_advanced_momentum_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Crea features avanzadas de momentum basadas en los patrones más predictivos,
+        expandiendo las features de momentum que el modelo identificó como importantes.
+        """
+        if df.empty:
+            return df
+        
+        # Verificar columnas necesarias
+        if 'PTS' not in df.columns or 'total_points' not in df.columns:
+            return df
+        
+        # 1. MOMENTUM MULTI-ESCALA (basado en pts_momentum_sqrt siendo top 5)
+        momentum_windows = [2, 3, 4, 5, 7, 10, 15]
+        
+        for window in momentum_windows:
+            # Momentum básico con shift
+            pts_ma = df.groupby('Team')['PTS'].transform(
+                lambda x: x.rolling(window=window, min_periods=1).mean().shift(1)
+            )
+            pts_ma_prev = df.groupby('Team')['PTS'].transform(
+                lambda x: x.rolling(window=window, min_periods=1).mean().shift(2)
+            )
+            df[f'pts_momentum_{window}'] = pts_ma - pts_ma_prev
+            
+            # Momentum con transformaciones (sqrt, square, log)
+            df[f'pts_momentum_sqrt_{window}'] = np.sqrt(np.abs(df[f'pts_momentum_{window}'])) * np.sign(df[f'pts_momentum_{window}'])
+            df[f'pts_momentum_square_{window}'] = np.square(df[f'pts_momentum_{window}'])
+            df[f'pts_momentum_log_{window}'] = np.log1p(np.abs(df[f'pts_momentum_{window}'])) * np.sign(df[f'pts_momentum_{window}'])
+            
+            # Momentum de total points
+            total_ma = df.groupby('Team')['total_points'].transform(
+                lambda x: x.rolling(window=window, min_periods=1).mean().shift(1)
+            )
+            total_ma_prev = df.groupby('Team')['total_points'].transform(
+                lambda x: x.rolling(window=window, min_periods=1).mean().shift(2)
+            )
+            df[f'total_pts_momentum_{window}'] = total_ma - total_ma_prev
+            df[f'total_pts_momentum_sqrt_{window}'] = np.sqrt(np.abs(df[f'total_pts_momentum_{window}'])) * np.sign(df[f'total_pts_momentum_{window}'])
+        
+        # 2. ACELERACIÓN MULTI-ESCALA (basado en acceleration siendo importante)
+        for window in [3, 5, 7, 10]:
+            # Aceleración de puntos (segunda derivada) con shift
+            df[f'pts_acceleration_{window}'] = df.groupby('Team')[f'pts_momentum_{window}'].transform(
+                lambda x: x.diff().shift(1)
+            )
+            
+            # Aceleración de total points con shift
+            df[f'total_pts_acceleration_{window}'] = df.groupby('Team')[f'total_pts_momentum_{window}'].transform(
+                lambda x: x.diff().shift(1)
+            )
+            
+            # Jerk (tercera derivada) para capturar cambios súbitos con shift
+            if window >= 5:
+                df[f'pts_jerk_{window}'] = df.groupby('Team')[f'pts_acceleration_{window}'].transform(
+                    lambda x: x.diff().shift(1)
+                )
+        
+        # 3. MOMENTUM DIRECCIONAL Y PERSISTENCIA
+        for window in [5, 10]:
+            # Persistencia del momentum (cuántos juegos consecutivos en la misma dirección)
+            momentum_direction = np.sign(df[f'pts_momentum_{window}'])
+            df[f'momentum_persistence_{window}'] = df.groupby('Team')[f'pts_momentum_{window}'].transform(
+                lambda x: (np.sign(x) == np.sign(x.shift(1))).astype(int).rolling(window=window).sum().shift(1)
+            )
+            
+            # Momentum relativo (vs promedio del equipo)
+            team_avg_momentum = df.groupby('Team')[f'pts_momentum_{window}'].transform(
+                lambda x: x.expanding().mean().shift(1)
+            )
+            df[f'momentum_relative_{window}'] = df[f'pts_momentum_{window}'] - team_avg_momentum
+        
+        return df
+    
+    def _create_advanced_pace_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Crea features avanzadas de pace/ritmo basadas en los patrones identificados,
+        expandiendo las features de pace que dominan el top 15.
+        """
+        if df.empty:
+            return df
+        
+        # Verificar columnas necesarias
+        if 'pace_factor' not in df.columns:
+            # Crear pace_factor básico si no existe
+            if 'total_points' in df.columns and 'MP' in df.columns:
+                df['estimated_possessions'] = (df['PTS'] + df['PTS_Opp']) / 2.2
+                df['pace_factor'] = (df['estimated_possessions'] * 48) / df['MP']
+            else:
+                return df
+        
+        # 1. PACE MULTI-ESCALA (basado en pace_ma_3/5/10 siendo top features)
+        pace_windows = [2, 3, 4, 5, 6, 7, 8, 10, 12, 15]
+        
+        for window in pace_windows:
+            # Media móvil básica con shift
+            df[f'pace_ma_{window}'] = df.groupby('Team')['pace_factor'].transform(
+                lambda x: x.rolling(window=window, min_periods=1).mean().shift(1)
+            )
+            
+            # Desviación estándar del pace con shift
+            df[f'pace_std_{window}'] = df.groupby('Team')['pace_factor'].transform(
+                lambda x: x.rolling(window=window, min_periods=1).std().shift(1)
+            )
+            
+            # Coeficiente de variación del pace con shift
+            df[f'pace_cv_{window}'] = df[f'pace_std_{window}'] / df[f'pace_ma_{window}'].replace(0, np.nan)
+            
+            # Tendencia del pace con shift (ajustar min_periods)
+            min_periods_pace = min(3, window)
+            df[f'pace_trend_{window}'] = df.groupby('Team')['pace_factor'].transform(
+                lambda x: x.rolling(window=window, min_periods=min_periods_pace).apply(
+                    lambda y: np.polyfit(np.arange(len(y)), y, 1)[0] if len(y) >= min_periods_pace else np.nan
+                ).shift(1)
+            )
+        
+        # 2. PACE RELATIVO Y COMPARATIVO
+        # Pace relativo al promedio de la liga con shift
+        league_avg_pace = df['pace_factor'].expanding().mean().shift(1)
+        df['pace_vs_league'] = df['pace_factor'] - league_avg_pace
+        
+        # Pace relativo al promedio del equipo con shift
+        team_avg_pace = df.groupby('Team')['pace_factor'].transform(
+            lambda x: x.expanding().mean().shift(1)
+        )
+        df['pace_vs_team_avg'] = df['pace_factor'] - team_avg_pace
+        
+        # 3. INTERACCIONES PACE-PUNTOS (basado en pace_pts_correlation siendo importante)
+        for window in [3, 5, 10]:
+            # Correlación móvil entre pace y puntos con shift
+            df[f'pace_pts_correlation_{window}'] = df.groupby('Team').apply(
+                lambda x: x['pace_factor'].rolling(window=window).corr(x['total_points']).shift(1)
+            ).reset_index(level=0, drop=True)
+            
+            # Elasticidad pace-puntos (cambio porcentual) con shift
+            pace_pct_change = df.groupby('Team')['pace_factor'].transform(lambda x: x.pct_change().shift(1))
+            pts_pct_change = df.groupby('Team')['total_points'].transform(lambda x: x.pct_change().shift(1))
+            df[f'pace_pts_elasticity_{window}'] = df.groupby('Team').apply(
+                lambda x: (x['total_points'].pct_change() / x['pace_factor'].pct_change().replace(0, np.nan)).rolling(window=window).mean().shift(1)
+            ).reset_index(level=0, drop=True)
+        
+        # 4. PACE ADAPTATIVO (ajuste al oponente)
+        if 'Opp' in df.columns:
+            # Pace promedio del oponente con shift
+            opp_avg_pace = df.groupby('Opp')['pace_factor'].transform(
+                lambda x: x.expanding().mean().shift(1)
+            )
+            df['opp_pace_avg'] = opp_avg_pace
+            
+            # Adaptación del pace al oponente con shift
+            df['pace_adaptation'] = df['pace_factor'] - df['opp_pace_avg']
+            
+            # Media móvil de adaptación con shift
+            for window in [3, 5]:
+                df[f'pace_adaptation_ma_{window}'] = df.groupby('Team')['pace_adaptation'].transform(
+                    lambda x: x.rolling(window=window, min_periods=1).mean().shift(1)
+                )
+        
+        return df
+    
+    def _create_advanced_volatility_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Crea features avanzadas de volatilidad basadas en los patrones identificados,
+        expandiendo las features de volatilidad que aparecen múltiples veces en el top.
+        """
+        if df.empty:
+            return df
+        
+        # Verificar columnas necesarias
+        if 'total_points' not in df.columns or 'PTS' not in df.columns:
+            return df
+        
+        # 1. VOLATILIDAD MULTI-ESCALA Y MULTI-MÉTRICA
+        volatility_windows = [3, 5, 7, 10, 15, 20]
+        
+        for window in volatility_windows:
+            # Volatilidad estándar (desviación estándar) con shift
+            df[f'total_pts_volatility_{window}'] = df.groupby('Team')['total_points'].transform(
+                lambda x: x.rolling(window=window, min_periods=2).std().shift(1)
+            )
+            
+            df[f'pts_volatility_{window}'] = df.groupby('Team')['PTS'].transform(
+                lambda x: x.rolling(window=window, min_periods=2).std().shift(1)
+            )
+            
+            # Volatilidad normalizada (coeficiente de variación) con shift
+            pts_mean = df.groupby('Team')['PTS'].transform(
+                lambda x: x.rolling(window=window, min_periods=1).mean().shift(1)
+            )
+            df[f'pts_cv_{window}'] = df[f'pts_volatility_{window}'] / pts_mean.replace(0, np.nan)
+            
+            # Volatilidad robusta (rango intercuartílico) con shift (ajustar min_periods)
+            min_periods_iqr = min(3, window)
+            df[f'total_pts_iqr_{window}'] = df.groupby('Team')['total_points'].transform(
+                lambda x: x.rolling(window=window, min_periods=min_periods_iqr).apply(
+                    lambda y: np.percentile(y, 75) - np.percentile(y, 25) if len(y) >= min_periods_iqr else np.nan
+                ).shift(1)
+            )
+            
+            # Volatilidad direccional (desviación absoluta media) con shift
+            df[f'total_pts_mad_{window}'] = df.groupby('Team')['total_points'].transform(
+                lambda x: x.rolling(window=window, min_periods=2).apply(
+                    lambda y: np.mean(np.abs(y - np.mean(y))) if len(y) >= 2 else np.nan
+                ).shift(1)
+            )
+        
+        # 2. VOLATILIDAD CONDICIONAL SIMPLIFICADA
+        for window in [5, 10]:
+            # Volatilidad condicional (cambios porcentuales) con shift
+            df[f'conditional_volatility_{window}'] = df.groupby('Team')['total_points'].transform(
+                lambda x: x.pct_change().rolling(window=window, min_periods=2).std().shift(1)
+            )
+            
+            # Volatilidad de rangos (max-min) con shift
+            df[f'range_volatility_{window}'] = df.groupby('Team')['total_points'].transform(
+                lambda x: (x.rolling(window=window, min_periods=2).max() - 
+                          x.rolling(window=window, min_periods=2).min()).shift(1)
+            )
+        
+        # 3. VOLATILIDAD RELATIVA Y COMPARATIVA
+        # Volatilidad relativa al promedio de la liga con shift
+        league_volatility = df['total_points'].rolling(window=50, min_periods=10).std().shift(1)
+        team_volatility_5 = df.groupby('Team')['total_points'].transform(
+            lambda x: x.rolling(window=5, min_periods=2).std().shift(1)
+        )
+        df['volatility_vs_league'] = team_volatility_5 / league_volatility.replace(0, np.nan)
+        
+        # Volatilidad relativa al oponente con shift
+        if 'Opp' in df.columns:
+            opp_volatility = df.groupby('Opp')['total_points'].transform(
+                lambda x: x.expanding().std().shift(1)
+            )
+            df['volatility_vs_opp'] = team_volatility_5 / opp_volatility.replace(0, np.nan)
+        
+        return df
+
+    def _create_opponent_strength_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Crea características avanzadas sobre la fuerza del oponente
+        CORREGIDO para usar las columnas reales del dataset
+        """
+        df = df.copy()
+        
+        # Verificar que tenemos las columnas necesarias
+        required_cols = ['Team', 'Opp', 'PTS', 'PTS_Opp', 'total_points', 'is_win']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            logger.warning(f"Columnas faltantes para opponent features: {missing_cols}")
+            logger.info(f"Columnas disponibles: {list(df.columns)[:20]}...")  # Mostrar primeras 20
+            return df
+        
+        # Crear características de matchup usando las columnas existentes de _create_opponent_features
+        if 'opp_PTS_mean' in df.columns:
+            # Diferencia ofensiva: puntos promedio del equipo vs defensa promedio del oponente CON SHIFT
+            team_pts_mean = df.groupby('Team')['PTS'].transform(
+                lambda x: x.expanding().mean().shift(1)
+            )
+            df['offensive_matchup'] = team_pts_mean - df['opp_PTS_Opp_mean'].fillna(110)
+            
+            # Diferencia defensiva: defensa del equipo vs ofensa del oponente CON SHIFT
+            team_def_mean = df.groupby('Team')['PTS_Opp'].transform(
+                lambda x: x.expanding().mean().shift(1)
+            )
+            df['defensive_matchup'] = df['opp_PTS_mean'].fillna(110) - team_def_mean
+            
+            # Strength of schedule (últimos 5 juegos) CON SHIFT
+            df['recent_opp_strength'] = df.groupby('Team')['opp_PTS_mean'].transform(
+                lambda x: x.rolling(5).mean().shift(1)
+            ).fillna(110)
+            
+            # Total points matchup CON SHIFT (usando columnas existentes)
+            team_total_mean = df.groupby('Team')['total_points'].transform(
+                lambda x: x.expanding().mean().shift(1)
+            )
+            # Usar promedio global si no existe la columna específica
+            global_total_avg = df['total_points'].mean()
+            df['total_pts_matchup'] = team_total_mean - global_total_avg
+        else:
+            # Valores por defecto si no se pueden calcular
+            logger.warning("No se pudieron crear características de oponente, usando valores por defecto")
+            logger.warning(f"Columnas disponibles después del merge: {[col for col in df.columns if 'opp_' in col or col in ['Team', 'Opp']]}")
+            
+            # Crear características básicas usando promedios globales
+            global_pts_avg = df['PTS'].mean()
+            global_pts_opp_avg = df['PTS_Opp'].mean()
+            global_total_avg = df['total_points'].mean()
+            
+            # Usar diferencias respecto a promedios globales CON SHIFT
+            team_pts_avg = df.groupby('Team')['PTS'].transform(
+                lambda x: x.expanding().mean().shift(1)
+            )
+            team_def_avg = df.groupby('Team')['PTS_Opp'].transform(
+                lambda x: x.expanding().mean().shift(1)
+            )
+            team_total_avg = df.groupby('Team')['total_points'].transform(
+                lambda x: x.expanding().mean().shift(1)
+            )
+            
+            df['offensive_matchup'] = team_pts_avg - global_pts_opp_avg
+            df['defensive_matchup'] = global_pts_avg - team_def_avg
+            df['recent_opp_strength'] = global_pts_avg
+            df['total_pts_matchup'] = team_total_avg - global_total_avg
+            
+            logger.info("Características de oponente creadas usando promedios globales como fallback")
+        
+        return df
+    
+    def _create_pace_and_efficiency_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Crea características avanzadas de ritmo y eficiencia
+        """
+        df = df.copy()
+        
+        # Verificar columnas disponibles
+        if 'MP' not in df.columns:
+            logger.warning("Columna 'MP' no encontrada, usando valor por defecto de 240 minutos")
+            df['MP'] = 240
+        
+        # Estimación básica de posesiones usando la fórmula simplificada
+        # Possessions ≈ (PTS + PTS_Opp) / 2.2 (aproximación cuando no tenemos FGA, FTA, etc.)
+        df['estimated_possessions'] = (df['PTS'] + df['PTS_Opp']) / 2.2
+        
+        # Pace factor (posesiones por 48 minutos)
+        df['pace_factor'] = (df['estimated_possessions'] * 48) / df['MP']
+        
+        # Eficiencia ofensiva histórica (usando datos anteriores CON SHIFT)
+        df['offensive_efficiency_hist'] = df.groupby('Team').apply(
+            lambda x: ((x['PTS'].shift(1) * 100) / (x['estimated_possessions'].shift(1) + 1e-10))
+        ).reset_index(level=0, drop=True)
+        
+        # Eficiencia defensiva histórica (usando datos anteriores CON SHIFT)
+        df['defensive_efficiency_hist'] = df.groupby('Team').apply(
+            lambda x: ((x['PTS_Opp'].shift(1) * 100) / (x['estimated_possessions'].shift(1) + 1e-10))
+        ).reset_index(level=0, drop=True)
+        
+        # Net efficiency histórica (diferencia entre ofensiva y defensiva históricas)
+        df['net_efficiency_hist'] = df['offensive_efficiency_hist'] - df['defensive_efficiency_hist']
+        
+        # Rolling averages de eficiencia histórica (últimos N juegos) CON SHIFT
+        for window in [3, 5, 10]:
+            df[f'off_eff_ma_{window}'] = df.groupby('Team')['offensive_efficiency_hist'].transform(
+                lambda x: x.rolling(window).mean().shift(1)
+            )
+            df[f'def_eff_ma_{window}'] = df.groupby('Team')['defensive_efficiency_hist'].transform(
+                lambda x: x.rolling(window).mean().shift(1)
+            )
+            df[f'pace_ma_{window}'] = df.groupby('Team')['pace_factor'].transform(
+                lambda x: x.rolling(window).mean().shift(1)
+            )
+            df[f'net_eff_ma_{window}'] = df.groupby('Team')['net_efficiency_hist'].transform(
+                lambda x: x.rolling(window).mean().shift(1)
+            )
+        
+        # Características de tempo y ritmo CON SHIFT
+        df['total_pts_per_minute'] = df['total_points'] / df['MP']
+        df['tempo_factor'] = df.groupby('Team')['total_pts_per_minute'].transform(
+            lambda x: x.rolling(5).mean().shift(1)
+        )
+        
+        # Volatilidad del pace CON SHIFT
+        df['pace_volatility'] = df.groupby('Team')['pace_factor'].transform(
+            lambda x: x.rolling(10).std().shift(1)
+        )
+        
+        return df
+    
+    def _create_ensemble_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Crea características ensemble que combinan múltiples aspectos del juego
+        CORREGIDO para usar las columnas reales del dataset
+        """
+        df = df.copy()
+        
+        # Características composite de rendimiento (usando eficiencias históricas SIN DATA LEAKAGE)
+        pts_hist = df.groupby('Team')['PTS'].transform(lambda x: x.shift(1)).fillna(0)
+        pts_opp_hist = df.groupby('Team')['PTS_Opp'].transform(lambda x: x.shift(1)).fillna(110)
+        pace_hist = df.groupby('Team')['pace_factor'].transform(lambda x: x.shift(1)).fillna(100)
+        
+        df['offensive_composite'] = (
+            pts_hist * 0.4 +
+            df.get('offensive_efficiency_hist', 100).fillna(100) * 0.4 +  # Escalado apropiado
+            pace_hist * 0.2
+        )
+        
+        df['defensive_composite'] = (
+            (120 - pts_opp_hist) * 0.4 +  # Invertir para que menor sea mejor
+            (120 - df.get('defensive_efficiency_hist', 110).fillna(110)) * 0.4 +  # Invertir eficiencia defensiva
+            pace_hist * 0.2
+        )
+        
+        # Características de momentum composite (usando rolling averages)
+        momentum_cols = [col for col in df.columns if '_ma_' in col and any(x in col for x in ['3', '5'])]
+        if momentum_cols:
+            # Seleccionar columnas de momentum válidas (no-null)
+            valid_momentum = []
+            for col in momentum_cols[:5]:  # Limitar para evitar sobreajuste
+                if df[col].notna().sum() > len(df) * 0.3:  # Al menos 30% de valores válidos
+                    valid_momentum.append(col)
+            
+            if valid_momentum:
+                df['momentum_composite'] = df[valid_momentum].fillna(method='ffill').fillna(0).mean(axis=1)
+            else:
+                df['momentum_composite'] = 0
+        else:
+            df['momentum_composite'] = 0
+        
+        # Características de volatilidad composite
+        volatility_cols = [col for col in df.columns if 'vol' in col or 'std' in col]
+        if volatility_cols:
+            valid_volatility = []
+            for col in volatility_cols[:3]:  # Limitar número
+                if df[col].notna().sum() > len(df) * 0.3:
+                    valid_volatility.append(col)
+            
+            if valid_volatility:
+                df['volatility_composite'] = df[valid_volatility].fillna(0).mean(axis=1)
+            else:
+                df['volatility_composite'] = 0
+        else:
+            df['volatility_composite'] = 0
+        
+        # Característica de strength composite (usando las nuevas columnas)
+        if 'offensive_matchup' in df.columns and 'defensive_matchup' in df.columns:
+            df['strength_composite'] = (
+                df['offensive_matchup'].fillna(0) * 0.6 +
+                df['defensive_matchup'].fillna(0) * 0.4
+            )
+        else:
+            df['strength_composite'] = 0
+        
+        # Característica de eficiencia total (usando eficiencia histórica SIN DATA LEAKAGE)
+        if 'net_efficiency_hist' in df.columns:
+            df['efficiency_composite'] = (
+                df['net_efficiency_hist'].fillna(0) * 0.7 +
+                df.groupby('Team')['pace_factor'].transform(lambda x: x.shift(1)).fillna(100) * 0.3
+            )
+        else:
+            df['efficiency_composite'] = 0
+        
+        return df
+
+    def _create_advanced_shooting_volume_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Crea features avanzadas de volumen de tiros basadas en los patrones más predictivos
+        identificados por el modelo, todas con shift para evitar data leakage.
+        """
+        if df.empty:
+            return df
+        
+        # Verificar columnas necesarias
+        shooting_cols = ['FGA', 'FGA_Opp', '3PA', '3PA_Opp', '2PA', '2PA_Opp']
+        available_cols = [col for col in shooting_cols if col in df.columns]
+        
+        if len(available_cols) < 4:
+            logger.warning("Columnas insuficientes para crear features avanzadas de volumen")
+            return df
+        
+        # 1. FEATURES DE VOLUMEN TOTAL EXPANDIDAS (basado en top features)
+        volume_pairs = [
+            ('FGA', 'FGA_Opp', 'total_fga'),
+            ('3PA', '3PA_Opp', 'total_3pa'),
+            ('2PA', '2PA_Opp', 'total_2pa')
+        ]
+        
+        for team_col, opp_col, total_name in volume_pairs:
+            if team_col in df.columns and opp_col in df.columns:
+                # Volumen total
+                df[total_name] = df[team_col] + df[opp_col]
+                
+                # Ventanas expandidas (más granularidad)
+                windows = [2, 3, 4, 5, 7, 10, 15]
+                for window in windows:
+                    # Media móvil con shift
+                    df[f'{total_name}_ma_{window}'] = df.groupby('Team')[total_name].transform(
+                        lambda x: x.rolling(window=window, min_periods=1).mean().shift(1)
+                    )
+                    
+                    # Tendencia del volumen con shift (ajustar min_periods)
+                    min_periods_trend = min(3, window)
+                    df[f'{total_name}_trend_{window}'] = df.groupby('Team')[total_name].transform(
+                        lambda x: x.rolling(window=window, min_periods=min_periods_trend).apply(
+                            lambda y: np.polyfit(np.arange(len(y)), y, 1)[0] if len(y) >= min_periods_trend else np.nan
+                        ).shift(1)
+                    )
+                    
+                    # Aceleración del volumen (segunda derivada) con shift
+                    if window >= 5:
+                        df[f'{total_name}_acceleration_{window}'] = df.groupby('Team')[total_name].transform(
+                            lambda x: x.diff().diff().shift(1)
+                        )
+        
+        # 2. RATIOS DE VOLUMEN AVANZADOS
+        if 'total_fga' in df.columns and 'total_3pa' in df.columns:
+            # Ratio de agresividad de triples
+            df['three_point_aggression'] = df['total_3pa'] / df['total_fga'].replace(0, np.nan)
+            
+            # Media móvil de agresividad con shift
+            for window in [3, 5, 7, 10]:
+                df[f'three_point_aggression_ma_{window}'] = df.groupby('Team')['three_point_aggression'].transform(
+                    lambda x: x.rolling(window=window, min_periods=1).mean().shift(1)
+                )
+        
+        # 3. FEATURES DE DISTRIBUCIÓN DE VOLUMEN
+        if 'FGA' in df.columns and 'FGA_Opp' in df.columns:
+            # Balance ofensivo/defensivo
+            df['offensive_volume_dominance'] = df['FGA'] / (df['FGA'] + df['FGA_Opp']).replace(0, np.nan)
+            
+            # Media móvil de dominancia con shift
+            for window in [3, 5, 10]:
+                df[f'offensive_volume_dominance_ma_{window}'] = df.groupby('Team')['offensive_volume_dominance'].transform(
+                    lambda x: x.rolling(window=window, min_periods=1).mean().shift(1)
+                )
         
         return df
