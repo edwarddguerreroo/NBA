@@ -210,7 +210,7 @@ class TotalPointsNeuralNet(nn.Module):
         # BatchNorm solo si batch_size > 1
         if x.size(0) > 1:
             x = self.batch_norms[0](x)
-        x = F.relu(x)
+            x = F.relu(x)
         x = self.dropouts[0](x)
         
         # Segunda capa: 64 -> 32
