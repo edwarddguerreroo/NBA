@@ -67,7 +67,7 @@ class TotalPointsFeatureEngine:
             DataFrame con todas las características
         """
         if df_teams.empty:
-            NBALogger.log_warning(logger, "DataFrame de equipos vacío")
+            NBALogger.log_warning(logger, "DataFrame de equipos vacío"))
             return pd.DataFrame()
         
         # Crear copia para no modificar el original
@@ -145,7 +145,7 @@ class TotalPointsFeatureEngine:
             df.reset_index(drop=True, inplace=True)
             logger.info(f"Datos ordenados cronológicamente. Rango de fechas: {df['Date'].min()} a {df['Date'].max()}")
         else:
-            NBALogger.log_warning(logger, "Columna 'Date' no encontrada - usando orden original")
+            NBALogger.log_warning(logger, "Columna 'Date' no encontrada - usando orden original"))
         return df
     
     def _validate_and_prepare_data(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -154,7 +154,7 @@ class TotalPointsFeatureEngine:
         required_cols = ['Team', 'Opp', 'PTS', 'PTS_Opp']
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
-            NBALogger.log_error(logger, "Columnas requeridas faltantes: {missing_cols}")
+            NBALogger.log_error(logger, "Columnas requeridas faltantes: {missing_cols}"))
             raise ValueError(f"Columnas requeridas faltantes: {missing_cols}")
         
         # Verificar y crear is_win si es necesario
@@ -165,7 +165,7 @@ class TotalPointsFeatureEngine:
                 valid_wins = df['is_win'].notna().sum()
                 logger.info(f"is_win creada exitosamente: {valid_wins}/{len(df)} registros válidos")
             else:
-                NBALogger.log_warning(logger, "No se puede crear is_win: columna Result no disponible")
+                NBALogger.log_warning(logger, "No se puede crear is_win: columna Result no disponible"))
                 df['is_win'] = 0.5  # Valor neutral
         
         # Verificar has_overtime
@@ -209,7 +209,7 @@ class TotalPointsFeatureEngine:
         required_cols = ['Team', 'Opp', 'PTS', 'PTS_Opp']
         if not all(col in df.columns for col in required_cols):
             missing = [col for col in required_cols if col not in df.columns]
-            NBALogger.log_warning(logger, "Faltan columnas requeridas: {missing}")
+            NBALogger.log_warning(logger, "Faltan columnas requeridas: {missing}"))
             return df
         
         # Ordenar cronológicamente si hay fecha disponible
@@ -228,7 +228,7 @@ class TotalPointsFeatureEngine:
         if 'is_home' not in df.columns and '@' in df.columns:
             df['is_home'] = (~df['@']).astype(int)
         elif 'is_home' not in df.columns:
-            NBALogger.log_warning(logger, "No se pudo determinar local/visitante")
+            NBALogger.log_warning(logger, "No se pudo determinar local/visitante"))
         
         # Días de descanso
         if 'Date' in df.columns:
@@ -692,7 +692,7 @@ class TotalPointsFeatureEngine:
         
         # Verificar si hay datos de jugadores
         if df_players is None or df_players.empty:
-            NBALogger.log_warning(logger, "No hay datos de jugadores disponibles")
+            NBALogger.log_warning(logger, "No hay datos de jugadores disponibles"))
             return df
         
         # Asegurar orden cronológico en datos de jugadores
@@ -732,7 +732,7 @@ class TotalPointsFeatureEngine:
                 agg_dict[col] = 'sum'
         
         if not agg_dict:
-            NBALogger.log_warning(logger, "No se encontraron columnas válidas para agregar en datos de jugadores")
+            NBALogger.log_warning(logger, "No se encontraron columnas válidas para agregar en datos de jugadores"))
             return df
         
         try:
@@ -791,7 +791,7 @@ class TotalPointsFeatureEngine:
             
             # Verificar si hubo problemas en el merge
             if (df['_merge_indicator'] == 'left_only').any():
-                NBALogger.log_warning(logger, "Hay {(df['_merge_indicator'] == 'left_only').sum()} filas sin datos de jugadores")
+                NBALogger.log_warning(logger, "Hay {(df['_merge_indicator'] == 'left_only').sum()} filas sin datos de jugadores"))
             
             # Eliminar columna indicadora
             df = df.drop('_merge_indicator', axis=1)
@@ -830,7 +830,7 @@ class TotalPointsFeatureEngine:
             logger.info(f"Features de jugadores creadas: {len([col for col in df.columns if any(x in col for x in ['team_', 'player', 'scorer', 'bench'])])}")
             
         except Exception as e:
-            NBALogger.log_error(logger, "Error procesando datos de jugadores: {str(e)}")
+            NBALogger.log_error(logger, "Error procesando datos de jugadores: {str(e)}"))
             # No interrumpir el proceso completo por un error en features de jugadores
         
         return df
@@ -886,7 +886,7 @@ class TotalPointsFeatureEngine:
         """Crea características temporales y de calendario"""
         
         if 'Date' not in df.columns:
-            NBALogger.log_warning(logger, "Columna Date no disponible, saltando features temporales")
+            NBALogger.log_warning(logger, "Columna Date no disponible, saltando features temporales"))
             return df
         
         # Componentes de fecha ya creados en base calculations
@@ -978,7 +978,7 @@ class TotalPointsFeatureEngine:
         high_nan_cols = nan_counts[nan_counts > len(df) * 0.5].index.tolist()
         
         if high_nan_cols:
-            NBALogger.log_warning(logger, "Columnas con >50% NaN: {high_nan_cols[:10]}...")
+            NBALogger.log_warning(logger, "Columnas con >50% NaN: {high_nan_cols[:10]}..."))
         
         # Estrategia de imputación por tipo de feature
         for col in df.columns:
@@ -1006,13 +1006,13 @@ class TotalPointsFeatureEngine:
                     )
                 except (TypeError, ValueError):
                     # Si hay error, simplemente llenar con 0
-                    NBALogger.log_warning(logger, "Error procesando columna {col}, llenando con 0")
+                    NBALogger.log_warning(logger, "Error procesando columna {col}, llenando con 0"))
                     df[col] = df[col].fillna(0)
         
         # Validación final
         remaining_nan = df.isna().sum().sum()
         if remaining_nan > 0:
-            NBALogger.log_warning(logger, "NaN restantes después de limpieza: {remaining_nan}")
+            NBALogger.log_warning(logger, "NaN restantes después de limpieza: {remaining_nan}"))
             
             # Último recurso: llenar todos los NaN restantes con 0
             df = df.fillna(0)
@@ -1178,12 +1178,12 @@ class TotalPointsFeatureEngine:
             y: Series con target
         """
         if df.empty:
-            NBALogger.log_warning(logger, "DataFrame vacío en prepare_features")
+            NBALogger.log_warning(logger, "DataFrame vacío en prepare_features"))
             return pd.DataFrame(), pd.Series()
         
         # Separar target
         if target_col not in df.columns:
-            NBALogger.log_error(logger, f"Columna target '{target_col}' no encontrada")
+            NBALogger.log_error(logger, "Columna target '{target_col}' no encontrada"))
             return pd.DataFrame(), pd.Series()
         
         y = df[target_col]
@@ -1239,13 +1239,13 @@ class TotalPointsFeatureEngine:
         # Verificar si hay columnas categóricas restantes
         cat_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
         if cat_cols:
-            NBALogger.log_warning(logger, "Eliminando columnas categóricas restantes: {cat_cols}")
+            NBALogger.log_warning(logger, "Eliminando columnas categóricas restantes: {cat_cols}"))
             X = X.drop(columns=cat_cols)
         
         # Verificar que todas las columnas son numéricas
         non_numeric = X.select_dtypes(exclude=['number']).columns.tolist()
         if non_numeric:
-            NBALogger.log_warning(logger, "Convirtiendo columnas no numéricas a numéricas: {non_numeric}")
+            NBALogger.log_warning(logger, "Convirtiendo columnas no numéricas a numéricas: {non_numeric}"))
             
             # Intentar convertir columnas categóricas a numéricas
             for col in non_numeric:
@@ -1264,13 +1264,13 @@ class TotalPointsFeatureEngine:
                             # Para otros tipos, forzar conversión
                             X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0)
                     except Exception as e:
-                        NBALogger.log_warning(logger, "No se pudo convertir {col}: {e}. Eliminando columna.")
+                        NBALogger.log_warning(logger, "No se pudo convertir {col}: {e}. Eliminando columna."))
                         X = X.drop(columns=[col])
             
             # Verificar nuevamente
             remaining_non_numeric = X.select_dtypes(exclude=['number']).columns.tolist()
             if remaining_non_numeric:
-                NBALogger.log_error(logger, "Eliminando columnas que no se pudieron convertir: {remaining_non_numeric}")
+                NBALogger.log_error(logger, "Eliminando columnas que no se pudieron convertir: {remaining_non_numeric}"))
                 X = X.drop(columns=remaining_non_numeric)
         
         # Detectar y eliminar características con alta correlación con el target
@@ -1284,7 +1284,7 @@ class TotalPointsFeatureEngine:
         
         # Eliminar columnas con posible data leakage
         if leakage_cols:
-            NBALogger.log_warning(logger, "Eliminando {len(leakage_cols)} columnas con posible data leakage")
+            NBALogger.log_warning(logger, "Eliminando {len(leakage_cols)} columnas con posible data leakage"))
             X = X.drop(columns=leakage_cols, errors='ignore')
         
         # Verificación adicional para asegurar que no haya columnas de porcentajes sin shift
@@ -1293,7 +1293,7 @@ class TotalPointsFeatureEngine:
         potential_leakage = [col for col in shooting_cols if not any(pattern in col for pattern in ['_ma_', '_trend_', '_pct_', '_diff_ma_'])]
         
         if potential_leakage:
-            NBALogger.log_warning(logger, "Eliminando {len(potential_leakage)} columnas adicionales de porcentajes sin shift")
+            NBALogger.log_warning(logger, "Eliminando {len(potential_leakage)} columnas adicionales de porcentajes sin shift"))
             X = X.drop(columns=potential_leakage, errors='ignore')
         
         # SISTEMA AVANZADO DE FEATURE SELECTION REACTIVADO
@@ -1338,7 +1338,7 @@ class TotalPointsFeatureEngine:
                 inf_cols.append(col)
         
         if inf_cols:
-            NBALogger.log_warning(logger, "Eliminando {len(inf_cols)} columnas con infinitos persistentes: {inf_cols[:5]}...")
+            NBALogger.log_warning(logger, "Eliminando {len(inf_cols)} columnas con infinitos persistentes: {inf_cols[:5]}..."))
             X = X.drop(columns=inf_cols)
         
         logger.info(f"Limpieza completada. Features restantes: {X.shape[1]}")
@@ -1483,7 +1483,7 @@ class TotalPointsFeatureEngine:
             logger.info(f"Filtro de varianza: eliminadas {removed_variance} features")
             X = X_variance
         except Exception as e:
-            NBALogger.log_warning(logger, "Error en filtro de varianza: {e}")
+            NBALogger.log_warning(logger, "Error en filtro de varianza: {e}"))
         
         # 2. FILTRO DE CORRELACIÓN - Eliminar features altamente correlacionadas
         try:
@@ -1502,7 +1502,7 @@ class TotalPointsFeatureEngine:
                 X = X.drop(columns=high_corr_features)
                 logger.info(f"Filtro de correlación: eliminadas {len(high_corr_features)} features")
         except Exception as e:
-            NBALogger.log_warning(logger, "Error en filtro de correlación: {e}")
+            NBALogger.log_warning(logger, "Error en filtro de correlación: {e}"))
         
         # 3. SELECCIÓN POR INFORMACIÓN MUTUA
         try:
@@ -1521,7 +1521,7 @@ class TotalPointsFeatureEngine:
             logger.info(f"Selección por información mutua: eliminadas {removed_mi} features")
             
         except Exception as e:
-            NBALogger.log_warning(logger, "Error en selección por información mutua: {e}")
+            NBALogger.log_warning(logger, "Error en selección por información mutua: {e}"))
         
         # 4. DETECCIÓN AVANZADA DE DATA LEAKAGE
         try:
@@ -1554,10 +1554,10 @@ class TotalPointsFeatureEngine:
             
             if confirmed_leakage:
                 X = X.drop(columns=confirmed_leakage, errors='ignore')
-                NBALogger.log_warning(logger, "Data leakage avanzado: eliminadas {len(confirmed_leakage)} features sospechosas")
+                NBALogger.log_warning(logger, "Data leakage avanzado: eliminadas {len(confirmed_leakage)} features sospechosas"))
                 
         except Exception as e:
-            NBALogger.log_warning(logger, "Error en detección avanzada de data leakage: {e}")
+            NBALogger.log_warning(logger, "Error en detección avanzada de data leakage: {e}"))
         
         # 5. FILTRO DE IMPORTANCIA ESTADÍSTICA
         try:
@@ -1581,7 +1581,7 @@ class TotalPointsFeatureEngine:
                 logger.info(f"Filtro estadístico: eliminadas {removed_stats} features no significativas")
                 
         except Exception as e:
-            NBALogger.log_warning(logger, "Error en filtro estadístico: {e}")
+            NBALogger.log_warning(logger, "Error en filtro estadístico: {e}"))
         
         # 6. VERIFICACIÓN FINAL DE CALIDAD
         try:
@@ -1600,7 +1600,7 @@ class TotalPointsFeatureEngine:
                 logger.info(f"Filtro de valores faltantes: eliminadas {removed_missing} features")
                 
         except Exception as e:
-            NBALogger.log_warning(logger, "Error en filtro de valores faltantes: {e}")
+            NBALogger.log_warning(logger, "Error en filtro de valores faltantes: {e}"))
         
         # RESUMEN FINAL
         final_features = X.shape[1]
@@ -1613,7 +1613,7 @@ class TotalPointsFeatureEngine:
         
         # Verificar que tenemos suficientes features
         if final_features < 10:
-            NBALogger.log_warning(logger, "Muy pocas features después de la selección ({final_features}). Revisando criterios...")
+            NBALogger.log_warning(logger, "Muy pocas features después de la selección ({final_features}). Revisando criterios..."))
             # En caso extremo, relajar criterios y mantener más features
         
         return X
@@ -1978,7 +1978,7 @@ class TotalPointsFeatureEngine:
             Lista de columnas con posible data leakage
         """
         if target_col not in df.columns:
-            NBALogger.log_warning(logger, f"Target {target_col} no encontrado en el DataFrame")
+            NBALogger.log_warning(logger, "Target {target_col} no encontrado en el DataFrame"))
             return []
             
         # Seleccionar solo columnas numéricas
@@ -2096,7 +2096,7 @@ class TotalPointsFeatureEngine:
                 high_mi_cols = mi_scores[mi_scores > 0.9].index.tolist()
                 leakage_cols.extend(high_mi_cols)
         except:
-            NBALogger.log_warning(logger, "No se pudo realizar análisis de información mutua")
+            NBALogger.log_warning(logger, "No se pudo realizar análisis de información mutua"))
         
         # 5. Detección por análisis de características con shift incorrecto
         # Buscar características que deberían tener shift pero no lo tienen
@@ -2116,14 +2116,14 @@ class TotalPointsFeatureEngine:
         leakage_cols = sorted(list(set(leakage_cols)))
         
         if leakage_cols:
-            NBALogger.log_warning(logger, f"Detectadas {len(leakage_cols)} columnas con posible data leakage")
+            NBALogger.log_warning(logger, "Detectadas {len(leakage_cols)} columnas con posible data leakage"))
             for col in leakage_cols[:10]:  # Mostrar las 10 primeras para no saturar el log
                 if col in correlations:
-                    NBALogger.log_warning(logger, f"  - {col}: {correlations[col]:.4f}")
+                    NBALogger.log_warning(logger, "  - {col}: {correlations[col]:.4f}"))
                 else:
-                    NBALogger.log_warning(logger, f"  - {col}: detectada por patrón o análisis")
+                    NBALogger.log_warning(logger, "  - {col}: detectada por patrón o análisis"))
             if len(leakage_cols) > 10:
-                NBALogger.log_warning(logger, f"  - ... y {len(leakage_cols) - 10} más")
+                NBALogger.log_warning(logger, "  - ... y {len(leakage_cols) - 10} más"))
         
         return leakage_cols
 
@@ -2151,7 +2151,7 @@ class TotalPointsFeatureEngine:
         available_cols = [col for col in shooting_cols if col in df.columns]
         
         if not available_cols:
-            NBALogger.log_warning(logger, "No hay columnas de tiro disponibles para crear características")
+            NBALogger.log_warning(logger, "No hay columnas de tiro disponibles para crear características"))
             return df
         
         logger.info(f"Creando características de porcentajes de tiro con {len(available_cols)} columnas disponibles")
@@ -2307,7 +2307,7 @@ class TotalPointsFeatureEngine:
         
         # Verificar si tenemos las columnas necesarias
         if 'Date' not in df.columns or 'Team' not in df.columns:
-            NBALogger.log_warning(logger, "Columnas Date o Team no encontradas para crear features de mercado")
+            NBALogger.log_warning(logger, "Columnas Date o Team no encontradas para crear features de mercado"))
             return df
         
         # Ordenar cronológicamente
@@ -2633,7 +2633,7 @@ class TotalPointsFeatureEngine:
         required_cols = ['Team', 'Opp', 'PTS', 'PTS_Opp', 'total_points', 'is_win']
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
-            NBALogger.log_warning(logger, f"Columnas faltantes para opponent features: {missing_cols}")
+            NBALogger.log_warning(logger, "Columnas faltantes para opponent features: {missing_cols}"))
             logger.info(f"Columnas disponibles: {list(df.columns)[:20]}...")  # Mostrar primeras 20
             return df
         
@@ -2665,8 +2665,8 @@ class TotalPointsFeatureEngine:
             df['total_pts_matchup'] = team_total_mean - global_total_avg
         else:
             # Valores por defecto si no se pueden calcular
-            NBALogger.log_warning(logger, "No se pudieron crear características de oponente, usando valores por defecto")
-            NBALogger.log_warning(logger, f"Columnas disponibles después del merge: {[col for col in df.columns if 'opp_' in col or col in ['Team', 'Opp']]}")
+            NBALogger.log_warning(logger, "No se pudieron crear características de oponente, usando valores por defecto"))
+            NBALogger.log_warning(logger, "Columnas disponibles después del merge: {[col for col in df.columns if 'opp_' in col or col in ['Team', 'Opp']]}"))
             
             # Crear características básicas usando promedios globales
             global_pts_avg = df['PTS'].mean()
@@ -2701,6 +2701,7 @@ class TotalPointsFeatureEngine:
         
         # Verificar columnas disponibles
         if 'MP' not in df.columns:
+            NBALogger.log_warning(logger, "Columna 'MP' no encontrada, usando valor por defecto de 240 minutos"))
             df['MP'] = 240
         
         # Estimación básica de posesiones usando la fórmula simplificada
@@ -2839,7 +2840,7 @@ class TotalPointsFeatureEngine:
         available_cols = [col for col in shooting_cols if col in df.columns]
         
         if len(available_cols) < 4:
-            NBALogger.log_warning(logger, "Columnas insuficientes para crear features avanzadas de volumen")
+            NBALogger.log_warning(logger, "Columnas insuficientes para crear features avanzadas de volumen"))
             return df
         
         # 1. FEATURES DE VOLUMEN TOTAL EXPANDIDAS (basado en top features)

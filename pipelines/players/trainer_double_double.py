@@ -36,8 +36,11 @@ from sklearn.metrics import (
 from src.preprocessing.data_loader import NBADataLoader
 from src.models.players.double_double.dd_model import DoubleDoubleAdvancedModel
 
+# Import del sistema de logging unificado
+from config.logging_config import configure_trainer_logging, NBALogger
+
 warnings.filterwarnings('ignore')
-logger = logging.getLogger(__name__)
+logger = configure_trainer_logging('double_double')
 
 # Configurar estilo de visualizaciones optimizado para PNG
 plt.style.use('seaborn-v0_8')
@@ -108,7 +111,7 @@ class DoubleDoubleTrainer:
         self.predictions = None
         self.prediction_probabilities = None
         
-        logger.info(f"Trainer Double Double inicializado - Output: {self.output_dir}")
+        logger.info(f"Trainer Double Double inicializado | Output: {self.output_dir}")
     
     def load_and_prepare_data(self) -> pd.DataFrame:
         """
@@ -117,7 +120,7 @@ class DoubleDoubleTrainer:
         Returns:
             pd.DataFrame: Datos preparados para entrenamiento
         """
-        logger.info("Cargando datos NBA...")
+        logger.info("Cargando datos NBA")
         
         # Cargar datos usando el data loader
         self.df, self.teams_df = self.data_loader.load_data()
@@ -146,7 +149,7 @@ class DoubleDoubleTrainer:
         # Estadísticas del target
         dd_stats = self.df['double_double'].value_counts()
         dd_rate = self.df['double_double'].mean()
-        logger.info(f"Distribución Double Double - No DD: {dd_stats.get(0, 0)}, DD: {dd_stats.get(1, 0)}")
+        logger.info(f"Distribución Double Double | No DD: {dd_stats.get(0, 0)}, DD: {dd_stats.get(1, 0)}")
         logger.info(f"Tasa de Double Double: {dd_rate:.3f} ({dd_rate*100:.1f}%)")
         
         return self.df
@@ -158,18 +161,18 @@ class DoubleDoubleTrainer:
         Returns:
             Dict: Resultados del entrenamiento
         """
-        logger.info("Iniciando entrenamiento del modelo Double Double...")
+        logger.info("Iniciando entrenamiento del modelo Double Double")
         
         if self.df is None:
             raise ValueError("Datos no cargados. Ejecutar load_and_prepare_data() primero")
         
         # Entrenar modelo
         start_time = datetime.now()
-        logger.info("Entrenando modelo Double Double con ensemble avanzado...")
+        logger.info("Entrenando modelo Double Double con ensemble avanzado")
         self.training_results = self.model.train(self.df)
         training_duration = (datetime.now() - start_time).total_seconds()
         
-        logger.info(f"Modelo Double Double completado en {training_duration:.1f} segundos")
+        logger.info(f"Modelo Double Double completado | Duración: {training_duration:.1f} segundos")
         
         # Mostrar resultados del entrenamiento con análisis específico DD
         logger.info("=" * 60)
@@ -194,23 +197,23 @@ class DoubleDoubleTrainer:
         if precision >= 45:
             logger.info("PRECISION: EXCELENTE (>45%)")
         elif precision >= 35:
-            logger.info("PRECISION: BUENA (35-45%) - Mejorable")
+            logger.info("PRECISION: BUENA (35-45%) | Mejorable")
         else:
-            logger.info("PRECISION: BAJA (<35%) - REQUIERE MEJORA")
+            logger.info("PRECISION: BAJA (<35%) | REQUIERE MEJORA")
             
         if 75 <= recall <= 85:
             logger.info("RECALL: ÓPTIMO (75-85%)")
         elif recall > 85:
-            logger.info("RECALL: ALTO (>85%) - Posible overprediction")
+            logger.info("RECALL: ALTO (>85%) | Posible overprediction")
         else:
-            logger.info("RECALL: BAJO (<75%) - REQUIERE MEJORA")
+            logger.info("RECALL: BAJO (<75%) | REQUIERE MEJORA")
             
         if f1 >= 55:
             logger.info("F1-SCORE: EXCELENTE (>55%)")
         elif f1 >= 45:
-            logger.info("F1-SCORE: BUENO (45-55%) - Mejorable")
+            logger.info("F1-SCORE: BUENO (45-55%) | Mejorable")
         else:
-            logger.info("F1-SCORE: BAJO (<45%) - REQUIERE MEJORA")
+            logger.info("F1-SCORE: BAJO (<45%) | REQUIERE MEJORA")
         
         # Análisis del threshold
         threshold = getattr(self.model, 'optimal_threshold', 0.5)
@@ -225,7 +228,7 @@ class DoubleDoubleTrainer:
         logger.info("=" * 60)
         
         # Generar predicciones
-        logger.info("Generando predicciones...")
+        logger.info("Generando predicciones")
         self.predictions = self.model.predict(self.df)
         proba_result = self.model.predict_proba(self.df)
         
@@ -246,7 +249,7 @@ class DoubleDoubleTrainer:
         """
         Genera una visualización completa en PNG con todas las métricas principales.
         """
-        logger.info("Generando visualización completa en PNG...")
+        logger.info("Generando visualización completa en PNG")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -443,7 +446,7 @@ THRESHOLD OPTIMIZADO:
             
         except Exception as e:
             # En caso de cualquier error, mostrar mensaje
-            ax.text(0.5, 0.5, f'Error en feature\nimportance:\n{str(e)[:30]}...', 
+            ax.text(0.5, 0.5, f'Error en feature\nimportance:\n{str(e)[:30]}', 
                    ha='center', va='center', transform=ax.transAxes, fontsize=8)
             ax.set_title('Feature Importance', fontweight='bold')
     
@@ -714,7 +717,7 @@ THRESHOLD OPTIMIZADO:
         top_players = player_stats.nlargest(10, 'dd_rate')
         
         if len(top_players) > 0:
-            players = [p[:15] + '...' if len(p) > 15 else p for p in top_players['Player']]
+            players = [p[:15] + '' if len(p) > 15 else p for p in top_players['Player']]
             rates = top_players['dd_rate']
             
             bars = ax.barh(players, rates, alpha=0.8, color='lightsteelblue')
@@ -737,7 +740,7 @@ THRESHOLD OPTIMIZADO:
         """
         Guarda todos los resultados del entrenamiento siguiendo el patrón de trainer_3pt.py
         """
-        print("Guardando resultados...")
+        print("Guardando resultados")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -837,7 +840,7 @@ THRESHOLD OPTIMIZADO:
         """
         Ejecuta el pipeline completo de entrenamiento para Double Double.
         """
-        print("Iniciando entrenamiento Double Double...")
+        print("Iniciando entrenamiento Double Double")
         
         try:
             # 1. Cargar y preparar datos
@@ -880,8 +883,9 @@ def main():
     )
     
     # Solo mensajes críticos del trainer principal
-    main_logger = logging.getLogger(__name__)
-    main_logger.setLevel(logging.WARNING)
+    warnings.filterwarnings('ignore')
+    logger = configure_trainer_logging('double_double')
+    logger.setLevel(logging.WARNING)
     
     # Silenciar librerías externas
     logging.getLogger('sklearn').setLevel(logging.ERROR)

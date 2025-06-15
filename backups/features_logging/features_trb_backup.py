@@ -95,7 +95,7 @@ class ReboundsFeatureEngineer:
             trb_stats = df['TRB'].describe()
             logger.info(f"Target TRB disponible - Media={trb_stats['mean']:.1f}, Max={trb_stats['max']:.0f}")
         else:
-            NBALogger.log_warning(logger, "Target TRB no disponible - features limitadas")
+            NBALogger.log_warning(logger, "Target TRB no disponible - features limitadas"))
         
         # Limpiar registro de features
         self.feature_registry = {}
@@ -575,7 +575,7 @@ class ReboundsFeatureEngineer:
         logger.debug("Creando features de historial de rebotes...")
         
         if 'TRB' not in df.columns:
-            NBALogger.log_warning(logger, "TRB no disponible - features de historial limitadas")
+            NBALogger.log_warning(logger, "TRB no disponible - features de historial limitadas"))
             return
         
         # PROMEDIO HISTÓRICO DE REBOTES (Múltiples ventanas)

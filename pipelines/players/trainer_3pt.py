@@ -33,8 +33,11 @@ from src.preprocessing.data_loader import NBADataLoader
 from src.models.players.triples.model_triples import XGBoost3PTModel
 
 # Configuración de warnings y logging
+# Import del sistema de logging unificado
+from config.logging_config import configure_trainer_logging, NBALogger
+
 warnings.filterwarnings('ignore')
-logger = logging.getLogger(__name__)
+logger = configure_trainer_logging('3pt')
 
 # Configurar estilo de visualizaciones optimizado para PNG
 plt.style.use('seaborn-v0_8')
@@ -107,7 +110,7 @@ class XGBoost3PTTrainer:
         self.training_results = None
         self.predictions = None
         
-        logger.info(f"Trainer XGBoost 3PT inicializado - Output: {self.output_dir}")
+        logger.info(f"Trainer XGBoost 3PT inicializado | Output: {self.output_dir}")
     
     def load_and_prepare_data(self) -> pd.DataFrame:
         """
@@ -116,7 +119,7 @@ class XGBoost3PTTrainer:
         Returns:
             pd.DataFrame: Datos preparados para entrenamiento
         """
-        print("Cargando datos NBA...")
+        print("Cargando datos NBA")
         
         # Los datos ya están cargados en __init__, solo verificamos
         if self.df is None or self.teams_df is None:
@@ -137,7 +140,7 @@ class XGBoost3PTTrainer:
         Returns:
             Dict: Resultados del entrenamiento
         """
-        print("Entrenando modelo ultra-perfeccionado...")
+        print("Entrenando modelo ultra-perfeccionado")
         
         if self.df is None:
             raise ValueError("Datos no cargados. Ejecutar load_and_prepare_data() primero")
@@ -175,7 +178,7 @@ class XGBoost3PTTrainer:
         """
         Genera una visualización completa en PNG con todas las métricas específicas para triples.
         """
-        print("Generando visualizaciones...")
+        print("Generando visualizaciones")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -600,7 +603,7 @@ class XGBoost3PTTrainer:
         """
         Guarda todos los resultados del entrenamiento en archivos.
         """
-        print("Guardando resultados...")
+        print("Guardando resultados")
         
         # Guardar modelo entrenado
         model_path = os.path.join(self.output_dir, "3pt_model.joblib")
@@ -648,7 +651,7 @@ class XGBoost3PTTrainer:
         """
         Ejecuta el pipeline completo de entrenamiento para triples.
         """
-        print("Iniciando entrenamiento ultra-perfeccionado...")
+        print("Iniciando entrenamiento ultra-perfeccionado")
         
         try:
             # 1. Cargar y preparar datos
@@ -720,7 +723,7 @@ def main():
     # Ejecutar entrenamiento completo
     results = trainer.run_complete_training()
     
-    print("🎉 ¡Entrenamiento ultra-perfeccionado completado!")
+    print("¡Entrenamiento ultra-perfeccionado completado!")
     print(f" Resultados: {trainer.output_dir}")
     
     return results

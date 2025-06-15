@@ -32,8 +32,11 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from src.preprocessing.data_loader import NBADataLoader
 from src.models.teams.teams_points.model_teams_points import TeamPointsModel
 
+# Import del sistema de logging unificado
+from config.logging_config import configure_trainer_logging, NBALogger
+
 warnings.filterwarnings('ignore')
-logger = logging.getLogger(__name__)
+logger = configure_trainer_logging('teams_points')
 
 # Configurar estilo de visualizaciones optimizado para PNG
 plt.style.use('seaborn-v0_8')
@@ -101,7 +104,7 @@ class TeamsPointsTrainer:
         self.training_results = None
         self.predictions = None
         
-        logger.info(f"Trainer Teams Points inicializado - Output: {self.output_dir}")
+        logger.info(f"Trainer Teams Points inicializado | Output: {self.output_dir}")
     
     def load_and_prepare_data(self) -> pd.DataFrame:
         """
@@ -110,7 +113,7 @@ class TeamsPointsTrainer:
         Returns:
             pd.DataFrame: Datos preparados para entrenamiento
         """
-        logger.info("Cargando datos NBA...")
+        logger.info("Cargando datos NBA")
         
         # Cargar datos usando el data loader
         self.df, self.teams_df = self.data_loader.load_data()
@@ -130,10 +133,10 @@ class TeamsPointsTrainer:
         # Estadísticas del target
         pts_stats = teams_data['PTS'].describe()
         logger.info(f"Estadísticas PTS por equipo:")
-        logger.info(f"  - Media: {pts_stats['mean']:.1f}")
-        logger.info(f"  - Mediana: {pts_stats['50%']:.1f}")
-        logger.info(f"  - Min/Max: {pts_stats['min']:.0f}/{pts_stats['max']:.0f}")
-        logger.info(f"  - Desv. Estándar: {pts_stats['std']:.1f}")
+        logger.info(f"  | Media: {pts_stats['mean']:.1f}")
+        logger.info(f"  | Mediana: {pts_stats['50%']:.1f}")
+        logger.info(f"  | Min/Max: {pts_stats['min']:.0f}/{pts_stats['max']:.0f}")
+        logger.info(f"  | Desv. Estándar: {pts_stats['std']:.1f}")
         
         self.df = teams_data
         return self.df
@@ -145,18 +148,18 @@ class TeamsPointsTrainer:
         Returns:
             Dict: Resultados del entrenamiento
         """
-        logger.info("Iniciando entrenamiento del modelo Teams Points...")
+        logger.info("Iniciando entrenamiento del modelo Teams Points")
         
         if self.df is None:
             raise ValueError("Datos no cargados. Ejecutar load_and_prepare_data() primero")
         
         # Entrenar modelo
         start_time = datetime.now()
-        logger.info("Entrenando modelo Teams Points con ensemble optimizado...")
+        logger.info("Entrenando modelo Teams Points con ensemble optimizado")
         self.training_results = self.model.train(self.df, validation_split=0.2)
         training_duration = (datetime.now() - start_time).total_seconds()
         
-        logger.info(f"Modelo Teams Points completado en {training_duration:.1f} segundos")
+        logger.info(f"Modelo Teams Points completado | Duración: {training_duration:.1f} segundos")
         
         # Mostrar resultados del entrenamiento
         logger.info("=" * 50)
@@ -179,7 +182,7 @@ class TeamsPointsTrainer:
         logger.info("=" * 50)
         
         # Generar predicciones
-        logger.info("Generando predicciones...")
+        logger.info("Generando predicciones")
         self.predictions = self.model.predict(self.df)
         
         # Calcular métricas finales
@@ -203,7 +206,7 @@ class TeamsPointsTrainer:
                 accuracy_5pts = np.mean(np.abs(y_true - y_pred) <= 5) * 100
                 accuracy_10pts = np.mean(np.abs(y_true - y_pred) <= 10) * 100
                 
-                logger.info(f"Métricas finales - MAE: {mae:.3f}, RMSE: {rmse:.3f}, R²: {r2:.3f}")
+                logger.info(f"Métricas finales | MAE: {mae:.3f}, RMSE: {rmse:.3f}, R²: {r2:.3f}")
                 logger.info(f"Accuracy ±5pts: {accuracy_5pts:.1f}%, ±10pts: {accuracy_10pts:.1f}%")
                 
                 self.training_results.update({
@@ -220,7 +223,7 @@ class TeamsPointsTrainer:
         """
         Genera una visualización completa en PNG con todas las métricas principales.
         """
-        logger.info("Generando visualización completa en PNG...")
+        logger.info("Generando visualización completa en PNG")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -619,7 +622,7 @@ MODELOS BASE:
     
     def save_results(self):
         """Guarda todos los resultados del entrenamiento."""
-        logger.info("Guardando resultados...")
+        logger.info("Guardando resultados")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -699,7 +702,7 @@ MODELOS BASE:
         Returns:
             Dict: Resultados completos del entrenamiento
         """
-        logger.info("Iniciando pipeline de entrenamiento Teams Points...")
+        logger.info("Iniciando pipeline de entrenamiento Teams Points")
         
         try:
             # 1. Cargar datos

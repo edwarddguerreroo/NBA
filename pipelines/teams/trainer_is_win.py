@@ -32,8 +32,11 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from src.preprocessing.data_loader import NBADataLoader
 from src.models.teams.is_win.model_is_win import IsWinModel
 
+# Import del sistema de logging unificado
+from config.logging_config import configure_trainer_logging, NBALogger
+
 warnings.filterwarnings('ignore')
-logger = logging.getLogger(__name__)
+logger = configure_trainer_logging('is_win')
 
 # Configurar estilo de visualizaciones optimizado para PNG
 plt.style.use('seaborn-v0_8')
@@ -105,7 +108,7 @@ class IsWinTrainer:
         self.predictions = None
         self.probabilities = None
         
-        logger.info(f"Trainer Is Win inicializado - Output: {self.output_dir}")
+        logger.info(f"Trainer Is Win inicializado | Output: {self.output_dir}")
     
     def load_and_prepare_data(self) -> pd.DataFrame:
         """
@@ -114,7 +117,7 @@ class IsWinTrainer:
         Returns:
             pd.DataFrame: Datos preparados para entrenamiento
         """
-        logger.info("Cargando datos NBA...")
+        logger.info("Cargando datos NBA")
         
         # Cargar datos usando el data loader
         self.df, self.teams_df = self.data_loader.load_data()
@@ -140,9 +143,9 @@ class IsWinTrainer:
         losses = total_games - wins
         
         logger.info(f"Estadísticas de victorias:")
-        logger.info(f"  - Total partidos: {total_games}")
-        logger.info(f"  - Victorias: {wins} ({win_rate:.1%})")
-        logger.info(f"  - Derrotas: {losses} ({1-win_rate:.1%})")
+        logger.info(f"  | Total partidos: {total_games}")
+        logger.info(f"  | Victorias: {wins} ({win_rate:.1%})")
+        logger.info(f"  | Derrotas: {losses} ({1-win_rate:.1%})")
         
         self.df = teams_data
         return self.df
@@ -154,18 +157,18 @@ class IsWinTrainer:
         Returns:
             Dict: Resultados del entrenamiento
         """
-        logger.info("Iniciando entrenamiento del modelo Is Win...")
+        logger.info("Iniciando entrenamiento del modelo Is Win")
         
         if self.df is None:
             raise ValueError("Datos no cargados. Ejecutar load_and_prepare_data() primero")
         
         # Entrenar modelo
         start_time = datetime.now()
-        logger.info("Entrenando modelo Is Win con ensemble optimizado...")
+        logger.info("Entrenando modelo Is Win con ensemble optimizado")
         self.training_results = self.model.train(self.df, validation_split=0.2)
         training_duration = (datetime.now() - start_time).total_seconds()
         
-        logger.info(f"Modelo Is Win completado en {training_duration:.1f} segundos")
+        logger.info(f"Modelo Is Win completado | Duración: {training_duration:.1f} segundos")
         
         # Mostrar resultados del entrenamiento
         logger.info("=" * 50)
@@ -186,7 +189,7 @@ class IsWinTrainer:
         logger.info("=" * 50)
         
         # Generar predicciones
-        logger.info("Generando predicciones...")
+        logger.info("Generando predicciones")
         self.probabilities = self.model.predict_proba(self.df)
         self.predictions = self.model.predict(self.df)
         
@@ -196,7 +199,7 @@ class IsWinTrainer:
         """
         Genera una visualización completa en PNG con todas las métricas principales.
         """
-        logger.info("Generando visualización completa en PNG...")
+        logger.info("Generando visualización completa en PNG")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -578,7 +581,7 @@ MODELO ENSEMBLE:
     
     def save_results(self):
         """Guarda todos los resultados del entrenamiento."""
-        logger.info("Guardando resultados...")
+        logger.info("Guardando resultados")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -653,7 +656,7 @@ MODELO ENSEMBLE:
         Returns:
             Dict: Resultados completos del entrenamiento
         """
-        logger.info("Iniciando pipeline de entrenamiento Is Win...")
+        logger.info("Iniciando pipeline de entrenamiento Is Win")
         
         try:
             # 1. Cargar datos

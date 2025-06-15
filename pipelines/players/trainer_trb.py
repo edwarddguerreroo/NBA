@@ -32,8 +32,11 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from src.preprocessing.data_loader import NBADataLoader
 from src.models.players.trb.model_trb import XGBoostTRBModel
 
+# Import del sistema de logging unificado
+from config.logging_config import configure_trainer_logging, NBALogger
+
 warnings.filterwarnings('ignore')
-logger = logging.getLogger(__name__)
+logger = configure_trainer_logging('trb')
 
 # Configurar estilo de visualizaciones optimizado para PNG
 plt.style.use('seaborn-v0_8')
@@ -109,7 +112,7 @@ class XGBoostTRBTrainer:
         self.training_results = None
         self.predictions = None
         
-        logger.info(f"Trainer XGBoost TRB inicializado - Output: {self.output_dir}")
+        logger.info(f"Trainer XGBoost TRB inicializado | Output: {self.output_dir}")
     
     def load_and_prepare_data(self) -> pd.DataFrame:
         """
@@ -118,7 +121,7 @@ class XGBoostTRBTrainer:
         Returns:
             pd.DataFrame: Datos preparados para entrenamiento
         """
-        logger.info("Cargando datos NBA...")
+        logger.info("Cargando datos NBA")
         
         # Cargar datos usando el data loader
         self.df, self.teams_df = self.data_loader.load_data()
@@ -154,18 +157,18 @@ class XGBoostTRBTrainer:
         Returns:
             Dict: Resultados del entrenamiento
         """
-        logger.info("Iniciando entrenamiento del modelo XGBoost TRB...")
+        logger.info("Iniciando entrenamiento del modelo XGBoost TRB")
         
         if self.df is None:
             raise ValueError("Datos no cargados. Ejecutar load_and_prepare_data() primero")
         
         # Entrenar modelo
         start_time = datetime.now()
-        logger.info("Entrenando modelo TRB con stacking ensemble...")
+        logger.info("Entrenando modelo TRB con stacking ensemble")
         self.training_results = self.model.train(self.df)
         training_duration = (datetime.now() - start_time).total_seconds()
         
-        logger.info(f"Modelo TRB completado en {training_duration:.1f} segundos")
+        logger.info(f"Modelo TRB completado | Duración: {training_duration:.1f} segundos")
         
         # Mostrar resultados del entrenamiento
         logger.info("=" * 50)
@@ -180,7 +183,7 @@ class XGBoostTRBTrainer:
         logger.info("=" * 50)
         
         # Generar predicciones
-        logger.info("Generando predicciones...")
+        logger.info("Generando predicciones")
         self.predictions = self.model.predict(self.df)
         
         # Calcular métricas finales en datos de prueba
@@ -211,7 +214,7 @@ class XGBoostTRBTrainer:
             accuracy_2reb = np.mean(np.abs(y_true - y_pred) <= 2) * 100
             accuracy_3reb = np.mean(np.abs(y_true - y_pred) <= 3) * 100
             
-            logger.info(f"Métricas finales - MAE: {mae:.3f}, RMSE: {rmse:.3f}, R²: {r2:.3f}")
+            logger.info(f"Métricas finales | MAE: {mae:.3f}, RMSE: {rmse:.3f}, R²: {r2:.3f}")
             logger.info(f"Accuracy ±1reb: {accuracy_1reb:.1f}%, ±2reb: {accuracy_2reb:.1f}%, ±3reb: {accuracy_3reb:.1f}%")
             
             self.training_results.update({
@@ -229,7 +232,7 @@ class XGBoostTRBTrainer:
         """
         Genera una visualización completa en PNG con todas las métricas principales.
         """
-        logger.info("Generando visualización completa en PNG...")
+        logger.info("Generando visualización completa en PNG")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -652,7 +655,7 @@ MODELOS BASE:
         top_rebounders = player_stats.nlargest(10, 'mean')
         
         if len(top_rebounders) > 0:
-            players = [p[:15] + '...' if len(p) > 15 else p for p in top_rebounders['Player']]
+            players = [p[:15] + '' if len(p) > 15 else p for p in top_rebounders['Player']]
             means = top_rebounders['mean']
             
             bars = ax.barh(players, means, alpha=0.8, color='lightsteelblue')
@@ -670,7 +673,7 @@ MODELOS BASE:
     
     def save_results(self):
         """Guarda todos los resultados del entrenamiento."""
-        logger.info("Guardando resultados...")
+        logger.info("Guardando resultados")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -741,7 +744,7 @@ MODELOS BASE:
         Returns:
             Dict: Resultados completos del entrenamiento
         """
-        logger.info("Iniciando pipeline de entrenamiento TRB...")
+        logger.info("Iniciando pipeline de entrenamiento TRB")
         
         try:
             # 1. Cargar datos

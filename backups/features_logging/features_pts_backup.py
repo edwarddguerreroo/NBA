@@ -66,7 +66,7 @@ class PointsFeatureEngineer:
             'drift_detection': []  # NUEVO: Features para detectar drift temporal
         }
         
-        NBALogger.log_model_start(logger, "Points", "FeatureEngineer")
+        NBALogger.log_model_start(logger, "Points", "FeatureEngineer"))
     
     def _get_data_hash(self, df: pd.DataFrame) -> str:
         """Generar hash único para el DataFrame"""
@@ -166,7 +166,7 @@ class PointsFeatureEngineer:
             pts_stats = df['PTS'].describe()
             logger.info(f"Target PTS disponible - Estadísticas: Media={pts_stats['mean']:.1f}, Max={pts_stats['max']:.0f}")
         else:
-            NBALogger.log_error(logger, "PTS no encontrado en el dataset - requerido para features de puntos")
+            NBALogger.log_error(logger, "PTS no encontrado en el dataset - requerido para features de puntos"))
             return []
         
         # VERIFICAR CACHE DE DATOS
@@ -349,7 +349,7 @@ class PointsFeatureEngineer:
         
         # Verificar que PTS existe
         if 'PTS' not in df.columns:
-            NBALogger.log_warning(logger, "Columna PTS no encontrada - features de anotación limitadas")
+            NBALogger.log_warning(logger, "Columna PTS no encontrada - features de anotación limitadas"))
             return
         
         # FEATURES HISTÓRICAS DE PUNTOS (evitando data leakage)
@@ -550,7 +550,7 @@ class PointsFeatureEngineer:
                 df['matchup_scoring_difficulty'] = df['matchup_scoring_difficulty'] / 20  # Normalizar 0-1
                 
             except Exception as e:
-                NBALogger.log_warning(logger, "Error calculando features del oponente: {e}")
+                NBALogger.log_warning(logger, "Error calculando features del oponente: {e}"))
                 df['matchup_scoring_difficulty'] = 0.5  # Valor neutral
         
         # Ajuste por pace del juego (más posesiones = más oportunidades)
@@ -593,7 +593,7 @@ class PointsFeatureEngineer:
                 # Jugadores más ligeros tienden a ser mejores tiradores perimetrales
                 df['athletic_build'] = (df['bmi_category'] <= 1).astype(int)
             except Exception as e:
-                NBALogger.log_warning(logger, "Error categorizando BMI: {e}")
+                NBALogger.log_warning(logger, "Error categorizando BMI: {e}"))
                 df['bmi_category'] = 1.0
                 df['athletic_build'] = 1
         else:
@@ -617,7 +617,7 @@ class PointsFeatureEngineer:
             df['scorer_archetype_score'] = df['scorer_archetype_score'].clip(0.0, 1.0)
             
         except Exception as e:
-            NBALogger.log_error(logger, "Error calculando scorer_archetype_score: {e}")
+            NBALogger.log_error(logger, "Error calculando scorer_archetype_score: {e}"))
             df['scorer_archetype_score'] = 0.5  # Valor neutral por defecto
         
         # Capacidad de anotación en clutch (últimos minutos)
@@ -631,7 +631,7 @@ class PointsFeatureEngineer:
             )
             
         except Exception as e:
-            NBALogger.log_error(logger, "Error calculando clutch_scoring_ability: {e}")
+            NBALogger.log_error(logger, "Error calculando clutch_scoring_ability: {e}"))
             df['clutch_scoring_ability'] = 0.5
         
         # Ajuste por fatiga
@@ -642,7 +642,7 @@ class PointsFeatureEngineer:
             df['fatigue_adjusted_scoring'] = df.get('pts_hist_avg_5g', 0) * rest_factor * (mp_avg / 35)
             
         except Exception as e:
-            NBALogger.log_error(logger, "Error calculando fatigue_adjusted_scoring: {e}")
+            NBALogger.log_error(logger, "Error calculando fatigue_adjusted_scoring: {e}"))
             df['fatigue_adjusted_scoring'] = df.get('pts_hist_avg_5g', 0)
         
         # Calidad de selección de tiro
@@ -654,7 +654,7 @@ class PointsFeatureEngineer:
             df['shot_selection_quality'] = fg_eff * np.log(shot_volume + 1) / 3  # Normalizar
             
         except Exception as e:
-            NBALogger.log_error(logger, f"Error calculando shot_selection_quality: {e}")
+            NBALogger.log_error(logger, "Error calculando shot_selection_quality: {e}"))
             df['shot_selection_quality'] = 0.5
     
     def _create_advanced_stacking_features_optimized(self, df: pd.DataFrame) -> None:
@@ -931,7 +931,7 @@ class PointsFeatureEngineer:
         MEJORADO: Soporte para múltiples operaciones incluyendo quantiles
         """
         if column not in df.columns:
-            NBALogger.log_warning(logger, f"Columna {column} no encontrada")
+            NBALogger.log_warning(logger, "Columna {column} no encontrada"))
             return pd.Series(0, index=df.index)
         
         # Usar shift(1) para evitar data leakage
@@ -956,7 +956,7 @@ class PointsFeatureEngineer:
             else:
                 result = rolling_obj.quantile(0.5)  # mediana por defecto
         else:
-            NBALogger.log_warning(logger, f"Operación {operation} no soportada, usando mean")
+            NBALogger.log_warning(logger, "Operación {operation} no soportada, usando mean"))
             result = rolling_obj.mean()
         
         # Reset index para mantener estructura original
@@ -1144,14 +1144,14 @@ class PointsFeatureEngineer:
             logger.info(f"  Features críticas mantenidas: {len(critical_kept)}/{len([f for f in critical_features if f in features])}")
             
             if critical_lost:
-                NBALogger.log_warning(logger, f"Features críticas perdidas: {critical_lost}")
+                NBALogger.log_warning(logger, "Features críticas perdidas: {critical_lost}"))
             else:
                 logger.info("  Todas las features críticas fueron preservadas")
             
             return final_features
             
         except Exception as e:
-            NBALogger.log_error(logger, f"Error en filtro de correlación: {str(e)}")
+            NBALogger.log_error(logger, "Error en filtro de correlación: {str(e)}"))
             logger.info("Retornando features originales sin filtrar")
             return features
     
@@ -1442,7 +1442,7 @@ class PointsFeatureEngineer:
             return report
             
         except Exception as e:
-            NBALogger.log_error(logger, f"Error generando reporte de correlaciones: {str(e)}")
+            NBALogger.log_error(logger, "Error generando reporte de correlaciones: {str(e)}"))
             return {'error': str(e)}
     
     def get_optimal_feature_set(self, df: pd.DataFrame, max_features: int = 35) -> List[str]:
@@ -1731,7 +1731,7 @@ class PointsFeatureEngineer:
         
         missing_registered = registered_features - set(all_features)
         if missing_registered:
-            NBALogger.log_warning(logger, f"Features registradas pero no en DataFrame: {missing_registered}")
+            NBALogger.log_warning(logger, "Features registradas pero no en DataFrame: {missing_registered}"))
         
         # PRIORIDAD 0: FEATURES REVOLUCIONARIAS DE ENSEMBLE (MÁXIMA PRIORIDAD ABSOLUTA)
         revolutionary_ensemble = [f for f in self._feature_registry['temporal_advanced'] 
@@ -1830,7 +1830,7 @@ class PointsFeatureEngineer:
         # Verificación final crítica
         missing_features = [f for f in final_features if f not in df.columns]
         if missing_features:
-            NBALogger.log_error(logger, f"FEATURES FALTANTES EN DATAFRAME: {missing_features}")
+            NBALogger.log_error(logger, "FEATURES FALTANTES EN DATAFRAME: {missing_features}"))
             # Remover features faltantes
             final_features = [f for f in final_features if f in df.columns]
         
@@ -1872,7 +1872,7 @@ class PointsFeatureEngineer:
             default_value: Valor por defecto si no existe
         """
         if feature_name not in df.columns:
-            NBALogger.log_warning(logger, f"Feature {feature_name} no encontrada en DataFrame - creando con valor por defecto")
+            NBALogger.log_warning(logger, "Feature {feature_name} no encontrada en DataFrame - creando con valor por defecto"))
             df[feature_name] = default_value
 
     def _create_temporal_drift_features(self, df: pd.DataFrame) -> None:
@@ -2308,7 +2308,7 @@ class PointsFeatureEngineer:
                         correlation = abs(df[feature].corr(df['PTS']))
                         if correlation > 0.92:  # Umbral muy estricto
                             extreme_correlation_features.append(feature)
-                            NBALogger.log_warning(logger, f"CORRELACIÓN EXTREMA detectada: {feature} (r={correlation:.3f})")
+                            NBALogger.log_warning(logger, "CORRELACIÓN EXTREMA detectada: {feature} (r={correlation:.3f})"))
                     except:
                         pass
         
@@ -2319,7 +2319,7 @@ class PointsFeatureEngineer:
         for feature in all_leakage_features:
             if feature in df.columns:
                 leakage_features.append(feature)
-                NBALogger.log_error(logger, f"DATA LEAKAGE CONFIRMADO - ELIMINANDO: {feature}")
+                NBALogger.log_error(logger, "DATA LEAKAGE CONFIRMADO - ELIMINANDO: {feature}"))
         
         # DETECCIÓN ADICIONAL: Features que contienen información del juego actual
         suspicious_patterns = ['_current', '_today', '_game', '_match']
@@ -2327,7 +2327,7 @@ class PointsFeatureEngineer:
             if any(pattern in feature.lower() for pattern in suspicious_patterns):
                 if feature not in leakage_features:
                     leakage_features.append(feature)
-                    NBALogger.log_warning(logger, "PATRÓN SOSPECHOSO detectado: {feature}")
+                    NBALogger.log_warning(logger, "PATRÓN SOSPECHOSO detectado: {feature}"))
         
         return leakage_features
     
@@ -2345,10 +2345,10 @@ class PointsFeatureEngineer:
         leakage_features = self._detect_data_leakage_features(df)
         
         if leakage_features:
-            NBALogger.log_error(logger, "🚨 APLICANDO FILTRO REVOLUCIONARIO DE DATA LEAKAGE 🚨")
-            NBALogger.log_error(logger, "  Features ELIMINADAS por data leakage: {len(leakage_features)}")
+            NBALogger.log_error(logger, "🚨 APLICANDO FILTRO REVOLUCIONARIO DE DATA LEAKAGE 🚨"))
+            NBALogger.log_error(logger, "  Features ELIMINADAS por data leakage: {len(leakage_features)}"))
             for feature in leakage_features:
-                NBALogger.log_error(logger, "    ❌ ELIMINADO: {feature}")
+                NBALogger.log_error(logger, "    ❌ ELIMINADO: {feature}"))
             
             # Remover features de data leakage
             filtered_features = [f for f in features if f not in leakage_features]
@@ -2395,15 +2395,15 @@ class PointsFeatureEngineer:
         dominant_features = [f for f, corr in feature_correlations.items() if corr > 0.8]
         
         if dominant_features:
-            NBALogger.log_warning(logger, "🔥 FEATURES DOMINANTES detectadas: {dominant_features}")
+            NBALogger.log_warning(logger, "🔥 FEATURES DOMINANTES detectadas: {dominant_features}"))
             
             # Mantener solo la mejor feature dominante y eliminar el resto
             if len(dominant_features) > 1:
                 best_dominant = max(dominant_features, key=lambda x: feature_correlations[x])
                 features_to_remove = [f for f in dominant_features if f != best_dominant]
                 
-                NBALogger.log_warning(logger, f"  ⚖️ Manteniendo mejor dominante: {best_dominant} (r={feature_correlations[best_dominant]:.3f})")
-                NBALogger.log_warning(logger, f"  ❌ Eliminando dominantes: {features_to_remove}")
+                NBALogger.log_warning(logger, "  ⚖️ Manteniendo mejor dominante: {best_dominant} (r={feature_correlations[best_dominant]:.3f})"))
+                NBALogger.log_warning(logger, "  ❌ Eliminando dominantes: {features_to_remove}"))
                 
                 features = [f for f in features if f not in features_to_remove]
         
@@ -2528,7 +2528,7 @@ class PointsFeatureEngineer:
         logger.info("Creando features ULTRA-CRÍTICAS para rangos de alto scoring...")
         
         if 'PTS' not in df.columns:
-            NBALogger.log_warning(logger, "PTS no disponible - saltando features de rangos críticos")
+            NBALogger.log_warning(logger, "PTS no disponible - saltando features de rangos críticos"))
             return
         
         # 1. FEATURES DE DETECCIÓN DE ALTO SCORING

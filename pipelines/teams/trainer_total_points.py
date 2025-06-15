@@ -33,21 +33,11 @@ from tqdm import tqdm
 from src.preprocessing.data_loader import NBADataLoader
 from src.models.teams.total_points.model_total_points import NBATotalPointsPredictor
 
-# Configuración de logging optimizada
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
-
-# Silenciar librerías externas
-for logger_name in ['sklearn', 'xgboost', 'lightgbm', 'catboost', 'optuna']:
-    logging.getLogger(logger_name).setLevel(logging.ERROR)
+# Import del sistema de logging unificado
+from config.logging_config import configure_trainer_logging, NBALogger
 
 warnings.filterwarnings('ignore')
-logger = logging.getLogger(__name__)
+logger = configure_trainer_logging('total_points')
 
 # Configurar estilo de visualizaciones optimizado para PNG
 plt.style.use('seaborn-v0_8')
@@ -97,13 +87,13 @@ class TotalPointsTrainer:
         # Crear directorio de salida con manejo robusto
         try:
             os.makedirs(self.output_dir, exist_ok=True)
-            logger.info(f"Directorio de salida creado/verificado: {self.output_dir}")
+            logger.info(f"Directorio de salida: {self.output_dir}")
         except Exception as e:
-            logger.error(f"Error creando directorio {self.output_dir}: {e}")
+            NBALogger.log_error(logger, f"Error creando directorio {self.output_dir}: {e}")
             # Crear directorio alternativo en caso de error
             self.output_dir = os.path.normpath("results_total_points_model")
             os.makedirs(self.output_dir, exist_ok=True)
-            logger.info(f"Usando directorio alternativo: {self.output_dir}")
+            logger.info(f"Directorio alternativo: {self.output_dir}")
         
         # Componentes principales
         self.data_loader = NBADataLoader(
@@ -127,8 +117,8 @@ class TotalPointsTrainer:
         self.predictions = None
         self.test_data = None
         
-        logger.info(f"Trainer Total Points inicializado - Output: {self.output_dir}")
-        logger.info(f"Configuración: Optimización={optimization_method}, Trials={n_optimization_trials}, NN={use_neural_network}")
+        logger.info(f"Trainer Total Points inicializado | Output: {self.output_dir}")
+        logger.info(f"Configuración: {optimization_method} | Trials: {n_optimization_trials} | NN: {use_neural_network}")
     
     def load_and_prepare_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
@@ -137,7 +127,7 @@ class TotalPointsTrainer:
         Returns:
             Tuple[pd.DataFrame, pd.DataFrame]: Datos de equipos y jugadores preparados
         """
-        logger.info("Cargando datos NBA...")
+        logger.info("Cargando datos NBA")
         
         # Cargar datos usando el data loader
         self.df_players, self.df_teams = self.data_loader.load_data()
@@ -152,18 +142,18 @@ class TotalPointsTrainer:
         
         # Estadísticas básicas de los datos
         logger.info(f"Datos cargados:")
-        logger.info(f"  - Registros de equipos: {len(self.df_teams)}")
-        logger.info(f"  - Registros de jugadores: {len(self.df_players) if self.df_players is not None else 0}")
-        logger.info(f"  - Equipos únicos: {self.df_teams['Team'].nunique()}")
-        logger.info(f"  - Rango de fechas: {self.df_teams['Date'].min()} a {self.df_teams['Date'].max()}")
+        logger.info(f"  | Registros de equipos: {len(self.df_teams)}")
+        logger.info(f"  | Registros de jugadores: {len(self.df_players) if self.df_players is not None else 0}")
+        logger.info(f"  | Equipos únicos: {self.df_teams['Team'].nunique()}")
+        logger.info(f"  | Rango de fechas: {self.df_teams['Date'].min()} a {self.df_teams['Date'].max()}")
         
         # Estadísticas del target
         total_pts_stats = self.df_teams['total_points'].describe()
         logger.info(f"\nEstadísticas Puntos Totales:")
-        logger.info(f"  - Media: {total_pts_stats['mean']:.1f}")
-        logger.info(f"  - Mediana: {total_pts_stats['50%']:.1f}")
-        logger.info(f"  - Min/Max: {total_pts_stats['min']:.0f}/{total_pts_stats['max']:.0f}")
-        logger.info(f"  - Desv. Estándar: {total_pts_stats['std']:.1f}")
+        logger.info(f"  | Media: {total_pts_stats['mean']:.1f}")
+        logger.info(f"  | Mediana: {total_pts_stats['50%']:.1f}")
+        logger.info(f"  | Min/Max: {total_pts_stats['min']:.0f}/{total_pts_stats['max']:.0f}")
+        logger.info(f"  | Desv. Estándar: {total_pts_stats['std']:.1f}")
         
         return self.df_teams, self.df_players
     
@@ -191,7 +181,7 @@ class TotalPointsTrainer:
         )
         
         training_duration = (datetime.now() - start_time).total_seconds()
-        logger.info(f"\nModelo Total Points completado en {training_duration:.1f} segundos")
+        logger.info(f"\nModelo Total Points completado | Duración: {training_duration:.1f} segundos")
         
         # Extraer métricas del nuevo formato de resultados
         if 'individual_models' in self.training_results:
@@ -219,7 +209,7 @@ class TotalPointsTrainer:
                 self.training_results['r2'] = stacking_metrics.get('val_r2', self.training_results.get('r2', 0))
         
         # Generar predicciones reales usando el modelo entrenado
-        logger.info("\nGenerando predicciones en conjunto de validación...")
+        logger.info("\nGenerando predicciones en conjunto de validación")
         
         # Obtener split de validación
         validation_split = 0.2
@@ -263,13 +253,13 @@ class TotalPointsTrainer:
             })
             
             logger.info(f"\nMétricas finales en conjunto de validación:")
-            logger.info(f"  - MAE: {mae:.3f}")
-            logger.info(f"  - RMSE: {rmse:.3f}")
-            logger.info(f"  - R²: {r2:.3f}")
-            logger.info(f"  - Accuracy ±5pts: {accuracy_5pts:.1f}%")
-            logger.info(f"  - Accuracy ±10pts: {accuracy_10pts:.1f}%")
-            logger.info(f"  - Accuracy ±15pts: {accuracy_15pts:.1f}%")
-            logger.info(f"  - Accuracy ±20pts: {accuracy_20pts:.1f}%")
+            logger.info(f"  | MAE: {mae:.3f}")
+            logger.info(f"  | RMSE: {rmse:.3f}")
+            logger.info(f"  | R²: {r2:.3f}")
+            logger.info(f"  | Accuracy ±5pts: {accuracy_5pts:.1f}%")
+            logger.info(f"  | Accuracy ±10pts: {accuracy_10pts:.1f}%")
+            logger.info(f"  | Accuracy ±15pts: {accuracy_15pts:.1f}%")
+            logger.info(f"  | Accuracy ±20pts: {accuracy_20pts:.1f}%")
             
         except Exception as e:
             logger.error(f"Error generando predicciones: {e}")
@@ -284,7 +274,7 @@ class TotalPointsTrainer:
         """
         Genera una visualización completa en PNG con todas las métricas principales.
         """
-        logger.info("Generando visualización completa en PNG...")
+        logger.info("Generando visualización completa en PNG")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -707,7 +697,7 @@ MODELOS BASE:
         """
         Guarda todos los resultados del entrenamiento.
         """
-        logger.info("Guardando resultados del modelo...")
+        logger.info("Guardando resultados del modelo")
         
         # Guardar modelo completo
         model_path = os.path.join(self.output_dir, 'total_points_model.pkl')
@@ -829,19 +819,19 @@ MODELOS BASE:
         
         try:
             # 1. Cargar datos
-            logger.info("[Paso 1/4] Cargando y preparando datos...")
+            logger.info("[Paso 1/4] Cargando y preparando datos")
             self.load_and_prepare_data()
             
             # 2. Entrenar modelo
-            logger.info("\n[Paso 2/4] Entrenando modelo...")
+            logger.info("\n[Paso 2/4] Entrenando modelo")
             self.train_model()
             
             # 3. Generar visualizaciones
-            logger.info("\n[Paso 3/4] Generando visualizaciones...")
+            logger.info("\n[Paso 3/4] Generando visualizaciones")
             self.generate_all_visualizations()
             
             # 4. Guardar resultados
-            logger.info("\n[Paso 4/4] Guardando resultados...")
+            logger.info("\n[Paso 4/4] Guardando resultados")
             self.save_results()
             
             logger.info("\n" + "="*80)

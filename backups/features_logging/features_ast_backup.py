@@ -12,6 +12,11 @@ FEATURES BASADAS EN PRINCIPIOS FUNDAMENTALES DE ASISTENCIAS:
 6. CONTEXTO DEL OPONENTE: Presión defensiva y estilo
 7. HISTORIAL DE PASES: Rendimiento pasado en asistencias
 8. SITUACIÓN DEL JUEGO: Contexto específico del partido
+
+Basado en investigación de los mejores pasadores: Magic Johnson, John Stockton, 
+Chris Paul, Steve Nash, Jason Kidd, LeBron James, etc.
+
+Sin data leakage, todas las métricas usan shift(1) para crear historial
 """
 
 import pandas as pd
@@ -100,7 +105,7 @@ class AssistsFeatureEngineer:
             ast_stats = df['AST'].describe()
             logger.info(f"Target AST disponible - Media={ast_stats['mean']:.1f}, Max={ast_stats['max']:.0f}")
         else:
-            NBALogger.log_warning(logger, "Target AST no disponible - features limitadas")
+            NBALogger.log_warning(logger, "Target AST no disponible - features limitadas"))
         
         # Limpiar registro de features
         self.feature_registry = {}

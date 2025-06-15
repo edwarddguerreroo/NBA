@@ -32,8 +32,11 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from src.preprocessing.data_loader import NBADataLoader
 from src.models.players.pts.model_pts import XGBoostPTSModel
 
+# Import del sistema de logging unificado
+from config.logging_config import configure_trainer_logging, NBALogger
+
 warnings.filterwarnings('ignore')
-logger = logging.getLogger(__name__)
+logger = configure_trainer_logging('pts')
 
 # Configurar estilo de visualizaciones optimizado para PNG
 plt.style.use('seaborn-v0_8')
@@ -103,7 +106,7 @@ class XGBoostPTSTrainer:
         self.training_results = None
         self.predictions = None
         
-        logger.info(f"Trainer XGBoost PTS inicializado - Output: {self.output_dir}")
+        logger.info(f"Trainer XGBoost PTS inicializado | Output: {self.output_dir}")
     
     def load_and_prepare_data(self) -> pd.DataFrame:
         """
@@ -112,7 +115,7 @@ class XGBoostPTSTrainer:
         Returns:
             pd.DataFrame: Datos preparados para entrenamiento
         """
-        logger.info("Cargando datos NBA...")
+        logger.info("Cargando datos NBA")
         
         # Cargar datos usando el data loader
         self.df, self.teams_df = self.data_loader.load_data()
@@ -143,7 +146,7 @@ class XGBoostPTSTrainer:
         Returns:
             Dict: Resultados del entrenamiento
         """
-        logger.info("Iniciando entrenamiento del modelo XGBoost PTS...")
+        logger.info("Iniciando entrenamiento del modelo XGBoost PTS")
         
         if self.df is None:
             raise ValueError("Datos no cargados. Ejecutar load_and_prepare_data() primero")
@@ -153,7 +156,7 @@ class XGBoostPTSTrainer:
         self.training_results = self.model.train(self.df)
         training_duration = (datetime.now() - start_time).total_seconds()
         
-        logger.info(f"Entrenamiento completado en {training_duration:.1f} segundos")
+        logger.info(f"Entrenamiento completado | Duración: {training_duration:.1f} segundos")
         
         # Generar predicciones en conjunto de prueba
         self.predictions = self.model.predict(self.df)
@@ -180,7 +183,7 @@ class XGBoostPTSTrainer:
         """
         Genera una visualización completa en PNG con todas las métricas principales.
         """
-        logger.info("Generando visualización completa en PNG...")
+        logger.info("Generando visualización completa en PNG")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -544,7 +547,7 @@ Estado: PRODUCCIÓN
         bars = ax.barh(y_pos, top_scorers['mean'].values, color='gold', alpha=0.7)
         
         ax.set_yticks(y_pos)
-        ax.set_yticklabels([name[:15] + '...' if len(name) > 15 else name 
+        ax.set_yticklabels([name[:15] + '' if len(name) > 15 else name 
                            for name in top_scorers['Player'].values], fontsize=8)
         ax.set_xlabel('Puntos Promedio', fontsize=10)
         ax.set_title('Top 10 Anotadores (≥10 partidos)', fontsize=12, fontweight='bold')
@@ -558,7 +561,7 @@ Estado: PRODUCCIÓN
     
     def save_results(self):
         """Guarda todos los resultados del entrenamiento."""
-        logger.info("Guardando resultados completos...")
+        logger.info("Guardando resultados completos")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -628,7 +631,7 @@ Estado: PRODUCCIÓN
         Returns:
             Dict: Resultados completos del entrenamiento
         """
-        logger.info("Iniciando pipeline completo de entrenamiento XGBoost PTS...")
+        logger.info("Iniciando pipeline completo de entrenamiento XGBoost PTS")
         
         try:
             # 1. Cargar datos

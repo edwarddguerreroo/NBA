@@ -111,7 +111,7 @@ class DoubleDoubleFeatureEngineer:
             dd_distribution = df['double_double'].value_counts().to_dict()
             logger.info(f"Target double_double disponible - Distribución: {dd_distribution}")
         else:
-            NBALogger.log_error(logger, "double_double no encontrado en el dataset - requerido para features de double double")
+            NBALogger.log_error(logger, "double_double no encontrado en el dataset - requerido para features de double double"))
             return []
         
         # VERIFICAR FEATURES DEL DATA_LOADER (consolidado en un solo mensaje)
@@ -611,7 +611,7 @@ class DoubleDoubleFeatureEngineer:
             df['dd_streak'] = streak_series
             
         except Exception as e:
-            NBALogger.log_warning(logger, "Error calculando dd_streak: {str(e)}")
+            NBALogger.log_warning(logger, "Error calculando dd_streak: {str(e)}"))
             # Fallback: usar cálculo más simple
             df['dd_streak'] = 0
         
@@ -867,7 +867,7 @@ class DoubleDoubleFeatureEngineer:
             return self._cached_calculations[cache_key]
         
         if column not in df.columns:
-            NBALogger.log_warning(logger, "Columna {column} no encontrada para cálculo histórico")
+            NBALogger.log_warning(logger, "Columna {column} no encontrada para cálculo histórico"))
             return pd.Series(index=df.index, dtype=float).fillna(0.1 if operation == 'mean' else 0.0)
         
         # Calcular serie histórica con shift(1)
@@ -917,7 +917,7 @@ class DoubleDoubleFeatureEngineer:
             return result.fillna(0.0)
             
         except Exception as e:
-            NBALogger.log_warning(logger, "Error en _get_historical_series_custom: {str(e)}")
+            NBALogger.log_warning(logger, "Error en _get_historical_series_custom: {str(e)}"))
             # Retornar serie de ceros como fallback
             return pd.Series(index=df.index, dtype=float).fillna(0.0)
     

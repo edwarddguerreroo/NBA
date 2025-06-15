@@ -32,8 +32,11 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from src.preprocessing.data_loader import NBADataLoader
 from src.models.players.ast.model_ast import XGBoostASTModel
 
+# Import del sistema de logging unificado
+from config.logging_config import configure_trainer_logging, NBALogger
+
 warnings.filterwarnings('ignore')
-logger = logging.getLogger(__name__)
+logger = configure_trainer_logging('ast')
 
 # Configurar estilo de visualizaciones optimizado para PNG
 plt.style.use('seaborn-v0_8')
@@ -109,7 +112,7 @@ class XGBoostASTTrainer:
         self.training_results = None
         self.predictions = None
         
-        logger.info(f"Trainer XGBoost AST inicializado - Output: {self.output_dir}")
+        logger.info(f"Trainer XGBoost AST inicializado | Output: {self.output_dir}")
     
     def load_and_prepare_data(self) -> pd.DataFrame:
         """
@@ -118,7 +121,7 @@ class XGBoostASTTrainer:
         Returns:
             pd.DataFrame: Datos preparados para entrenamiento
         """
-        logger.info("Cargando datos NBA...")
+        logger.info("Cargando datos NBA")
         
         # Cargar datos usando el data loader
         self.df, self.teams_df = self.data_loader.load_data()
@@ -154,18 +157,18 @@ class XGBoostASTTrainer:
         Returns:
             Dict: Resultados del entrenamiento
         """
-        logger.info("Iniciando entrenamiento del modelo XGBoost AST...")
+        logger.info("Iniciando entrenamiento del modelo XGBoost AST")
         
         if self.df is None:
             raise ValueError("Datos no cargados. Ejecutar load_and_prepare_data() primero")
         
         # Entrenar modelo
         start_time = datetime.now()
-        logger.info("Entrenando modelo AST con stacking ensemble...")
+        logger.info("Entrenando modelo AST con stacking ensemble")
         self.training_results = self.model.train(self.df)
         training_duration = (datetime.now() - start_time).total_seconds()
         
-        logger.info(f"Modelo AST completado en {training_duration:.1f} segundos")
+        logger.info(f"Modelo AST completado | Duración: {training_duration:.1f} segundos")
         
         # Mostrar resultados del entrenamiento
         logger.info("=" * 50)
@@ -180,7 +183,7 @@ class XGBoostASTTrainer:
         logger.info("=" * 50)
         
         # Generar predicciones
-        logger.info("Generando predicciones...")
+        logger.info("Generando predicciones")
         self.predictions = self.model.predict(self.df)
         
         # Calcular métricas finales en datos de prueba
@@ -211,7 +214,7 @@ class XGBoostASTTrainer:
             accuracy_2ast = np.mean(np.abs(y_true - y_pred) <= 2) * 100
             accuracy_3ast = np.mean(np.abs(y_true - y_pred) <= 3) * 100
             
-            logger.info(f"Métricas finales - MAE: {mae:.3f}, RMSE: {rmse:.3f}, R²: {r2:.3f}")
+            logger.info(f"Métricas finales | MAE: {mae:.3f}, RMSE: {rmse:.3f}, R²: {r2:.3f}")
             logger.info(f"Accuracy ±1ast: {accuracy_1ast:.1f}%, ±2ast: {accuracy_2ast:.1f}%, ±3ast: {accuracy_3ast:.1f}%")
             
             self.training_results.update({
@@ -229,7 +232,7 @@ class XGBoostASTTrainer:
         """
         Genera una visualización completa en PNG con todas las métricas principales.
         """
-        logger.info("Generando visualización completa en PNG...")
+        logger.info("Generando visualización completa en PNG")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -653,7 +656,7 @@ MODELOS BASE:
         top_passers = player_stats.nlargest(10, 'mean')
         
         if len(top_passers) > 0:
-            players = [p[:15] + '...' if len(p) > 15 else p for p in top_passers['Player']]
+            players = [p[:15] + '' if len(p) > 15 else p for p in top_passers['Player']]
             means = top_passers['mean']
             
             bars = ax.barh(players, means, alpha=0.8, color='lightsteelblue')
@@ -671,7 +674,7 @@ MODELOS BASE:
     
     def save_results(self):
         """Guarda todos los resultados del entrenamiento."""
-        logger.info("Guardando resultados...")
+        logger.info("Guardando resultados")
         
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
@@ -742,7 +745,7 @@ MODELOS BASE:
         Returns:
             Dict: Resultados completos del entrenamiento
         """
-        logger.info("Iniciando pipeline de entrenamiento AST...")
+        logger.info("Iniciando pipeline de entrenamiento AST")
         
         try:
             # 1. Cargar datos

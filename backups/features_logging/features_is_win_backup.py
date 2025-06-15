@@ -119,7 +119,7 @@ class IsWinFeatureEngineer:
             if self._last_data_hash is None:  # Solo log la primera vez
                 logger.info(f"Target is_win disponible - Distribución: {win_distribution}")
         else:
-            NBALogger.log_error(logger, "is_win no encontrado en el dataset - requerido para features de victoria")
+            NBALogger.log_error(logger, "is_win no encontrado en el dataset - requerido para features de victoria"))
             return []
         
         # VERIFICAR FEATURES DEL DATA_LOADER (consolidado en un solo mensaje)
@@ -533,7 +533,7 @@ class IsWinFeatureEngineer:
             return self._cached_calculations[cache_key]
         
         if column not in df.columns:
-            NBALogger.log_warning(logger, "Columna {column} no encontrada para cálculo histórico")
+            NBALogger.log_warning(logger, "Columna {column} no encontrada para cálculo histórico"))
             return pd.Series(index=df.index, dtype=float).fillna(0.5 if operation == 'mean' else 0.0)
         
         # Calcular serie histórica con shift(1)

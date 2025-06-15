@@ -110,7 +110,7 @@ class ThreePointsFeatureEngineer:
             threept_stats = df['3P'].describe()
             logger.info(f"Target 3P disponible - Media={threept_stats['mean']:.1f}, Max={threept_stats['max']:.0f}")
         else:
-            NBALogger.log_warning(logger, "Target 3P no disponible - features limitadas")
+            NBALogger.log_warning(logger, "Target 3P no disponible - features limitadas"))
         
         # Verificar columnas necesarias para triples
         required_cols = ['3PA', '3P%']
@@ -120,7 +120,7 @@ class ThreePointsFeatureEngineer:
         if available_cols:
             logger.info(f"Columnas de triples disponibles: {available_cols}")
         if missing_cols:
-            NBALogger.log_warning(logger, "Columnas de triples faltantes: {missing_cols}")
+            NBALogger.log_warning(logger, "Columnas de triples faltantes: {missing_cols}"))
         
         # Limpiar registro de features
         self.feature_registry = {}
@@ -474,13 +474,13 @@ class ThreePointsFeatureEngineer:
                             estimated_pace = (merged_data['FGA'].fillna(80) + 0.4 * merged_data['FTA'].fillna(25)) * 2
                             df['team_pace_factor'] = (estimated_pace / 100).fillna(1.0)  # Normalizar
                         else:
-                            NBALogger.log_warning(logger, "Columnas FGA/FTA no encontradas después del merge")
+                            NBALogger.log_warning(logger, "Columnas FGA/FTA no encontradas después del merge"))
                             df['team_pace_factor'] = 1.0
                     else:
-                        NBALogger.log_warning(logger, "Columnas requeridas no encontradas en teams_df: {required_cols}")
+                        NBALogger.log_warning(logger, "Columnas requeridas no encontradas en teams_df: {required_cols}"))
                         df['team_pace_factor'] = 1.0
                 except Exception as e:
-                    NBALogger.log_warning(logger, "Error calculando team_pace_factor: {e}")
+                    NBALogger.log_warning(logger, "Error calculando team_pace_factor: {e}"))
                     df['team_pace_factor'] = 1.0
         
         # ASISTENCIAS DEL EQUIPO (Espaciado)
@@ -671,7 +671,7 @@ class ThreePointsFeatureEngineer:
                         team_mapping = {team: idx*0.1 + 0.3 for idx, team in enumerate(df['Opp'].unique())}
                         df['opponent_3pt_defense'] = df['Opp'].map(team_mapping).fillna(0.35)
                 except Exception as e:
-                    NBALogger.log_warning(logger, "Error calculando opponent_3pt_defense: {e}")
+                    NBALogger.log_warning(logger, "Error calculando opponent_3pt_defense: {e}"))
                     # Fallback simple
                     team_mapping = {team: idx*0.05 + 0.3 for idx, team in enumerate(df['Opp'].unique())}
                     df['opponent_3pt_defense'] = df['Opp'].map(team_mapping).fillna(0.35)
