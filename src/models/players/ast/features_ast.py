@@ -35,15 +35,15 @@ class AssistsFeatureEngineer:
     Basado en los principios fundamentales de los mejores pasadores de la NBA
     """
     
-    def __init__(self, correlation_threshold: float = 0.95, max_features: int = 50, teams_df: pd.DataFrame = None):
+    def __init__(self, correlation_threshold: float = 0.95, max_features: int = 248, teams_df: pd.DataFrame = None):
         self.correlation_threshold = correlation_threshold
         self.max_features = max_features  # Aumentado de 40 a 50 para nuevas features
         self.teams_df = teams_df  # Datos de equipos para features avanzadas
         self.feature_registry = {}
         self.feature_categories = {
-            'historical_performance': 6,    # Rendimiento histórico
-            'recent_trends': 4,             # Tendencias recientes
-            'efficiency_metrics': 4,        # Métricas de eficiencia
+            'historical_performance': 12,   # Aumentado para nuevas ventanas de tiempo
+            'recent_trends': 12,            # Aumentado para volatilidad avanzada
+            'efficiency_metrics': 8,        # Aumentado para eficiencia avanzada
             'contextual_factors': 3,        # Factores contextuales
             'basic_stats': 4,               # Estadísticas básicas
             'opponent_analysis': 6,         # Análisis del oponente
@@ -54,7 +54,13 @@ class AssistsFeatureEngineer:
             'ultra_predictive': 20,         # Features ultra-predictivas
             'hybrid_features_advanced': 15, # Features híbridas avanzadas (NUEVAS)
             'extreme_predictive': 15,       # Features EXTREMADAMENTE predictivas (90%+)
-            'supreme_predictive': 20        # Features SUPREMAS (95%+ perfección absoluta)
+            'supreme_predictive': 20,       # Features SUPREMAS (95%+ perfección absoluta)
+            'adaptability_critical': 10,    # Features CRÍTICAS de adaptabilidad (NUEVAS)
+            'basketball_specific': 15,      # Features específicas de baloncesto NBA (NUEVAS)
+            'advanced_playmaking': 15,      # Features avanzadas de playmaking (NUEVAS)
+            'revolutionary_team_context': 20, # Features REVOLUCIONARIAS de contexto de equipo real (NUEVAS)
+            'interaction_patterns': 17,    # Features de interacción y patrones complejos (NUEVAS)
+            'model_feedback': 15           # Features ultra-predictivas basadas en feedback del modelo (AUMENTADAS)
         }
         self.protected_features = ['AST', 'Player', 'Date', 'Team', 'Opp']
         
@@ -149,6 +155,24 @@ class AssistsFeatureEngineer:
         # 14. FEATURES SUPREMAS (PARA PERFECCIÓN ABSOLUTA - 95%+)
         self._generate_supreme_predictive_features(df)
         
+        # === NUEVAS FEATURES CRÍTICAS DE ADAPTABILIDAD ===
+        self._generate_adaptability_features(df)
+        
+        # === FEATURES ULTRA-ESPECÍFICAS PARA ASISTENCIAS NBA ===
+        self._generate_basketball_specific_assist_features(df)
+        
+        # === FEATURES DE PLAYMAKING AVANZADO ===
+        self._generate_advanced_playmaking_features(df)
+        
+        # === FEATURES REVOLUCIONARIAS DE CONTEXTO DE EQUIPO REAL ===
+        self._generate_revolutionary_team_context_features(df)
+        
+        # === FEATURES DE INTERACCIÓN Y PATRONES COMPLEJOS ===
+        self._generate_interaction_and_pattern_features(df)
+        
+        # === FEATURES ULTRA-PREDICTIVAS BASADAS EN FEEDBACK DEL MODELO ===
+        self._generate_model_feedback_features(df)
+        
         # Obtener lista de features creadas
         all_features = [col for col in df.columns if col not in self.protected_features]
         
@@ -156,8 +180,17 @@ class AssistsFeatureEngineer:
         selected_features = self._select_features_by_category(df, all_features)
         
         # Aplicar filtro de correlación adicional si es necesario
-        if len(selected_features) > 80:  # Límite máximo
+        if len(selected_features) > self.max_features:  # Usar límite configurado (200)
             selected_features = self._apply_correlation_filter(df, selected_features)
+            
+        # Asegurar que las features de model_feedback siempre estén incluidas (son las más importantes)
+        model_feedback_features = self.feature_registry.get('model_feedback', [])
+        priority_features = [f for f in model_feedback_features if f in df.columns and f in selected_features]
+        
+        # Si hay features prioritarias, asegurar que estén al principio
+        if priority_features:
+            other_features = [f for f in selected_features if f not in priority_features]
+            selected_features = priority_features + other_features
         
         # Validar features finales
         final_features = self._validate_features(df, selected_features)
@@ -201,6 +234,37 @@ class AssistsFeatureEngineer:
         df['ast_max_5g'] = ast_max_5g.fillna(0)
         features.append('ast_max_5g')
         
+        # === NUEVAS FEATURES CRÍTICAS BASADAS EN MODELO DE PUNTOS ===
+        
+        # 7. PROMEDIO ÚLTIMOS 7 JUEGOS (ventana intermedia)
+        ast_avg_7g = df.groupby('Player')['AST'].rolling(7, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+        df['ast_avg_7g'] = ast_avg_7g.fillna(0)
+        features.append('ast_avg_7g')
+        
+        # 8. PROMEDIO ÚLTIMOS 15 JUEGOS (ventana larga)
+        ast_avg_15g = df.groupby('Player')['AST'].rolling(15, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+        df['ast_avg_15g'] = ast_avg_15g.fillna(0)
+        features.append('ast_avg_15g')
+        
+        # 9. AST POR MINUTO HISTÓRICO (5 juegos)
+        mp_avg_5g = df.groupby('Player')['MP'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+        df['ast_per_minute_5g'] = (ast_avg_5g / (mp_avg_5g + 1)).fillna(0)
+        features.append('ast_per_minute_5g')
+        
+        # 10. AST POR MINUTO HISTÓRICO (10 juegos)
+        mp_avg_10g = df.groupby('Player')['MP'].rolling(10, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+        df['ast_per_minute_10g'] = (ast_avg_10g / (mp_avg_10g + 1)).fillna(0)
+        features.append('ast_per_minute_10g')
+        
+        # 11. AST SOBRE PROMEDIO DE TEMPORADA
+        df['ast_above_season_avg'] = (ast_avg_5g - ast_season_avg).fillna(0)
+        features.append('ast_above_season_avg')
+        
+        # 12. RATIO DE MEJORA (últimos 5 vs anteriores 5)
+        ast_prev_5g = df.groupby('Player')['AST'].rolling(5, min_periods=1).mean().shift(6).reset_index(0, drop=True)
+        df['ast_improvement_ratio'] = (ast_avg_5g / (ast_prev_5g + 0.1)).fillna(1.0)
+        features.append('ast_improvement_ratio')
+        
         # Registrar features
         for feature in features:
             self._register_feature(feature, 'historical_performance')
@@ -231,6 +295,48 @@ class AssistsFeatureEngineer:
         # 4. CONSISTENCIA (INVERSO DE VOLATILIDAD)
         df['ast_consistency'] = 1 / (df['ast_volatility'] + 0.1)
         features.append('ast_consistency')
+        
+        # === NUEVAS FEATURES DE VOLATILIDAD Y TENDENCIAS AVANZADAS ===
+        
+        # 5. VOLATILIDAD ÚLTIMOS 3 JUEGOS (más sensible)
+        ast_std_3g = df.groupby('Player')['AST'].rolling(3, min_periods=2).std().shift(1).reset_index(0, drop=True)
+        df['ast_volatility_3g'] = ast_std_3g.fillna(0)
+        features.append('ast_volatility_3g')
+        
+        # 6. VOLATILIDAD ÚLTIMOS 10 JUEGOS (más estable)
+        ast_std_10g = df.groupby('Player')['AST'].rolling(10, min_periods=3).std().shift(1).reset_index(0, drop=True)
+        df['ast_volatility_10g'] = ast_std_10g.fillna(0)
+        features.append('ast_volatility_10g')
+        
+        # 7. CONSISTENCIA MEJORADA (3 juegos)
+        df['ast_consistency_3g'] = 1 / (df['ast_volatility_3g'] + 0.1)
+        features.append('ast_consistency_3g')
+        
+        # 8. CONSISTENCIA MEJORADA (10 juegos)
+        df['ast_consistency_10g'] = 1 / (df['ast_volatility_10g'] + 0.1)
+        features.append('ast_consistency_10g')
+        
+        # 9. FACTOR DE TENDENCIA (últimos 10 juegos)
+        df['ast_trend_10g'] = df.groupby('Player')['AST'].rolling(10, min_periods=5).apply(
+            lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) >= 5 else 0
+        ).shift(1).reset_index(0, drop=True).fillna(0)
+        features.append('ast_trend_10g')
+        
+        # 10. FACTOR DE TENDENCIA (últimos 3 juegos - ultra reciente)
+        df['ast_trend_3g'] = df.groupby('Player')['AST'].rolling(3, min_periods=2).apply(
+            lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) >= 2 else 0
+        ).shift(1).reset_index(0, drop=True).fillna(0)
+        features.append('ast_trend_3g')
+        
+        # 11. MOMENTUM EXTENDIDO (últimos 5 vs anteriores 5)
+        ast_recent_5 = df.groupby('Player')['AST'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+        ast_prev_5 = df.groupby('Player')['AST'].rolling(5, min_periods=1).mean().shift(6).reset_index(0, drop=True)
+        df['ast_momentum_5g'] = (ast_recent_5 - ast_prev_5).fillna(0)
+        features.append('ast_momentum_5g')
+        
+        # 12. ACELERACIÓN (cambio en la tendencia)
+        df['ast_trend_acceleration'] = (df['ast_trend_3g'] - df['ast_trend_5g']).fillna(0)
+        features.append('ast_trend_acceleration')
         
         # Registrar features
         for feature in features:
@@ -263,6 +369,32 @@ class AssistsFeatureEngineer:
         fga_last = df.groupby('Player')['FGA'].shift(1)
         df['offensive_efficiency'] = ((ast_last + pts_last) / (fga_last + tov_last + 1)).fillna(0)
         features.append('offensive_efficiency')
+        
+        # === NUEVAS FEATURES DE EFICIENCIA AVANZADAS ===
+        
+        # 5. EFICIENCIA DE ASISTENCIAS (últimos 5 juegos)
+        ast_avg_5g = df.groupby('Player')['AST'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+        mp_avg_5g = df.groupby('Player')['MP'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+        df['ast_efficiency_5g'] = (ast_avg_5g / (mp_avg_5g + 1)).fillna(0)
+        features.append('ast_efficiency_5g')
+        
+        # 6. TENDENCIA DE EFICIENCIA (mejorando vs empeorando)
+        ast_eff_recent = df.groupby('Player')['ast_per_minute'].rolling(3, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+        ast_eff_prev = df.groupby('Player')['ast_per_minute'].rolling(3, min_periods=1).mean().shift(4).reset_index(0, drop=True)
+        df['ast_efficiency_trend'] = (ast_eff_recent - ast_eff_prev).fillna(0)
+        features.append('ast_efficiency_trend')
+        
+        # 7. RATIO AST/TOV MEJORADO (últimos 5 juegos)
+        tov_avg_5g = df.groupby('Player')['TOV'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+        df['ast_tov_ratio_5g'] = (ast_avg_5g / (tov_avg_5g + 1)).fillna(0)
+        features.append('ast_tov_ratio_5g')
+        
+        # 8. EFICIENCIA DE CREACIÓN (AST por posesión usada)
+        if 'FGA' in df.columns and 'FTA' in df.columns:
+            fta_last = df.groupby('Player')['FTA'].shift(1)
+            possessions_used = fga_last + 0.44 * fta_last + tov_last
+            df['ast_creation_efficiency'] = (ast_last / (possessions_used + 1)).fillna(0)
+            features.append('ast_creation_efficiency')
         
         # Registrar features
         for feature in features:
@@ -1299,14 +1431,14 @@ class AssistsFeatureEngineer:
         
         # 13. PREDICTOR FINAL ULTRA-OPTIMIZADO
         # Combina los mejores predictores con pesos finales optimizados
-        df['ultra_ast_predictor'] = (
+        df['final_extreme_predictor'] = (
             df['master_ast_predictor'] * 0.4 +
             df['historical_matchup_ast'] * 0.25 +
             df['ast_ceiling_factor'] * 0.15 +
             df['ast_hybrid_predictor'] * 0.1 +
             df['ast_floor_factor'] * 0.1
         ).fillna(0)
-        features.append('ultra_ast_predictor')
+        features.append('final_extreme_predictor')
         
         # Registrar features
         for feature in features:
@@ -1591,3 +1723,1100 @@ class AssistsFeatureEngineer:
         # Esto puede incluir la eliminación de features que no cumplen con ciertas condiciones
         # o la combinación de features para crear nuevas
         return selected_features
+
+    def _generate_adaptability_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        FEATURES CRÍTICAS DE ADAPTABILIDAD
+        - player_adaptability_score (8.79% importancia)
+        - opponent_adaptation_score (6.21% importancia)
+        """
+        features = []
+        logger.info("Generando FEATURES CRÍTICAS DE ADAPTABILIDAD...")
+        
+        # === ADAPTABILIDAD DEL JUGADOR ===
+        
+        # 1. PLAYER ADAPTABILITY SCORE (equivalente al modelo de puntos)
+        # Mide qué tan bien se adapta el jugador a diferentes fases de la temporada
+        if 'Date' in df.columns:
+            # Calcular fase de temporada
+            df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+            season_start = df['Date'].min()
+            season_length = (df['Date'].max() - season_start).days
+            df['season_phase'] = ((df['Date'] - season_start).dt.days / season_length).fillna(0)
+            
+            # Calcular consistencia por fase de temporada
+            season_phase_consistency = df.groupby(['Player', pd.cut(df['season_phase'], bins=3)])['AST'].std().groupby('Player').mean()
+            season_phase_consistency = season_phase_consistency.fillna(1.0)
+            
+            # Crear mapeo de jugador a adaptabilidad
+            adaptability_map = (1 / (1 + season_phase_consistency)).to_dict()
+            df['player_adaptability_score'] = df['Player'].map(adaptability_map).fillna(0.5)
+            features.append('player_adaptability_score')
+        
+        # 2. OPPONENT ADAPTATION SCORE (equivalente al modelo de puntos)
+        # Mide qué tan bien rinde el jugador contra diferentes oponentes
+        if 'Opp' in df.columns:
+            # Calcular rendimiento histórico vs cada oponente
+            player_vs_opp = df.groupby(['Player', 'Opp'])['AST'].expanding().mean().shift(1).reset_index([0,1], drop=True)
+            player_overall = df.groupby('Player')['AST'].expanding().mean().shift(1).reset_index(0, drop=True)
+            
+            # Ratio de rendimiento vs oponente específico vs rendimiento general
+            opponent_adaptation = (player_vs_opp / (player_overall + 1e-6)).fillna(1.0)
+            df['opponent_adaptation_score'] = opponent_adaptation
+            features.append('opponent_adaptation_score')
+        
+        # === FEATURES ADICIONALES DE ADAPTABILIDAD ===
+        
+        # 3. ADAPTABILIDAD A MINUTOS (similar a shooting_volume en puntos)
+        # Mide cómo se adaptan las asistencias según los minutos jugados
+        if 'MP' in df.columns:
+            mp_avg = df.groupby('Player')['MP'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+            ast_avg = df.groupby('Player')['AST'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+            
+            # Eficiencia de asistencias por minuto (equivalente a shooting_volume)
+            df['assist_volume_5g'] = (ast_avg * mp_avg / 48).fillna(0)  # Normalizado por 48 min
+            features.append('assist_volume_5g')
+        
+        # 4. ADAPTABILIDAD A DIFERENTES ROLES (titular vs suplente)
+        if 'is_started' in df.columns:
+            # AST como titular vs como suplente
+            ast_as_starter = df.groupby('Player').apply(
+                lambda x: x[x['is_started'] == 1]['AST'].shift(1).mean()
+            ).reset_index(level=0, drop=True)
+            ast_as_bench = df.groupby('Player').apply(
+                lambda x: x[x['is_started'] == 0]['AST'].shift(1).mean()
+            ).reset_index(level=0, drop=True)
+            
+            # Factor de adaptabilidad de rol
+            role_adaptability = abs(ast_as_starter - ast_as_bench).fillna(0)
+            df['role_adaptability_factor'] = (1 / (role_adaptability + 0.5))  # Menos diferencia = más adaptable
+            features.append('role_adaptability_factor')
+        
+        # 5. ADAPTABILIDAD AL RITMO DEL EQUIPO
+        # Mide cómo se adaptan las asistencias al ritmo ofensivo del equipo
+        if 'FGA' in df.columns:
+            team_pace = df.groupby(['Team', 'Date'])['FGA'].transform('sum').shift(1)
+            ast_vs_pace = df.groupby('Player')['AST'].shift(1) / (team_pace / 100 + 1)
+            df['pace_adaptability'] = ast_vs_pace.fillna(0)
+            features.append('pace_adaptability')
+        
+        # 6. ADAPTABILIDAD A LA PRESIÓN DEFENSIVA
+        # Mide cómo mantiene las asistencias contra defensas agresivas
+        if 'STL' in df.columns:
+            opp_defensive_pressure = df.groupby('Opp')['STL'].rolling(3, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+            ast_vs_pressure = df.groupby('Player')['AST'].shift(1) / (opp_defensive_pressure + 1)
+            df['pressure_adaptability'] = ast_vs_pressure.fillna(0)
+            features.append('pressure_adaptability')
+        
+        # 7. FACTOR DE EXPLOSIÓN POTENCIAL (equivalente a explosion_potential en puntos)
+        # Identifica jugadores con potencial de juegos excepcionales de asistencias
+        ast_max_5g = df.groupby('Player')['AST'].rolling(5, min_periods=1).max().shift(1).reset_index(0, drop=True)
+        ast_avg_5g = df.groupby('Player')['AST'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+        df['ast_explosion_potential'] = (ast_max_5g - ast_avg_5g).fillna(0)
+        features.append('ast_explosion_potential')
+        
+        # 8. TIER DE JUGADOR PARA ASISTENCIAS (equivalente a player_tier en puntos)
+        # Clasifica jugadores por nivel de asistencias
+        ast_season_avg = df.groupby('Player')['AST'].expanding().mean().shift(1).reset_index(0, drop=True)
+        
+        def categorize_assist_tier(avg_ast):
+            if avg_ast >= 8:
+                return 4  # Elite playmaker
+            elif avg_ast >= 6:
+                return 3  # High-level playmaker
+            elif avg_ast >= 4:
+                return 2  # Solid playmaker
+            elif avg_ast >= 2:
+                return 1  # Role player
+            else:
+                return 0  # Limited playmaker
+        
+        df['ast_player_tier'] = ast_season_avg.apply(categorize_assist_tier)
+        features.append('ast_player_tier')
+        
+        # 9. EFICIENCIA ENSEMBLE SCORE (equivalente a efficiency_ensemble_score)
+        # Combina múltiples métricas de eficiencia de asistencias
+        ast_per_min = df.get('ast_per_minute_5g', 0)
+        ast_tov_ratio = df.get('ast_tov_ratio', 0)
+        team_synergy = df.get('team_shooting_quality', 0.45)
+        
+        df['ast_efficiency_ensemble'] = (
+            ast_per_min * 0.4 + 
+            ast_tov_ratio * 0.3 + 
+            team_synergy * 0.3
+        ).fillna(0)
+        features.append('ast_efficiency_ensemble')
+        
+        # 10. HIGH VOLUME EFFICIENCY (para asistencias)
+        # Identifica jugadores que mantienen eficiencia con alto volumen
+        ast_shifted_vol = df.groupby('Player')['AST'].shift(1)
+        high_ast_games = (ast_shifted_vol >= 7).astype(int)
+        ast_efficiency = df.get('ast_per_minute_5g', 0)
+        df['high_ast_volume_efficiency'] = (high_ast_games * ast_efficiency).fillna(0)
+        features.append('high_ast_volume_efficiency')
+        
+        # Registrar features
+        for feature in features:
+            self._register_feature(feature, 'adaptability_critical')
+        
+        logger.info(f"Generadas {len(features)} FEATURES CRÍTICAS DE ADAPTABILIDAD")
+        return features
+
+    def _generate_basketball_specific_assist_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        FEATURES ULTRA-ESPECÍFICAS PARA ASISTENCIAS NBA
+        Basadas en los fundamentos reales del baloncesto que predicen asistencias
+        """
+        features = []
+        logger.info("Generando FEATURES ULTRA-ESPECÍFICAS para asistencias NBA...")
+        
+        # === GRUPO 1: CONTROL DEL BALÓN Y CREACIÓN ===
+        
+        # 1. USAGE RATE PARA ASISTENCIAS (% de posesiones que terminan en AST)
+        if all(col in df.columns for col in ['FGA', 'FTA', 'TOV', 'AST']):
+            fga_last = df.groupby('Player')['FGA'].shift(1)
+            fta_last = df.groupby('Player')['FTA'].shift(1)
+            tov_last = df.groupby('Player')['TOV'].shift(1)
+            ast_last = df.groupby('Player')['AST'].shift(1)
+            
+            # Posesiones totales usadas por el jugador
+            total_possessions = fga_last + 0.44 * fta_last + tov_last + ast_last
+            df['ast_usage_rate'] = (ast_last / (total_possessions + 1)).fillna(0)
+            features.append('ast_usage_rate')
+        
+        # 2. PURE POINT RATING (AST vs scoring attempts)
+        if all(col in df.columns for col in ['FGA', 'FTA', 'AST']):
+            scoring_attempts = fga_last + fta_last
+            df['pure_point_rating'] = (ast_last / (scoring_attempts + 1)).fillna(0)
+            features.append('pure_point_rating')
+        
+        # 3. PLAYMAKER EFFICIENCY (AST per touch approximation)
+        if all(col in df.columns for col in ['AST', 'TOV', 'FGA']):
+            # Aproximación de toques = FGA + AST + TOV
+            touches_approx = fga_last + ast_last + tov_last
+            df['playmaker_efficiency'] = (ast_last / (touches_approx + 1)).fillna(0)
+            features.append('playmaker_efficiency')
+        
+        # === GRUPO 2: CONTEXTO DE EQUIPO ESPECÍFICO ===
+        
+        # 4. TEAM ASSIST DEPENDENCY (qué % de AST del equipo genera el jugador)
+        team_ast_total = df.groupby(['Team', 'Date'])['AST'].transform('sum')
+        player_ast = df.groupby('Player')['AST'].shift(1)
+        df['team_ast_dependency'] = (player_ast / (team_ast_total.shift(1) + 1)).fillna(0)
+        features.append('team_ast_dependency')
+        
+        # 5. ASSIST OPPORTUNITY RATE (basado en FG% del equipo)
+        if 'FG%' in df.columns:
+            team_fg_pct = df.groupby(['Team', 'Date'])['FG%'].transform('mean').shift(1)
+            df['assist_opportunity_rate'] = (player_ast * team_fg_pct).fillna(0)
+            features.append('assist_opportunity_rate')
+        
+        # === GRUPO 3: PATRONES DE JUEGO ESPECÍFICOS ===
+        
+        # 6. TRANSITION ASSIST INDICATOR (basado en pace y STL)
+        if 'STL' in df.columns:
+            stl_last = df.groupby('Player')['STL'].shift(1)
+            # Jugadores que roban más tienden a generar más AST en transición
+            df['transition_ast_potential'] = (stl_last * ast_last).fillna(0)
+            features.append('transition_ast_potential')
+        
+        # 7. HALF-COURT ASSIST RATE (AST que no son de transición)
+        if 'STL' in df.columns:
+            # AST que no provienen directamente de robos
+            df['halfcourt_ast_rate'] = (ast_last - stl_last).clip(lower=0).fillna(0)
+            features.append('halfcourt_ast_rate')
+        
+        # === GRUPO 4: MÉTRICAS AVANZADAS ESPECÍFICAS ===
+        
+        # 8. ASSIST-TO-SHOT RATIO (AST vs intentos de tiro del jugador)
+        if 'FGA' in df.columns:
+            df['ast_to_shot_ratio'] = (ast_last / (fga_last + 1)).fillna(0)
+            features.append('ast_to_shot_ratio')
+        
+        # 9. COURT VISION METRIC (AST + STL como proxy de visión de cancha)
+        if 'STL' in df.columns:
+            df['court_vision_metric'] = (ast_last + stl_last * 0.5).fillna(0)
+            features.append('court_vision_metric')
+        
+        # 10. BASKETBALL IQ PROXY (AST/TOV ratio weighted by minutes)
+        if all(col in df.columns for col in ['TOV', 'MP']):
+            mp_last = df.groupby('Player')['MP'].shift(1)
+            ast_tov_ratio = ast_last / (tov_last + 1)
+            df['basketball_iq_proxy'] = (ast_tov_ratio * (mp_last / 48)).fillna(0)
+            features.append('basketball_iq_proxy')
+        
+        # === GRUPO 5: FEATURES DE CONTEXTO SITUACIONAL ===
+        
+        # 11. CLUTCH ASSIST POTENTIAL (basado en +/-)
+        if '+/-' in df.columns:
+            plus_minus_last = df.groupby('Player')['+/-'].shift(1)
+            df['clutch_assist_potential'] = (ast_last * (plus_minus_last > 0).astype(int)).fillna(0)
+            features.append('clutch_assist_potential')
+        
+        # 12. ROLE CONSISTENCY (diferencia AST titular vs suplente)
+        if 'is_started' in df.columns:
+            # Calcular AST promedio como titular vs suplente
+            starter_ast = df.groupby('Player').apply(
+                lambda x: x[x['is_started'] == 1]['AST'].shift(1).mean()
+            ).reset_index(level=0, drop=True)
+            bench_ast = df.groupby('Player').apply(
+                lambda x: x[x['is_started'] == 0]['AST'].shift(1).mean()
+            ).reset_index(level=0, drop=True)
+            
+            # Consistencia = menor diferencia entre roles
+            role_diff = abs(starter_ast - bench_ast).fillna(0)
+            df['role_consistency'] = (1 / (role_diff + 0.5))  # Inverso de la diferencia
+            features.append('role_consistency')
+        
+        # === GRUPO 6: FEATURES DE MOMENTUM ESPECÍFICAS ===
+        
+        # 13. HOT HAND ASSIST (AST en juegos consecutivos con AST altas)
+        ast_shifted = df.groupby('Player')['AST'].shift(1)
+        ast_expanding_mean = df.groupby('Player')['AST'].expanding().mean().shift(2)
+        
+        # Resetear índices para comparación
+        ast_shifted_reset = ast_shifted.reset_index(drop=True)
+        ast_expanding_reset = ast_expanding_mean.reset_index(drop=True)
+        
+        ast_above_avg = (ast_shifted_reset > ast_expanding_reset).astype(int)
+        df['hot_hand_assist'] = ast_above_avg.rolling(3, min_periods=1).sum().fillna(0)
+        features.append('hot_hand_assist')
+        
+        # 14. ASSIST STREAK MOMENTUM
+        # Simplificar el cálculo para evitar problemas de índice
+        ast_shifted_streak = df.groupby('Player')['AST'].shift(1)
+        ast_expanding_streak = df.groupby('Player')['AST'].expanding().mean().shift(2)
+        
+        # Resetear índices para comparación
+        ast_shifted_streak_reset = ast_shifted_streak.reset_index(drop=True)
+        ast_expanding_streak_reset = ast_expanding_streak.reset_index(drop=True)
+        
+        # Calcular racha simple: juegos consecutivos por encima del promedio
+        above_avg_streak = (ast_shifted_streak_reset >= ast_expanding_streak_reset).astype(int)
+        df['assist_streak'] = above_avg_streak.rolling(3, min_periods=1).sum().fillna(0)
+        features.append('assist_streak')
+        
+        # === GRUPO 7: FEATURES DE ADAPTACIÓN AL OPONENTE ===
+        
+        # 15. DEFENSIVE PRESSURE ADAPTATION (AST vs defensive rating del oponente)
+        if 'STL' in df.columns:
+            # Usar STL del oponente como proxy de presión defensiva
+            opp_defensive_pressure = df.groupby('Opp')['STL'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+            df['pressure_adaptation'] = (ast_last / (opp_defensive_pressure + 1)).fillna(0)
+            features.append('pressure_adaptation')
+        
+        # Actualizar categoría
+        self.feature_categories['basketball_specific'] = 15
+        
+        # Registrar features
+        for feature in features:
+            self._register_feature(feature, 'basketball_specific')
+        
+        logger.info(f"Generadas {len(features)} FEATURES ULTRA-ESPECÍFICAS para asistencias NBA")
+        return features
+
+    def _generate_advanced_playmaking_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        FEATURES AVANZADAS DE PLAYMAKING
+        Métricas específicas para identificar y predecir el rendimiento de playmakers de élite
+        """
+        features = []
+        logger.info("Generando FEATURES AVANZADAS DE PLAYMAKING...")
+        
+        # === GRUPO 1: MÉTRICAS DE CREACIÓN DE JUEGO ===
+        
+        # 1. ASSIST RATE VERDADERO (AST por 100 posesiones del equipo)
+        if all(col in df.columns for col in ['AST', 'MP']):
+            ast_last = df.groupby('Player')['AST'].shift(1)
+            mp_last = df.groupby('Player')['MP'].shift(1)
+            
+            # Estimación de posesiones del equipo basada en minutos jugados
+            team_possessions_est = (mp_last / 48) * 100  # Aproximación
+            df['true_assist_rate'] = (ast_last / (team_possessions_est + 1) * 100).fillna(0)
+            features.append('true_assist_rate')
+        
+        # 2. ASSIST PERCENTAGE (% de FG del equipo asistidos por el jugador)
+        if all(col in df.columns for col in ['AST', 'MP']):
+            # Estimación de FG del equipo cuando el jugador está en cancha
+            team_fg_est = (mp_last / 48) * 40  # Aproximación de FG del equipo
+            df['assist_percentage'] = (ast_last / (team_fg_est + 1) * 100).fillna(0)
+            features.append('assist_percentage')
+        
+        # 3. SECONDARY ASSIST PROXY (STL que llevan a AST)
+        if 'STL' in df.columns:
+            stl_last = df.groupby('Player')['STL'].shift(1)
+            ast_last = df.groupby('Player')['AST'].shift(1)
+            df['secondary_assist_proxy'] = (stl_last * 0.3 + ast_last * 0.7).fillna(0)
+            features.append('secondary_assist_proxy')
+        
+        # === GRUPO 2: EFICIENCIA DE PASE ===
+        
+        # 4. PASS EFFICIENCY RATING (AST vs TOV con peso por minutos)
+        if all(col in df.columns for col in ['AST', 'TOV', 'MP']):
+            tov_last = df.groupby('Player')['TOV'].shift(1)
+            mp_last = df.groupby('Player')['MP'].shift(1)
+            
+            # Eficiencia de pase ponderada por minutos
+            pass_efficiency = (ast_last - tov_last * 0.5) * (mp_last / 36)
+            df['pass_efficiency_rating'] = pass_efficiency.fillna(0)
+            features.append('pass_efficiency_rating')
+        
+        # 5. DECISION MAKING INDEX (AST + STL - TOV)
+        if all(col in df.columns for col in ['AST', 'STL', 'TOV']):
+            decision_index = ast_last + stl_last - tov_last
+            df['decision_making_index'] = decision_index.fillna(0)
+            features.append('decision_making_index')
+        
+        # === GRUPO 3: IMPACTO EN EL EQUIPO ===
+        
+        # 6. TEAM OFFENSIVE RATING WHEN PLAYING (proxy)
+        if all(col in df.columns for col in ['PTS', 'AST', 'MP']):
+            pts_last = df.groupby('Player')['PTS'].shift(1)
+            
+            # Impacto ofensivo estimado del jugador
+            offensive_impact = (pts_last + ast_last * 2) * (mp_last / 48)
+            df['offensive_impact_rating'] = offensive_impact.fillna(0)
+            features.append('offensive_impact_rating')
+        
+        # 7. FLOOR GENERAL RATING (combinación de múltiples métricas)
+        if all(col in df.columns for col in ['AST', 'STL', 'TOV', 'PF']):
+            pf_last = df.groupby('Player')['PF'].shift(1)
+            
+            # Rating de general de cancha (más AST y STL, menos TOV y PF)
+            floor_general = (ast_last * 2 + stl_last - tov_last - pf_last * 0.5)
+            df['floor_general_rating'] = floor_general.fillna(0)
+            features.append('floor_general_rating')
+        
+        # === GRUPO 4: MÉTRICAS DE CLUTCH Y SITUACIONALES ===
+        
+        # 8. CLUTCH PLAYMAKING (AST en juegos cerrados)
+        if '+/-' in df.columns:
+            plus_minus_last = df.groupby('Player')['+/-'].shift(1)
+            
+            # AST en juegos donde el +/- es positivo (juegos competitivos)
+            clutch_ast = ast_last * (abs(plus_minus_last) <= 10).astype(int)
+            df['clutch_playmaking'] = clutch_ast.fillna(0)
+            features.append('clutch_playmaking')
+        
+        # 9. PRESSURE SITUATION ASSISTS (AST cuando el equipo necesita)
+        if all(col in df.columns for col in ['AST', 'TOV']):
+            # AST en situaciones de alta presión (más TOV del equipo)
+            team_tov = df.groupby(['Team', 'Date'])['TOV'].transform('sum').shift(1)
+            pressure_situations = (team_tov > team_tov.quantile(0.7)).astype(int)
+            df['pressure_situation_assists'] = (ast_last * pressure_situations).fillna(0)
+            features.append('pressure_situation_assists')
+        
+        # === GRUPO 5: FEATURES DE CONSISTENCIA AVANZADA ===
+        
+        # 10. ASSIST FLOOR (mínimo confiable de AST)
+        ast_min_5g = df.groupby('Player')['AST'].rolling(5, min_periods=1).min().shift(1).reset_index(0, drop=True)
+        ast_avg_5g = df.groupby('Player')['AST'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+        df['assist_floor'] = (ast_min_5g / (ast_avg_5g + 0.1)).fillna(0)
+        features.append('assist_floor')
+        
+        # 11. ASSIST CEILING (máximo potencial de AST)
+        ast_max_5g = df.groupby('Player')['AST'].rolling(5, min_periods=1).max().shift(1).reset_index(0, drop=True)
+        df['assist_ceiling'] = (ast_max_5g / (ast_avg_5g + 0.1)).fillna(0)
+        features.append('assist_ceiling')
+        
+        # 12. PLAYMAKING VERSATILITY (rango de AST)
+        df['playmaking_versatility'] = (df['assist_ceiling'] - df['assist_floor']).fillna(0)
+        features.append('playmaking_versatility')
+        
+        # === GRUPO 6: FEATURES DE MOMENTUM Y TENDENCIAS ===
+        
+        # 13. ASSIST MOMENTUM SCORE
+        ast_trend_3g = df.groupby('Player')['AST'].rolling(3, min_periods=2).apply(
+            lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) >= 2 else 0
+        ).shift(1).reset_index(0, drop=True).fillna(0)
+        
+        df['assist_momentum_score'] = (ast_trend_3g * ast_avg_5g).fillna(0)
+        features.append('assist_momentum_score')
+        
+        # 14. HOT STREAK INDICATOR
+        ast_shifted_pm = df.groupby('Player')['AST'].shift(1)
+        ast_expanding_pm = df.groupby('Player')['AST'].expanding().mean().shift(2)
+        
+        # Resetear índices para comparación
+        ast_shifted_pm_reset = ast_shifted_pm.reset_index(drop=True)
+        ast_expanding_pm_reset = ast_expanding_pm.reset_index(drop=True)
+        
+        ast_above_season = (ast_shifted_pm_reset > ast_expanding_pm_reset).astype(int)
+        df['hot_streak_indicator'] = ast_above_season.rolling(3, min_periods=1).sum().fillna(0)
+        features.append('hot_streak_indicator')
+        
+        # 15. COLD STREAK RECOVERY
+        ast_below_season = (ast_shifted_pm_reset < ast_expanding_pm_reset).astype(int)
+        cold_streak = ast_below_season.rolling(3, min_periods=1).sum()
+        df['cold_streak_recovery'] = (3 - cold_streak).clip(lower=0).fillna(0)
+        features.append('cold_streak_recovery')
+        
+        # Actualizar categoría
+        self.feature_categories['advanced_playmaking'] = 15
+        
+        # Registrar features
+        for feature in features:
+            self._register_feature(feature, 'advanced_playmaking')
+        
+        logger.info(f"Generadas {len(features)} FEATURES AVANZADAS DE PLAYMAKING")
+        return features
+
+    def _generate_revolutionary_team_context_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        FEATURES REVOLUCIONARIAS DE CONTEXTO DE EQUIPO REAL
+        Utiliza datos reales de equipos (teams_df) para crear el contexto más preciso jamás visto
+        """
+        features = []
+        logger.info("Generando FEATURES REVOLUCIONARIAS DE CONTEXTO DE EQUIPO REAL...")
+        
+        if self.teams_df is None:
+            logger.warning("teams_df no disponible - usando features básicas")
+            return self._generate_basic_team_context_features(df)
+        
+        # === GRUPO 1: CALIDAD REAL DE TIRADORES DEL EQUIPO - OPTIMIZADO ===
+        
+        try:
+            # 1. REAL TEAM SHOOTING QUALITY (FG% real del equipo) - MÉTODO EFICIENTE
+            # Crear diccionarios de promedios por equipo (más eficiente que merge)
+            team_fg_pct = self.teams_df.groupby('Team')['FG%'].mean().to_dict()
+            team_3p_pct = self.teams_df.groupby('Team')['3P%'].mean().to_dict()
+            team_pts_avg = self.teams_df.groupby('Team')['PTS'].mean().to_dict()
+            
+            # Mapear directamente sin merge masivo
+            df['real_team_shooting_quality'] = df['Team'].map(team_fg_pct).fillna(0.45)
+            features.append('real_team_shooting_quality')
+            
+            # 2. ASSIST EFFECTIVENESS REAL (AST × FG% real del equipo)
+            ast_last = df.groupby('Player')['AST'].shift(1)
+            df['assist_effectiveness_real'] = (ast_last * df['real_team_shooting_quality']).fillna(0)
+            features.append('assist_effectiveness_real')
+            
+            # 3. TEAM 3P SHOOTING QUALITY (para asistencias en triples)
+            df['real_team_3p_quality'] = df['Team'].map(team_3p_pct).fillna(0.35)
+            df['assist_3p_effectiveness'] = (ast_last * df['real_team_3p_quality']).fillna(0)
+            features.append('real_team_3p_quality')
+            features.append('assist_3p_effectiveness')
+            
+        except Exception as e:
+            logger.warning(f"Error en team shooting quality: {e}")
+            # Features básicas como fallback
+            ast_last = df.groupby('Player')['AST'].shift(1)
+            df['real_team_shooting_quality'] = 0.45
+            df['assist_effectiveness_real'] = ast_last * 0.45
+            df['real_team_3p_quality'] = 0.35
+            df['assist_3p_effectiveness'] = ast_last * 0.35
+            features.extend(['real_team_shooting_quality', 'assist_effectiveness_real', 
+                           'real_team_3p_quality', 'assist_3p_effectiveness'])
+        
+        # === GRUPO 2: RITMO Y POSESIONES REALES DEL EQUIPO - OPTIMIZADO ===
+        
+        try:
+            # 4. REAL TEAM POSSESSIONS (cálculo exacto basado en datos del equipo)
+            # Calcular posesiones promedio por equipo (más eficiente)
+            if all(col in self.teams_df.columns for col in ['FGA', 'FTA']):
+                team_possessions = (
+                    self.teams_df['FGA'] + 
+                    0.44 * self.teams_df['FTA'] + 
+                    self.teams_df.get('TOV', 0)
+                )
+            else:
+                team_possessions = self.teams_df['FGA'] * 1.08
+            
+            # Crear diccionario de posesiones promedio por equipo
+            team_poss_dict = self.teams_df.assign(possessions=team_possessions).groupby('Team')['possessions'].mean().to_dict()
+            
+            # 5. TRUE ASSIST RATE (AST por 100 posesiones reales del equipo)
+            real_possessions = df['Team'].map(team_poss_dict).fillna(100)
+            df['true_assist_rate_real'] = (ast_last / (real_possessions / 100 + 1)).fillna(0)
+            features.append('true_assist_rate_real')
+            
+            # 6. TEAM PACE REAL (posesiones por 48 minutos)
+            df['real_team_pace'] = real_possessions.fillna(100)
+            df['assist_pace_adjusted'] = (ast_last * (df['real_team_pace'] / 100)).fillna(0)
+            features.append('real_team_pace')
+            features.append('assist_pace_adjusted')
+            
+        except Exception as e:
+            logger.warning(f"Error en team possessions: {e}")
+            # Features básicas como fallback
+            df['true_assist_rate_real'] = (ast_last / 1.0).fillna(0)
+            df['real_team_pace'] = 100
+            df['assist_pace_adjusted'] = ast_last.fillna(0)
+            features.extend(['true_assist_rate_real', 'real_team_pace', 'assist_pace_adjusted'])
+        
+        # === GRUPO 3: EFICIENCIA OFENSIVA REAL DEL EQUIPO - OPTIMIZADO ===
+        
+        try:
+            # 7. REAL OFFENSIVE RATING (puntos por 100 posesiones reales)
+            team_pts_dict = self.teams_df.groupby('Team')['PTS'].mean().to_dict()
+            team_pts = df['Team'].map(team_pts_dict).fillna(110)
+            real_possessions = df.get('real_team_pace', 100)
+            df['real_offensive_rating'] = (team_pts / (real_possessions / 100 + 1)).fillna(110)
+            features.append('real_offensive_rating')
+            
+            # 8. ASSIST IMPACT ON OFFENSE (correlación AST con eficiencia ofensiva)
+            df['assist_offensive_impact'] = (ast_last * (df['real_offensive_rating'] / 110)).fillna(0)
+            features.append('assist_offensive_impact')
+            
+        except Exception as e:
+            logger.warning(f"Error en offensive rating: {e}")
+            # Features básicas como fallback
+            df['real_offensive_rating'] = 110
+            df['assist_offensive_impact'] = ast_last.fillna(0)
+            features.extend(['real_offensive_rating', 'assist_offensive_impact'])
+        
+        # === GRUPO 4: DEPENDENCIA REAL DE ASISTENCIAS DEL EQUIPO ===
+        
+        # 9. REAL TEAM ASSIST DEPENDENCY (% real de AST del equipo por el jugador)
+        # Calcular total de AST del equipo por partido
+        team_ast_total = df.groupby(['Team', 'Date'])['AST'].transform('sum')
+        df['real_team_ast_dependency'] = (ast_last / (team_ast_total.shift(1) + 1)).fillna(0)
+        features.append('real_team_ast_dependency')
+        
+        # 10. ASSIST SHARE CONSISTENCY (consistencia en % de AST del equipo)
+        ast_share_rolling = df.groupby('Player')['real_team_ast_dependency'].rolling(5, min_periods=1).std().shift(1).reset_index(0, drop=True)
+        df['assist_share_consistency'] = (1 / (ast_share_rolling + 0.1)).fillna(1)
+        features.append('assist_share_consistency')
+        
+        # === GRUPO 5: CONTEXTO DEFENSIVO DEL OPONENTE REAL ===
+        
+        # 11. OPPONENT DEFENSIVE RATING REAL (de teams_df) - OPTIMIZADO
+        if 'PTS_Opp' in self.teams_df.columns:
+            try:
+                # Crear diccionario de ratings defensivos por equipo (más eficiente)
+                opp_def_ratings = self.teams_df.groupby('Team')['PTS_Opp'].mean().to_dict()
+                
+                # Mapear directamente sin merge masivo
+                df['real_opponent_def_rating'] = df['Opp'].map(opp_def_ratings).fillna(110)
+                features.append('real_opponent_def_rating')
+                
+                # 12. ASSIST DIFFICULTY FACTOR (más difícil vs defensas mejores)
+                df['assist_difficulty_factor'] = (ast_last * (120 - df['real_opponent_def_rating']) / 20).fillna(0)
+                features.append('assist_difficulty_factor')
+            except Exception as e:
+                logger.warning(f"Error en opponent defensive rating: {e}")
+                # Features básicas como fallback
+                df['real_opponent_def_rating'] = 110
+                df['assist_difficulty_factor'] = ast_last.fillna(0)
+                features.extend(['real_opponent_def_rating', 'assist_difficulty_factor'])
+        
+        # === GRUPO 6: FEATURES DE SINERGIA AVANZADA ===
+        
+        # 13. TEAM CHEMISTRY INDICATOR (basado en distribución de AST)
+        team_ast_std = df.groupby(['Team', 'Date'])['AST'].transform('std').shift(1).fillna(2)
+        df['team_chemistry_indicator'] = (1 / (team_ast_std + 1)).fillna(0.5)
+        features.append('team_chemistry_indicator')
+        
+        # 14. PLAYMAKER HIERARCHY (posición en jerarquía de AST del equipo)
+        df['ast_rank_in_team'] = df.groupby(['Team', 'Date'])['AST'].rank(ascending=False, method='dense')
+        df['playmaker_hierarchy'] = (6 - df['ast_rank_in_team'].shift(1)).clip(1, 5).fillna(3)
+        features.append('playmaker_hierarchy')
+        
+        # === GRUPO 7: FEATURES DE MOMENTUM DE EQUIPO ===
+        
+        # 15. TEAM OFFENSIVE MOMENTUM (tendencia ofensiva del equipo)
+        team_off_momentum = df.groupby('Team')['real_offensive_rating'].rolling(3, min_periods=1).apply(
+            lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) >= 2 else 0
+        ).shift(1).reset_index(0, drop=True)
+        df['team_offensive_momentum'] = team_off_momentum.fillna(0)
+        features.append('team_offensive_momentum')
+        
+        # 16. ASSIST MOMENTUM ALIGNMENT (AST del jugador alineado con momentum del equipo)
+        ast_momentum = df.groupby('Player')['AST'].rolling(3, min_periods=1).apply(
+            lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) >= 2 else 0
+        ).shift(1).reset_index(0, drop=True)
+        df['assist_momentum_alignment'] = (ast_momentum * df['team_offensive_momentum']).fillna(0)
+        features.append('assist_momentum_alignment')
+        
+        # === GRUPO 8: FEATURES DE CONTEXTO SITUACIONAL AVANZADO ===
+        
+        # 17. HOME/AWAY TEAM CONTEXT - CORREGIDO CON COLUMNAS REALES
+        if 'is_home' in df.columns:
+            try:
+                # Calcular promedios home/away por jugador usando is_home
+                home_ast_dict = df[df['is_home'] == 1].groupby('Player')['AST'].mean().to_dict()
+                away_ast_dict = df[df['is_home'] == 0].groupby('Player')['AST'].mean().to_dict()
+                
+                # Crear feature basada en si es home o away
+                def get_home_away_factor(row):
+                    player = row['Player']
+                    if row['is_home'] == 1:
+                        return home_ast_dict.get(player, row.get('ast_season_avg', 3.0))
+                    else:
+                        return away_ast_dict.get(player, row.get('ast_season_avg', 3.0))
+                
+                df['home_away_ast_factor'] = df.apply(get_home_away_factor, axis=1)
+                features.append('home_away_ast_factor')
+                
+            except Exception as e:
+                logger.warning(f"Error en home/away context: {e}")
+                # Feature básica como fallback
+                df['home_away_ast_fallback'] = df.get('ast_season_avg', 3.0)
+                features.append('home_away_ast_fallback')
+        
+        # 18. CLUTCH TEAM PERFORMANCE CONTEXT
+        # Identificar juegos cerrados basado en diferencia de puntos
+        if 'PTS' in df.columns:
+            team_pts_game = df.groupby(['Team', 'Date'])['PTS'].transform('sum')
+            opp_pts_game = team_pts_game.shift(1)  # Aproximación
+            game_closeness = abs(team_pts_game - opp_pts_game) <= 10
+            
+            clutch_ast = ast_last * game_closeness.astype(int)
+            df['clutch_context_assists'] = clutch_ast.fillna(0)
+            features.append('clutch_context_assists')
+        
+        # === GRUPO 9: FEATURES DE PREDICCIÓN ULTRA-AVANZADA ===
+        
+        # 19. MASTER TEAM CONTEXT PREDICTOR
+        # Combina las mejores features de contexto de equipo
+        base_team_predictor = (
+            df['assist_effectiveness_real'] * 0.3 +
+            df['true_assist_rate_real'] * 0.25 +
+            df['real_team_ast_dependency'] * 0.2 +
+            df['assist_offensive_impact'] * 0.15 +
+            df['playmaker_hierarchy'] * 0.1
+        )
+        df['master_team_context_predictor'] = base_team_predictor.fillna(0)
+        features.append('master_team_context_predictor')
+        
+        # 20. ULTIMATE ASSIST PREDICTOR (combinación final)
+        # Integra contexto de equipo con rendimiento individual
+        individual_factor = df.get('ast_avg_5g', 0)
+        team_factor = df['master_team_context_predictor']
+        momentum_factor = df['assist_momentum_alignment']
+        
+        df['ultimate_assist_predictor'] = (
+            individual_factor * 0.4 +
+            team_factor * 0.4 +
+            momentum_factor * 0.2
+        ).fillna(0)
+        features.append('ultimate_assist_predictor')
+        
+        # Actualizar categoría
+        self.feature_categories['revolutionary_team_context'] = 20
+        
+        # Registrar features
+        for feature in features:
+            self._register_feature(feature, 'revolutionary_team_context')
+        
+        logger.info(f"Generadas {len(features)} FEATURES REVOLUCIONARIAS DE CONTEXTO DE EQUIPO REAL")
+        return features
+    
+    def _generate_basic_team_context_features(self, df: pd.DataFrame) -> List[str]:
+        """Features básicas de contexto de equipo cuando teams_df no está disponible"""
+        features = []
+        
+        # Features básicas usando solo datos de jugadores
+        if 'AST' in df.columns:
+            ast_last = df.groupby('Player')['AST'].shift(1)
+            
+            # 1. Team AST dependency básica
+            team_ast_total = df.groupby(['Team', 'Date'])['AST'].transform('sum')
+            df['basic_team_ast_dependency'] = (ast_last / (team_ast_total.shift(1) + 1)).fillna(0)
+            features.append('basic_team_ast_dependency')
+            
+            # 2. Assist share consistency básica
+            ast_share_rolling = df.groupby('Player')['basic_team_ast_dependency'].rolling(5, min_periods=1).std().shift(1).reset_index(0, drop=True)
+            df['basic_assist_share_consistency'] = (1 / (ast_share_rolling + 0.1)).fillna(1)
+            features.append('basic_assist_share_consistency')
+        
+        # Registrar features
+        for feature in features:
+            self._register_feature(feature, 'revolutionary_team_context')
+        
+        return features
+
+    def _generate_interaction_and_pattern_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        FEATURES DE INTERACCIÓN Y PATRONES COMPLEJOS
+        Implementa análisis avanzado de patrones de juego, interacciones entre jugadores y secuencias
+        """
+        features = []
+        logger.info("Generando FEATURES DE INTERACCIÓN Y PATRONES COMPLEJOS...")
+        
+        try:
+            ast_last = df.groupby('Player')['AST'].shift(1)
+            
+            # === GRUPO 1: INTERACCIONES ENTRE JUGADORES ESPECÍFICOS ===
+            
+            # 1. SINERGIA CON COMPAÑEROS DE EQUIPO (basado en altura)
+            if 'Height_Inches' in df.columns:
+                # Identificar "big men" (jugadores altos) por equipo/fecha
+                team_avg_height = df.groupby(['Team', 'Date'])['Height_Inches'].transform('mean')
+                is_big_man = (df['Height_Inches'] > team_avg_height + 2).astype(int)
+                
+                # AST cuando hay big men en el equipo
+                big_men_in_team = df.groupby(['Team', 'Date'])['Height_Inches'].transform(
+                    lambda x: (x > x.mean() + 2).sum()
+                )
+                df['ast_with_big_men'] = (ast_last * (big_men_in_team >= 2).astype(int)).fillna(0)
+                features.append('ast_with_big_men')
+                
+                # Complementariedad de roles (playmaker + big man)
+                player_is_playmaker = (df['Height_Inches'] < team_avg_height - 1).astype(int)
+                df['playmaker_bigman_synergy'] = (ast_last * player_is_playmaker * (big_men_in_team >= 1).astype(int)).fillna(0)
+                features.append('playmaker_bigman_synergy')
+            
+            # 2. DIVERSIDAD DE COMPAÑEROS (basado en distribución de minutos)
+            if 'MP' in df.columns:
+                # Distribución de minutos en el equipo (más diversa = mejor química)
+                team_mp_std = df.groupby(['Team', 'Date'])['MP'].transform('std').shift(1)
+                df['teammate_diversity'] = (ast_last * (team_mp_std / 10)).fillna(0)
+                features.append('teammate_diversity')
+            
+            # === GRUPO 2: PATRONES DE PASE POR POSICIÓN EN CANCHA ===
+            
+            # 3. ASISTENCIAS EN TRIPLES (basado en 3PA del equipo)
+            if '3PA' in df.columns:
+                team_3pa = df.groupby(['Team', 'Date'])['3PA'].transform('sum').shift(1)
+                three_point_rate = (team_3pa / 30).clip(0, 2)  # Normalizado
+                df['ast_on_threes_potential'] = (ast_last * three_point_rate).fillna(0)
+                features.append('ast_on_threes_potential')
+            
+            # 4. ASISTENCIAS EN CANASTAS DE 2 (basado en 2PA del equipo)
+            if '2PA' in df.columns:
+                team_2pa = df.groupby(['Team', 'Date'])['2PA'].transform('sum').shift(1)
+                two_point_rate = (team_2pa / 50).clip(0, 2)  # Normalizado
+                df['ast_on_twos_potential'] = (ast_last * two_point_rate).fillna(0)
+                features.append('ast_on_twos_potential')
+            
+            # 5. PATRONES ESPACIALES INFERIDOS (basado en altura del jugador)
+            if 'Height_Inches' in df.columns:
+                # AST desde perímetro (jugadores más bajos)
+                perimeter_factor = (1 - (df['Height_Inches'] - 70) / 15).clip(0, 1)
+                df['perimeter_ast_tendency'] = (ast_last * perimeter_factor).fillna(0)
+                features.append('perimeter_ast_tendency')
+                
+                # AST desde poste bajo (jugadores altos)
+                post_factor = ((df['Height_Inches'] - 70) / 15).clip(0, 1)
+                df['post_ast_tendency'] = (ast_last * post_factor).fillna(0)
+                features.append('post_ast_tendency')
+            
+            # === GRUPO 3: ANÁLISIS DE SECUENCIAS DE JUGADAS ===
+            
+            # 6. MOMENTUM DE ASISTENCIAS (hot hand effect)
+            ast_hot_streak = df.groupby('Player')['AST'].rolling(3, min_periods=1).apply(
+                lambda x: 1 if len(x) >= 2 and all(x >= x.mean()) else 0
+            ).shift(1).reset_index(0, drop=True)
+            df['ast_hot_streak'] = ast_hot_streak.fillna(0)
+            features.append('ast_hot_streak')
+            
+            # 7. PATRONES DE FLUJO DE JUEGO (alto ritmo)
+            if 'FGA' in df.columns:
+                team_pace = df.groupby(['Team', 'Date'])['FGA'].transform('sum').shift(1)
+                high_pace_games = (team_pace > 90).astype(int)
+                df['high_pace_ast_efficiency'] = (ast_last * high_pace_games).fillna(0)
+                features.append('high_pace_ast_efficiency')
+            
+            # 8. ASISTENCIAS EN JUEGOS CERRADOS (basado en +/-)
+            if '+/-' in df.columns:
+                close_game = (abs(df['+/-'].shift(1)) <= 10).astype(int)
+                df['clutch_ast_rate'] = (ast_last * close_game).fillna(0)
+                features.append('clutch_ast_rate')
+            
+            # === GRUPO 4: PATRONES TEMPORALES AVANZADOS ===
+            
+            # 9. ASISTENCIAS EN DIFERENTES FASES DEL JUEGO
+            # Aproximación: early game vs late game basado en minutos jugados
+            if 'MP' in df.columns:
+                mp_last = df.groupby('Player')['MP'].shift(1)
+                # Si jugó muchos minutos, probablemente jugó en momentos clave
+                key_moments_factor = (mp_last / 40).clip(0, 1.2)
+                df['key_moments_ast'] = (ast_last * key_moments_factor).fillna(0)
+                features.append('key_moments_ast')
+            
+            # 10. SECUENCIAS DE RENDIMIENTO
+            # Patrón de AST en juegos consecutivos
+            ast_sequence_pattern = df.groupby('Player')['AST'].rolling(4, min_periods=2).apply(
+                lambda x: 1 if len(x) >= 3 and x.iloc[-1] > x.iloc[0] else 0  # Tendencia ascendente
+            ).shift(1).reset_index(0, drop=True)
+            df['ast_sequence_improvement'] = ast_sequence_pattern.fillna(0)
+            features.append('ast_sequence_improvement')
+            
+            # === GRUPO 5: INTERACCIONES COMPLEJAS ENTRE VARIABLES ===
+            
+            # 11. INTERACCIÓN ALTURA × ASISTENCIAS × MINUTOS
+            if all(col in df.columns for col in ['Height_Inches', 'MP']):
+                mp_last = df.groupby('Player')['MP'].shift(1)
+                height_mp_interaction = (df['Height_Inches'] / 80) * (mp_last / 36)
+                df['height_minutes_ast_interaction'] = (ast_last * height_mp_interaction).fillna(0)
+                features.append('height_minutes_ast_interaction')
+            
+            # 12. INTERACCIÓN ROBOS × ASISTENCIAS (transición)
+            if 'STL' in df.columns:
+                stl_last = df.groupby('Player')['STL'].shift(1)
+                transition_factor = (stl_last / 2).clip(0, 2)
+                df['transition_ast_from_steals'] = (ast_last * transition_factor).fillna(0)
+                features.append('transition_ast_from_steals')
+            
+            # 13. INTERACCIÓN PÉRDIDAS × ASISTENCIAS (control del balón)
+            if 'TOV' in df.columns:
+                tov_last = df.groupby('Player')['TOV'].shift(1)
+                ball_control_factor = (3 / (tov_last + 1)).clip(0, 3)  # Menos TOV = mejor control
+                df['ball_control_ast_efficiency'] = (ast_last * ball_control_factor).fillna(0)
+                features.append('ball_control_ast_efficiency')
+            
+            # === GRUPO 6: PATRONES DE ADAPTACIÓN SITUACIONAL ===
+            
+            # 14. ADAPTACIÓN A DIFERENTES OPONENTES
+            # AST vs oponentes específicos (memoria histórica)
+            opp_specific_ast = df.groupby(['Player', 'Opp'])['AST'].expanding().mean().shift(1).reset_index([0,1], drop=True)
+            df['opp_specific_ast_memory'] = opp_specific_ast.fillna(ast_last)
+            features.append('opp_specific_ast_memory')
+            
+            # 15. ADAPTACIÓN AL CONTEXTO DEL JUEGO
+            # Combinar múltiples factores contextuales
+            if all(col in df.columns for col in ['is_home', 'is_started']):
+                context_multiplier = (
+                    df['is_home'] * 1.1 +  # Ventaja de local
+                    df['is_started'] * 1.2 +  # Ventaja de titular
+                    0.8  # Base
+                )
+                df['contextual_ast_adaptation'] = (ast_last * context_multiplier).fillna(0)
+                features.append('contextual_ast_adaptation')
+            
+            # === GRUPO 7: FEATURES DE PREDICCIÓN ULTRA-AVANZADA ===
+            
+            # 16. PREDICTOR MAESTRO DE INTERACCIONES
+            # Combina las mejores features de interacción
+            interaction_features = ['ast_with_big_men', 'ast_on_threes_potential', 'ast_hot_streak', 
+                                  'transition_ast_from_steals', 'ball_control_ast_efficiency']
+            available_features = [f for f in interaction_features if f in df.columns]
+            
+            if available_features:
+                interaction_sum = sum(df[f] for f in available_features)
+                df['master_interaction_predictor'] = (interaction_sum / len(available_features)).fillna(0)
+                features.append('master_interaction_predictor')
+            
+            # 17. PREDICTOR FINAL DE PATRONES COMPLEJOS
+            # Integra todos los patrones identificados
+            pattern_features = ['perimeter_ast_tendency', 'key_moments_ast', 'ast_sequence_improvement',
+                              'opp_specific_ast_memory', 'contextual_ast_adaptation']
+            available_patterns = [f for f in pattern_features if f in df.columns]
+            
+            if available_patterns:
+                pattern_sum = sum(df[f] for f in available_patterns)
+                df['complex_patterns_predictor'] = (pattern_sum / len(available_patterns)).fillna(0)
+                features.append('complex_patterns_predictor')
+            
+        except Exception as e:
+            logger.warning(f"Error en features de interacción: {e}")
+            # Features básicas como fallback
+            ast_last = df.groupby('Player')['AST'].shift(1)
+            df['basic_interaction_predictor'] = ast_last.fillna(0)
+            features.append('basic_interaction_predictor')
+        
+        # Actualizar categoría
+        self.feature_categories['interaction_patterns'] = len(features)
+        
+        # Registrar features
+        for feature in features:
+            self._register_feature(feature, 'interaction_patterns')
+        
+        logger.info(f"Generadas {len(features)} FEATURES DE INTERACCIÓN Y PATRONES COMPLEJOS")
+        return features
+
+    def _generate_model_feedback_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        FEATURES ULTRA-PREDICTIVAS BASADAS EN FEEDBACK DEL MODELO
+        Amplifica los patrones que el modelo identificó como más importantes:
+        - contextual_ast_predictor (32.84%)
+        - calibrated_ast_predictor (10.87%) 
+        - ast_avg_15g (6.60%)
+        - ast_per_minute_10g (6.27%)
+        - starter_impact (4.78%)
+        """
+        features = []
+        logger.info("Generando FEATURES ULTRA-PREDICTIVAS BASADAS EN FEEDBACK DEL MODELO...")
+        
+        try:
+            ast_last = df.groupby('Player')['AST'].shift(1)
+            
+            # === GRUPO 1: AMPLIFICACIÓN DE PREDICTORES CONTEXTUALES ===
+            # Basado en que contextual_ast_predictor domina con 32.84%
+            
+            # 1. SUPER CONTEXTUAL PREDICTOR (Mejora del top 1)
+            # Combina múltiples contextos con pesos optimizados
+            if all(col in df.columns for col in ['is_home', 'is_started', 'MP']):
+                mp_last = df.groupby('Player')['MP'].shift(1)
+                ast_15g = df.groupby('Player')['AST'].rolling(15, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+                
+                # Contexto ultra-avanzado con pesos basados en importancia del modelo
+                context_score = (
+                    df['is_home'] * 0.15 +           # Factor local
+                    df['is_started'] * 0.35 +        # Factor titular (muy importante)
+                    (mp_last / 40).clip(0, 1) * 0.25 +  # Factor minutos
+                    (ast_15g / 10).clip(0, 1) * 0.25    # Factor histórico
+                )
+                df['super_contextual_predictor'] = (ast_last * context_score).fillna(0)
+                features.append('super_contextual_predictor')
+            
+            # 2. CALIBRATED PREDICTOR ENHANCED (Mejora del top 2)
+            # Versión mejorada del calibrated_ast_predictor
+            ast_5g = df.groupby('Player')['AST'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+            ast_10g = df.groupby('Player')['AST'].rolling(10, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+            ast_season = df.groupby('Player')['AST'].expanding().mean().shift(1).reset_index(0, drop=True)
+            
+            # Calibración ultra-precisa con múltiples ventanas
+            calibration_weights = [0.4, 0.35, 0.25]  # Más peso a corto plazo
+            df['ultra_calibrated_predictor'] = (
+                ast_5g * calibration_weights[0] + 
+                ast_10g * calibration_weights[1] + 
+                ast_season * calibration_weights[2]
+            ).fillna(0)
+            features.append('ultra_calibrated_predictor')
+            
+            # === GRUPO 2: AMPLIFICACIÓN DE VENTANAS TEMPORALES ===
+            # Basado en que ast_avg_15g es top 3 con 6.60%
+            
+            # 3. MULTI-WINDOW TEMPORAL PREDICTOR
+            # Combina múltiples ventanas temporales con pesos optimizados
+            windows = [3, 5, 10, 15, 20]
+            window_weights = [0.1, 0.2, 0.25, 0.25, 0.2]  # Más peso a ventanas medias
+            
+            temporal_sum = 0
+            for window, weight in zip(windows, window_weights):
+                ast_window = df.groupby('Player')['AST'].rolling(window, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+                temporal_sum += ast_window.fillna(0) * weight
+            
+            df['multi_window_predictor'] = temporal_sum
+            features.append('multi_window_predictor')
+            
+            # 4. TEMPORAL MOMENTUM PREDICTOR
+            # Detecta tendencias en múltiples ventanas
+            ast_3g = df.groupby('Player')['AST'].rolling(3, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+            ast_7g = df.groupby('Player')['AST'].rolling(7, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+            
+            # Momentum = diferencia entre ventanas cortas y largas
+            momentum = (ast_3g - ast_7g).fillna(0)
+            df['temporal_momentum_predictor'] = (ast_10g + momentum * 0.3).fillna(0)
+            features.append('temporal_momentum_predictor')
+            
+            # === GRUPO 3: AMPLIFICACIÓN DE EFICIENCIA POR MINUTO ===
+            # Basado en que ast_per_minute_10g es top 4 con 6.27%
+            
+            # 5. ULTRA EFFICIENCY PREDICTOR
+            # Versión mejorada de ast_per_minute con múltiples factores
+            if 'MP' in df.columns:
+                mp_5g = df.groupby('Player')['MP'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+                mp_10g = df.groupby('Player')['MP'].rolling(10, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+                
+                # Eficiencia ultra-precisa
+                efficiency_5g = (ast_5g / (mp_5g + 1)).fillna(0)
+                efficiency_10g = (ast_10g / (mp_10g + 1)).fillna(0)
+                
+                # Combinar eficiencias con factor de confianza basado en minutos
+                confidence_factor = (mp_10g / 30).clip(0, 1.5)
+                df['ultra_efficiency_predictor'] = (
+                    efficiency_5g * 0.4 + efficiency_10g * 0.6
+                ) * confidence_factor
+                features.append('ultra_efficiency_predictor')
+            
+            # === GRUPO 4: AMPLIFICACIÓN DEL FACTOR TITULAR ===
+            # Basado en que starter_impact es top 5 con 4.78%
+            
+            # 6. ENHANCED STARTER IMPACT
+            # Versión mejorada que considera historial de titularidad
+            if 'is_started' in df.columns:
+                # Frecuencia de titularidad en últimos juegos
+                starter_freq_5g = df.groupby('Player')['is_started'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+                starter_freq_10g = df.groupby('Player')['is_started'].rolling(10, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+                
+                # Impacto mejorado de titularidad
+                starter_consistency = (starter_freq_5g + starter_freq_10g) / 2
+                df['enhanced_starter_impact'] = (
+                    ast_last * df['is_started'] * (1 + starter_consistency)
+                ).fillna(0)
+                features.append('enhanced_starter_impact')
+            
+            # === GRUPO 5: FEATURES DE ALTA FRECUENCIA DE ASISTENCIAS ===
+            # Basado en que high_assist_game_freq es importante
+            
+            # 7. EXPLOSIVE ASSIST POTENTIAL
+            # Predice juegos de muchas asistencias
+            ast_max_5g = df.groupby('Player')['AST'].rolling(5, min_periods=1).max().shift(1).reset_index(0, drop=True)
+            ast_std_5g = df.groupby('Player')['AST'].rolling(5, min_periods=1).std().shift(1).reset_index(0, drop=True)
+            
+            # Potencial explosivo = máximo reciente + volatilidad
+            df['explosive_assist_potential'] = (
+                ast_max_5g * 0.7 + ast_std_5g * 0.3
+            ).fillna(0)
+            features.append('explosive_assist_potential')
+            
+            # === GRUPO 6: FEATURES DE DIFICULTAD Y ADAPTABILIDAD ===
+            # Basado en assist_difficulty_factor y player_adaptability_score
+            
+            # 8. ADAPTIVE DIFFICULTY PREDICTOR
+            # Combina dificultad del oponente con adaptabilidad del jugador
+            if 'Opp' in df.columns:
+                # Rendimiento histórico vs cada oponente
+                opp_ast_avg = df.groupby(['Player', 'Opp'])['AST'].expanding().mean().shift(1).reset_index([0,1], drop=True)
+                league_ast_avg = df.groupby('Player')['AST'].expanding().mean().shift(1).reset_index(0, drop=True)
+                
+                # Factor de adaptación = rendimiento vs oponente / rendimiento general
+                adaptation_factor = (opp_ast_avg / (league_ast_avg + 0.1)).fillna(1)
+                df['adaptive_difficulty_predictor'] = (ast_last * adaptation_factor).fillna(0)
+                features.append('adaptive_difficulty_predictor')
+            
+            # === GRUPO 7: FEATURES DE FATIGA Y CARGA DE TRABAJO ===
+            # Basado en fatigue_adjusted_ast y workload_ratio
+            
+            # 9. SMART FATIGUE PREDICTOR
+            # Versión inteligente que considera múltiples factores de fatiga
+            if 'MP' in df.columns:
+                # Carga de trabajo reciente
+                mp_sum_3g = df.groupby('Player')['MP'].rolling(3, min_periods=1).sum().shift(1).reset_index(0, drop=True)
+                mp_sum_7g = df.groupby('Player')['MP'].rolling(7, min_periods=1).sum().shift(1).reset_index(0, drop=True)
+                
+                # Factor de fatiga inteligente
+                fatigue_factor = 1 - (mp_sum_3g / 120).clip(0, 0.3)  # Máximo 30% de penalización
+                rest_bonus = 1 + (1 / (mp_sum_7g / 7 + 1)) * 0.1  # Bonus por descanso
+                
+                df['smart_fatigue_predictor'] = (
+                    ast_last * fatigue_factor * rest_bonus
+                ).fillna(0)
+                features.append('smart_fatigue_predictor')
+            
+            # === GRUPO 8: PREDICTOR MAESTRO FINAL ===
+            
+            # 10. ULTIMATE AST PREDICTOR
+            # Combina las mejores features con pesos basados en importancia del modelo
+            predictor_features = [
+                ('super_contextual_predictor', 0.35),
+                ('ultra_calibrated_predictor', 0.25),
+                ('multi_window_predictor', 0.15),
+                ('ultra_efficiency_predictor', 0.10),
+                ('enhanced_starter_impact', 0.08),
+                ('explosive_assist_potential', 0.04),
+                ('adaptive_difficulty_predictor', 0.03)
+            ]
+            
+            ultimate_sum = 0
+            available_predictors = 0
+            
+            for feature_name, weight in predictor_features:
+                if feature_name in df.columns:
+                    ultimate_sum += df[feature_name] * weight
+                    available_predictors += weight
+            
+            if available_predictors > 0:
+                df['ultimate_ast_predictor'] = ultimate_sum / available_predictors
+                features.append('ultimate_ast_predictor')
+            
+        except Exception as e:
+            logger.warning(f"Error en features de feedback del modelo: {e}")
+            # Feature básica como fallback
+            ast_last = df.groupby('Player')['AST'].shift(1)
+            df['basic_feedback_predictor'] = ast_last.fillna(0)
+            features.append('basic_feedback_predictor')
+        
+        # Actualizar categoría
+        self.feature_categories['model_feedback'] = len(features)
+        
+        # Registrar features
+        for feature in features:
+            self._register_feature(feature, 'model_feedback')
+        
+        logger.info(f"Generadas {len(features)} FEATURES ULTRA-PREDICTIVAS BASADAS EN FEEDBACK DEL MODELO")
+        
+        return features

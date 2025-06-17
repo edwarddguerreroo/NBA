@@ -79,9 +79,9 @@ class TeamPointsFeatureEngineer:
                 
                 if valid_wins < total_rows:
                     invalid_results = df[df['is_win'].isna()]['Result'].unique()
-                    NBALogger.log_warning(logger, "   Formatos no reconocidos: {invalid_results}"))
+                    NBALogger.log_warning(logger, "   Formatos no reconocidos: {invalid_results}")
             else:
-                NBALogger.log_error(logger, "No se puede crear is_win: columna Result no disponible"))
+                NBALogger.log_error(logger, "No se puede crear is_win: columna Result no disponible")
         
         # Trabajar directamente con el DataFrame (NO crear copia)
         if df.empty:
@@ -93,7 +93,7 @@ class TeamPointsFeatureEngineer:
             df.sort_values(['Team', 'Date'], inplace=True)
             df.reset_index(drop=True, inplace=True)
         else:
-            NBALogger.log_warning(logger, "Columna 'Date' no encontrada - usando orden original"))
+            NBALogger.log_warning(logger, "Columna 'Date' no encontrada - usando orden original")
         
         # PASO 1: Cálculos base (una sola vez) - MISMA LÓGICA QUE TOTAL_POINTS
         self._create_base_calculations(df)
@@ -431,7 +431,7 @@ class TeamPointsFeatureEngineer:
         
         if len(momentum_features_created) < len(momentum_features_expected):
             missing_features = [f for f in momentum_features_expected if f not in momentum_features_created]
-            NBALogger.log_warning(logger, "Faltantes: {missing_features}"))
+            NBALogger.log_warning(logger, "Faltantes: {missing_features}")
     
     def _create_context_features(self, df: pd.DataFrame) -> None:
         """Features de contexto situacional - ADAPTADO DE TOTAL_POINTS"""
