@@ -106,7 +106,10 @@ class AssistsFeatureEngineer:
             ast_stats = df['AST'].describe()
             logger.info(f"Target AST disponible - Media={ast_stats['mean']:.1f}, Max={ast_stats['max']:.0f}")
         else:
-            NBALogger.log_warning(logger, "Target AST no disponible - features limitadas")
+            available_cols = list(df.columns)[:10]
+            logger.warning(f"Target AST no disponible - features limitadas")
+            logger.warning(f"Columnas disponibles (primeras 10): {available_cols}")
+            logger.warning(f"Shape del dataset: {df.shape}")
         
         # Limpiar registro de features
         self.feature_registry = {}

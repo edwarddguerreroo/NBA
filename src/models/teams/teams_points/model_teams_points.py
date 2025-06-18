@@ -1741,23 +1741,41 @@ class TeamPointsModel(BaseNBATeamModel):
             model_path: Ruta del modelo guardado
             
         Returns:
-            Diccionario con el modelo y metadatos
+            Diccionario con el modelo y metadatos o el modelo directo
         """
         try:
             production_model = joblib.load(model_path)
             
-            metadata = production_model['model_metadata']
-            
-            logger.info("[OK] MODELO DE PRODUCCION CARGADO:")
-            logger.info(f"   • Ruta: {model_path}")
-            logger.info(f"   • Modelo: {production_model['best_model_name']}")
-            logger.info(f"   • Features: {len(production_model['feature_columns'])}")
-            logger.info(f"   • Fecha entrenamiento: {metadata['training_date']}")
-            logger.info(f"   • MAE: {metadata['mae']:.3f}")
-            logger.info(f"   • R²: {metadata['r2']:.4f}")
-            logger.info(f"   • Dispositivo: {metadata.get('device_used', 'N/A')}")
-            
-            return production_model
+            # Verificar si es un diccionario de producción o modelo directo
+            if isinstance(production_model, dict) and 'model_metadata' in production_model:
+                # Es un modelo de producción guardado con metadatos
+                metadata = production_model['model_metadata']
+                
+                logger.info("[OK] MODELO DE PRODUCCION CARGADO:")
+                logger.info(f"   • Ruta: {model_path}")
+                logger.info(f"   • Modelo: {production_model['best_model_name']}")
+                logger.info(f"   • Features: {len(production_model['feature_columns'])}")
+                logger.info(f"   • Fecha entrenamiento: {metadata['training_date']}")
+                logger.info(f"   • MAE: {metadata['mae']:.3f}")
+                logger.info(f"   • R²: {metadata['r2']:.4f}")
+                logger.info(f"   • Dispositivo: {metadata.get('device_used', 'N/A')}")
+                
+                return production_model
+            else:
+                # Es un modelo directo (TeamPointsModel), crear estructura compatible
+                logger.info("[OK] MODELO DIRECTO CARGADO (sin metadatos de producción):")
+                logger.info(f"   • Ruta: {model_path}")
+                logger.info(f"   • Tipo: {type(production_model).__name__}")
+                
+                # Verificar si tiene los atributos esperados
+                if hasattr(production_model, 'stacking_model') and production_model.stacking_model is not None:
+                    logger.info(f"   • Modelo principal: Stacking Ensemble")
+                elif hasattr(production_model, 'best_model') and production_model.best_model is not None:
+                    logger.info(f"   • Modelo principal: {type(production_model.best_model).__name__}")
+                else:
+                    logger.info(f"   • Estado: Modelo sin entrenar o en formato desconocido")
+                
+                return production_model
             
         except Exception as e:
             logger.error(f"Error al cargar modelo de produccion: {e}")

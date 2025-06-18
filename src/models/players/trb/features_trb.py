@@ -95,7 +95,10 @@ class ReboundsFeatureEngineer:
             trb_stats = df['TRB'].describe()
             logger.info(f"Target TRB disponible - Media={trb_stats['mean']:.1f}, Max={trb_stats['max']:.0f}")
         else:
-            NBALogger.log_warning(logger, "Target TRB no disponible - features limitadas")
+            available_cols = list(df.columns)[:10]
+            logger.warning(f"Target TRB no disponible - features limitadas")
+            logger.warning(f"Columnas disponibles (primeras 10): {available_cols}")
+            logger.warning(f"Shape del dataset: {df.shape}")
         
         # Limpiar registro de features
         self.feature_registry = {}

@@ -25,13 +25,13 @@ class MonteCarloConfig:
     
     # Límites físicos NBA basados en temporadas 2023-24 y 2024-25
     NBA_LIMITS = {
-        'PTS': (0, 52),     # Basado en Wembanyama 50 pts + margen de seguridad
-        'TRB': (0, 21),     # Basado en performances reales de Jokic/Sabonis
-        'AST': (0, 17),     # Basado en líderes actuales como Haliburton
-        'STL': (0, 6),      # Basado en defensores elite actuales
-        'BLK': (0, 7),      # Basado en Wembanyama y otros bloqueadores
-        'TOV': (0, 12),     # Límite práctico para jugadores high-usage
-        'MP': (0, 44),      # Límite práctico (algunos juegan ~42-43 max)
+        'PTS': (0, 50),     # Basado en Wembanyama 50 pts + margen de seguridad
+        'TRB': (0, 15),     # Basado en performances reales de Jokic/Sabonis
+        'AST': (0, 15),     # Basado en líderes actuales como Haliburton
+        'STL': (0, 4),      # Basado en defensores elite actuales
+        'BLK': (0, 4),      # Basado en Wembanyama y otros bloqueadores
+        'TOV': (0, 9),     # Límite práctico para jugadores high-usage
+        'MP': (0, 36),      # Límite práctico (algunos juegan ~42-43 max)
         'FG%': (0.0, 1.0),
         '3P%': (0.0, 1.0),
         'FT%': (0.0, 1.0)
@@ -76,12 +76,12 @@ class BettingLinesConfig:
     
     # Líneas comunes por estadística (basadas en DraftKings, FanDuel, BetMGM)
     COMMON_LINES = {
-        'PTS': [8.5, 12.5, 16.5, 19.5, 22.5, 26.5, 29.5, 32.5, 36.5],  # Líneas targets reales
-        'TRB': [4.5, 6.5, 8.5, 10.5, 12.5, 14.5],                      # Targets rebotes
-        'AST': [2.5, 4.5, 6.5, 8.5, 10.5, 12.5],                       # Targets asistencias  
-        'STL': [0.5, 1.5, 2.5],                                         # Targets robos
-        'BLK': [0.5, 1.5, 2.5, 3.5],                                    # Targets bloqueos
-        'total_points': [215.5, 220.5, 225.5, 230.5, 235.5, 240.5]     # Totales del juego
+        'PTS': [10.5, 15.5, 20.5, 25.5, 30.5, 35.5, 40.5, 45.5],      # Líneas targets reales
+        'TRB': [4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5],     # Targets rebotes
+        'AST': [4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5],     # Targets asistencias  
+        'total_points': [205.5, 210.5, 215.5, 220.5, 225.5, 230.5, 235.5, 240.5],  # Totales del juego
+        'team_points': [90.5, 95.5, 100.5, 105.5, 110.5, 115.5, 120.5, 125.5, 130.5],  # Puntos por equipo
+        'triples': [1, 2, 3, 4, 5]                          # Líneas de triples
     }
     
     # Líneas por posición (basadas en targets reales de casas de apuestas 2024-25)

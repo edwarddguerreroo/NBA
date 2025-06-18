@@ -166,7 +166,10 @@ class PointsFeatureEngineer:
             pts_stats = df['PTS'].describe()
             logger.info(f"Target PTS disponible - Estadísticas: Media={pts_stats['mean']:.1f}, Max={pts_stats['max']:.0f}")
         else:
-            NBALogger.log_error(logger, "PTS no encontrado en el dataset - requerido para features de puntos")
+            available_cols = list(df.columns)[:10]
+            logger.error(f"PTS no encontrado en el dataset - requerido para features de puntos")
+            logger.error(f"Columnas disponibles (primeras 10): {available_cols}")
+            logger.error(f"Shape del dataset: {df.shape}")
             return []
         
         # VERIFICAR CACHE DE DATOS
