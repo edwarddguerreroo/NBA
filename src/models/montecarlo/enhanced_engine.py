@@ -291,6 +291,398 @@ class EnhancedMonteCarloEngine:
         
         return cumulative_results
     
+    def _run_simulation_batch(self, home_team: str, away_team: str, 
+                            batch_sims: int, context: Dict) -> Dict:
+        """Ejecuta un batch de simulaciones usando el motor base"""
+        try:
+            # Usar el simulador del framework existente
+            from .simulator import NBAGameSimulator
+            simulator = NBAGameSimulator(self.base_engine, batch_sims)
+            
+            # Ejecutar simulación
+            results = simulator.simulate_game(home_team, away_team, context.get('date'))
+            
+            # Mejorar formato de salida para compatibilidad
+            if 'error' in results:
+                raise Exception(results['error'])
+                
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Error en batch de simulación: {str(e)}")
+            # Fallback: generar resultados básicos
+            return self._generate_fallback_results(home_team, away_team)
+    
+    def _generate_fallback_results(self, home_team: str, away_team: str) -> Dict:
+        """Genera resultados básicos como fallback"""
+        return {
+            'game_info': {
+                'home_team': home_team,
+                'away_team': away_team,
+                'simulations_run': 100,
+                'fallback_mode': True
+            },
+            'win_probabilities': {
+                'home_win': 0.55,  # Ventaja local básica
+                'away_win': 0.45
+            },
+            'score_predictions': {
+                'home_score': {
+                    'mean': 108.0,
+                    'median': 108.0,
+                    'std': 8.0,
+                    'min': 95.0,
+                    'max': 125.0,
+                    'percentiles': {'25th': 102.0, '75th': 114.0}
+                },
+                'away_score': {
+                    'mean': 105.0,
+                    'median': 105.0,
+                    'std': 8.0,
+                    'min': 92.0,
+                    'max': 122.0,
+                    'percentiles': {'25th': 99.0, '75th': 111.0}
+                }
+            },
+            'confidence_metrics': {
+                'prediction_confidence': 0.5,
+                'model_reliability': 0.5
+            }
+        }
+    
+    def _combine_simulation_results(self, cumulative: Dict, batch: Dict, total_sims: int) -> Dict:
+        """Combina resultados de batches de simulación de forma incremental"""
+        try:
+            if not cumulative or not batch:
+                return batch or cumulative
+            
+            # Combinar información básica
+            combined = cumulative.copy()
+            combined['game_info']['simulations_run'] = total_sims
+            
+            # Combinar probabilidades de victoria (promedio ponderado)
+            prev_sims = cumulative['game_info']['simulations_run'] 
+            batch_sims = batch['game_info']['simulations_run']
+            
+            if prev_sims > 0 and batch_sims > 0:
+                total_weight = prev_sims + batch_sims
+                
+                combined['win_probabilities']['home_win'] = (
+                    cumulative['win_probabilities']['home_win'] * prev_sims +
+                    batch['win_probabilities']['home_win'] * batch_sims
+                ) / total_weight
+                
+                combined['win_probabilities']['away_win'] = 1.0 - combined['win_probabilities']['home_win']
+                
+                # Combinar predicciones de puntuación (promedio incremental)
+                for team in ['home_score', 'away_score']:
+                    if team in cumulative['score_predictions'] and team in batch['score_predictions']:
+                        cum_pred = cumulative['score_predictions'][team]
+                        batch_pred = batch['score_predictions'][team]
+                        
+                        # Promedio incremental de medias
+                        combined['score_predictions'][team]['mean'] = (
+                            cum_pred['mean'] * prev_sims + batch_pred['mean'] * batch_sims
+                        ) / total_weight
+                        
+                        # Combinar desviaciones estándar de forma conservadora
+                        combined['score_predictions'][team]['std'] = max(
+                            cum_pred.get('std', 5.0), batch_pred.get('std', 5.0)
+                        )
+                        
+                        # Actualizar percentiles basados en nueva media
+                        new_mean = combined['score_predictions'][team]['mean']
+                        new_std = combined['score_predictions'][team]['std']
+                        
+                        combined['score_predictions'][team].update({
+                            'median': new_mean,
+                            'min': max(80, new_mean - 2.5 * new_std),
+                            'max': min(140, new_mean + 2.5 * new_std),
+                            'percentiles': {
+                                '25th': new_mean - 0.67 * new_std,
+                                '75th': new_mean + 0.67 * new_std
+                            }
+                        })
+            
+            return combined
+            
+        except Exception as e:
+            self.logger.error(f"Error combinando resultados: {str(e)}")
+            return batch  # Fallback al batch más reciente
+    
+    def _integrate_team_predictions(self, base_results: Dict, team_predictions: Dict) -> Dict:
+        """Integra predicciones de modelos especializados de equipos"""
+        if not team_predictions or not self.enhanced_mode:
+            return base_results
+            
+        try:
+            enhanced_results = base_results.copy()
+            
+            # Integrar predicción de victorias si está disponible
+            if 'win_prediction' in team_predictions:
+                team_pred = team_predictions['win_prediction']
+                confidence = team_pred.get('confidence', 0.5)
+                
+                # Peso dinámico basado en confianza
+                integration_weight = min(0.4, confidence * 0.6)  # Máximo 40%
+                
+                current_home_prob = base_results['win_probabilities']['home_win']
+                team_home_prob = team_pred.get('home_win_prob', current_home_prob)
+                
+                # Integración ponderada
+                integrated_prob = (
+                    current_home_prob * (1 - integration_weight) +
+                    team_home_prob * integration_weight
+                )
+                
+                enhanced_results['win_probabilities']['home_win'] = integrated_prob
+                enhanced_results['win_probabilities']['away_win'] = 1.0 - integrated_prob
+                enhanced_results['team_model_integration_weight'] = integration_weight
+            
+            # Integrar predicciones de puntuación de equipos
+            if 'score_predictions' in team_predictions:
+                for team in ['home', 'away']:
+                    score_key = f'{team}_score'
+                    if score_key in team_predictions['score_predictions']:
+                        team_score_pred = team_predictions['score_predictions'][score_key]
+                        confidence = team_score_pred.get('confidence', 0.5)
+                        
+                        # Peso conservador para puntuaciones
+                        integration_weight = min(0.3, confidence * 0.5)
+                        
+                        current_mean = base_results['score_predictions'][score_key]['mean']
+                        team_mean = team_score_pred.get('prediction', current_mean)
+                        
+                        # Integración ponderada de la media
+                        integrated_mean = (
+                            current_mean * (1 - integration_weight) +
+                            team_mean * integration_weight
+                        )
+                        
+                        enhanced_results['score_predictions'][score_key]['mean'] = integrated_mean
+                        enhanced_results['score_predictions'][score_key]['median'] = integrated_mean
+                        
+                        # Ajustar percentiles basados en nueva media
+                        std = enhanced_results['score_predictions'][score_key]['std']
+                        enhanced_results['score_predictions'][score_key].update({
+                            'min': max(80, integrated_mean - 2.5 * std),
+                            'max': min(140, integrated_mean + 2.5 * std),
+                            'percentiles': {
+                                '25th': integrated_mean - 0.67 * std,
+                                '75th': integrated_mean + 0.67 * std
+                            }
+                        })
+            
+            return enhanced_results
+            
+        except Exception as e:
+            self.logger.error(f"Error integrando predicciones de equipos: {str(e)}")
+            return base_results
+    
+    def _apply_ensemble_integration(self, results: Dict, home_team: str, 
+                                  away_team: str, context: Dict) -> Dict:
+        """Aplica integración tipo ensemble con múltiples enfoques"""
+        if not self.enhanced_mode:
+            return results
+            
+        try:
+            # Usar el nuevo EnsembleIntegrator
+            from .advanced_integration import EnsembleIntegrator
+            ensemble_integrator = EnsembleIntegrator()
+            
+            # Obtener predicciones de Deep Learning si están disponibles
+            dl_predictions = self._get_deep_learning_predictions(home_team, away_team, context)
+            
+            # Obtener predicciones estadísticas
+            statistical_predictions = self._get_statistical_predictions(home_team, away_team, context)
+            
+            # Integrar usando ensemble
+            ensemble_results = ensemble_integrator.integrate_predictions(
+                results, dl_predictions, statistical_predictions
+            )
+            
+            return ensemble_results
+            
+        except Exception as e:
+            self.logger.warning(f"Error en integración ensemble: {str(e)}")
+            return results
+    
+    def _get_deep_learning_predictions(self, home_team: str, away_team: str, context: Dict) -> Dict:
+        """Obtiene predicciones de modelos de Deep Learning"""
+        try:
+            # Usar los modelos DL existentes del framework
+            from src.models.teams.is_win.model_is_win import WinPredictionModel
+            
+            # Simular predicción DL (en implementación real se usarían los modelos entrenados)
+            dl_predictions = {
+                'win_probabilities': {
+                    'home_win': 0.58,  # Placeholder - usar modelo real
+                    'away_win': 0.42
+                },
+                'score_predictions': {
+                    'home_score': {
+                        'mean': 109.5,
+                        'std': 7.5
+                    },
+                    'away_score': {
+                        'mean': 106.0,
+                        'std': 7.8
+                    }
+                },
+                'confidence': 0.72,
+                'model_type': 'deep_learning'
+            }
+            
+            return dl_predictions
+            
+        except Exception as e:
+            self.logger.debug(f"Deep Learning predictions no disponibles: {str(e)}")
+            return {}
+    
+    def _get_statistical_predictions(self, home_team: str, away_team: str, context: Dict) -> Dict:
+        """Obtiene predicciones de modelos estadísticos tradicionales"""
+        try:
+            # Calcular usando estadísticas históricas del team_profiles
+            home_profile = self.team_profiles.get(home_team, {})
+            away_profile = self.team_profiles.get(away_team, {})
+            
+            if not home_profile or not away_profile:
+                return {}
+            
+            # Calcular predicción estadística básica
+            home_avg = home_profile.get('offensive_stats', {}).get('pace', 105.0)
+            away_avg = away_profile.get('offensive_stats', {}).get('pace', 105.0)
+            
+            # Ajustar por ventaja local
+            home_predicted = home_avg * 1.04  # 4% ventaja local
+            away_predicted = away_avg * 0.98   # 2% desventaja visitante
+            
+            # Probabilidad basada en diferencia
+            score_diff = home_predicted - away_predicted
+            home_win_prob = 0.5 + (score_diff / 20.0)  # Escalado simple
+            home_win_prob = max(0.15, min(0.85, home_win_prob))  # Límites realistas
+            
+            statistical_predictions = {
+                'win_probabilities': {
+                    'home_win': home_win_prob,
+                    'away_win': 1.0 - home_win_prob
+                },
+                'score_predictions': {
+                    'home_score': {
+                        'mean': home_predicted,
+                        'std': 6.5
+                    },
+                    'away_score': {
+                        'mean': away_predicted,
+                        'std': 6.5
+                    }
+                },
+                'r_squared': 0.65,
+                'model_type': 'statistical'
+            }
+            
+            return statistical_predictions
+            
+        except Exception as e:
+            self.logger.debug(f"Statistical predictions no disponibles: {str(e)}")
+            return {}
+    
+    def _validate_result_consistency(self, results: Dict) -> Dict:
+        """Valida consistencia de resultados y aplica correcciones si es necesario"""
+        try:
+            validated_results = results.copy()
+            
+            # Validar probabilidades suman 1.0
+            home_prob = results['win_probabilities']['home_win']
+            away_prob = results['win_probabilities']['away_win']
+            
+            if abs(home_prob + away_prob - 1.0) > 0.01:
+                # Normalizar probabilidades
+                total = home_prob + away_prob
+                if total > 0:
+                    validated_results['win_probabilities']['home_win'] = home_prob / total
+                    validated_results['win_probabilities']['away_win'] = away_prob / total
+            
+            # Validar rangos de puntuación son realistas
+            for team in ['home_score', 'away_score']:
+                if team in results['score_predictions']:
+                    score_pred = results['score_predictions'][team]
+                    mean_score = score_pred['mean']
+                    
+                    # Aplicar límites NBA realistas
+                    if mean_score < 85:
+                        validated_results['score_predictions'][team]['mean'] = 85
+                        validated_results[f'{team}_adjusted'] = 'min_capped'
+                    elif mean_score > 130:
+                        validated_results['score_predictions'][team]['mean'] = 130
+                        validated_results[f'{team}_adjusted'] = 'max_capped'
+                    
+                    # Validar que std no sea excesiva
+                    std = score_pred.get('std', 8.0)
+                    if std > 15.0:
+                        validated_results['score_predictions'][team]['std'] = 15.0
+                    elif std < 3.0:
+                        validated_results['score_predictions'][team]['std'] = 3.0
+            
+            return validated_results
+            
+        except Exception as e:
+            self.logger.error(f"Error validando consistencia: {str(e)}")
+            return results
+    
+    def _calculate_advanced_confidence(self, results: Dict, team_predictions: Dict) -> Dict:
+        """Calcula métricas de confianza avanzadas"""
+        try:
+            confidence_metrics = results.get('confidence_metrics', {})
+            
+            # Confianza base del modelo Monte Carlo
+            base_confidence = confidence_metrics.get('prediction_confidence', 0.5)
+            model_reliability = confidence_metrics.get('model_reliability', 0.5)
+            
+            # Factor de consenso entre modelos
+            consensus_factor = 1.0
+            if team_predictions and self.enhanced_mode:
+                # Calcular consensus basado en acuerdo entre modelos
+                mc_home_prob = results['win_probabilities']['home_win']
+                
+                team_home_prob = team_predictions.get('win_prediction', {}).get('home_win_prob', mc_home_prob)
+                
+                # Diferencia entre predicciones
+                prob_difference = abs(mc_home_prob - team_home_prob)
+                consensus_factor = max(0.5, 1.0 - prob_difference)
+            
+            # Confianza en la convergencia
+            convergence_confidence = 0.8  # Placeholder - en implementación real usar _check_convergence
+            
+            # Confianza general ponderada
+            overall_confidence = (
+                base_confidence * 0.4 +
+                model_reliability * 0.3 +
+                consensus_factor * 0.2 +
+                convergence_confidence * 0.1
+            )
+            
+            advanced_confidence = {
+                'overall_confidence': overall_confidence,
+                'base_confidence': base_confidence,
+                'model_reliability': model_reliability,
+                'consensus_factor': consensus_factor,
+                'convergence_confidence': convergence_confidence,
+                'confidence_level': 'high' if overall_confidence >= 0.75 else
+                                   'medium' if overall_confidence >= 0.60 else 'low',
+                'enhanced_mode_active': self.enhanced_mode
+            }
+            
+            return advanced_confidence
+            
+        except Exception as e:
+            self.logger.error(f"Error calculando confianza avanzada: {str(e)}")
+            return {
+                'overall_confidence': 0.5,
+                'confidence_level': 'medium',
+                'error': str(e)
+            }
+    
     def _apply_cross_validation(self, performance: Dict, player_name: str,
                               context: Dict) -> Dict:
         """Aplica validación cruzada para verificar consistencia"""

@@ -13,10 +13,343 @@ import logging
 from typing import Dict, List, Tuple, Any, Optional
 from pathlib import Path
 import warnings
-warnings.filterwarnings('ignore')
+from scipy import stats
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 # Imports de modelos especializados (modo lazy loading)
 # Los imports se harán dinámicamente cuando sea necesario para evitar errores de inicialización
+
+class MultiDimensionalValidator:
+    """
+    Validador Multi-Dimensional para Simulaciones NBA
+    ===============================================
+    
+    Sistema avanzado que evalúa precisión en múltiples dimensiones:
+    - Ganador correcto (25%)
+    - Exactitud de puntuación (30%) 
+    - Margen de victoria (20%)
+    - Total de puntos (15%)
+    - Intervalos de confianza (10%)
+    """
+    
+    def __init__(self):
+        self.validation_weights = {
+            'winner_accuracy': 0.25,      # Ganador correcto
+            'score_accuracy': 0.30,       # Exactitud de puntuación
+            'margin_accuracy': 0.20,      # Margen de victoria
+            'total_accuracy': 0.15,       # Total de puntos
+            'confidence_accuracy': 0.10   # Intervalos de confianza
+        }
+        
+        self.tolerance_thresholds = {
+            'score_tolerance': 5.0,        # ±5 puntos por equipo
+            'margin_tolerance': 8.0,       # ±8 puntos margen
+            'total_tolerance': 12.0,       # ±12 puntos total
+            'confidence_threshold': 0.80   # 80% confianza mínima
+        }
+        
+        self.logger = logging.getLogger(__name__)
+        
+    def validate_simulation(self, simulation_result: dict, actual_result: dict) -> dict:
+        """
+        Valida una simulación individual contra resultado real
+        
+        Args:
+            simulation_result: Resultado de simulación Monte Carlo
+            actual_result: Resultado real del partido
+            
+        Returns:
+            Dict con métricas de validación multi-dimensional
+        """
+        try:
+            validation_metrics = {}
+            
+            # 1. VALIDACIÓN DE GANADOR (25%)
+            winner_score = self._validate_winner(simulation_result, actual_result)
+            validation_metrics['winner_accuracy'] = winner_score
+            
+            # 2. VALIDACIÓN DE PUNTUACIÓN (30%)
+            score_accuracy = self._validate_scores(simulation_result, actual_result)
+            validation_metrics['score_accuracy'] = score_accuracy
+            
+            # 3. VALIDACIÓN DE MARGEN (20%)
+            margin_accuracy = self._validate_margin(simulation_result, actual_result)
+            validation_metrics['margin_accuracy'] = margin_accuracy
+            
+            # 4. VALIDACIÓN DE TOTAL (15%)
+            total_accuracy = self._validate_total_points(simulation_result, actual_result)
+            validation_metrics['total_accuracy'] = total_accuracy
+            
+            # 5. VALIDACIÓN DE CONFIANZA (10%)
+            confidence_accuracy = self._validate_confidence_intervals(simulation_result, actual_result)
+            validation_metrics['confidence_accuracy'] = confidence_accuracy
+            
+            # PUNTUACIÓN FINAL PONDERADA
+            overall_score = sum(
+                validation_metrics[metric] * self.validation_weights[metric]
+                for metric in validation_metrics
+            )
+            
+            validation_metrics['overall_accuracy'] = overall_score
+            validation_metrics['validation_breakdown'] = {
+                'winner': f"{winner_score:.1%}",
+                'scores': f"{score_accuracy:.1%}",
+                'margin': f"{margin_accuracy:.1%}",
+                'total': f"{total_accuracy:.1%}",
+                'confidence': f"{confidence_accuracy:.1%}"
+            }
+            
+            return validation_metrics
+            
+        except Exception as e:
+            self.logger.error(f"Error en validación: {str(e)}")
+            return {
+                'overall_accuracy': 0.0,
+                'winner_accuracy': 0.0,
+                'score_accuracy': 0.0,
+                'margin_accuracy': 0.0,
+                'total_accuracy': 0.0,
+                'confidence_accuracy': 0.0,
+                'error': str(e)
+            }
+    
+    def _validate_winner(self, sim_result: dict, actual_result: dict) -> float:
+        """Valida la predicción del ganador"""
+        try:
+            # Obtener ganador simulado
+            sim_home_score = sim_result['score_predictions']['home_score']['mean']
+            sim_away_score = sim_result['score_predictions']['away_score']['mean']
+            sim_winner = 'home' if sim_home_score > sim_away_score else 'away'
+            
+            # Obtener ganador real
+            actual_home_score = actual_result.get('home_score', 0)
+            actual_away_score = actual_result.get('away_score', 0)
+            actual_winner = 'home' if actual_home_score > actual_away_score else 'away'
+            
+            # Evaluar con probabilidad de victoria
+            win_prob = sim_result['win_probabilities'].get(f'{actual_winner}_win', 0.5)
+            
+            if sim_winner == actual_winner:
+                # Ganador correcto - puntuación basada en confianza
+                return min(1.0, 0.5 + win_prob)
+            else:
+                # Ganador incorrecto - penalización basada en confianza
+                return max(0.0, 0.5 - win_prob)
+                
+        except Exception:
+            return 0.0
+    
+    def _validate_scores(self, sim_result: dict, actual_result: dict) -> float:
+        """Valida la exactitud de las puntuaciones individuales"""
+        try:
+            sim_home = sim_result['score_predictions']['home_score']['mean']
+            sim_away = sim_result['score_predictions']['away_score']['mean']
+            
+            actual_home = actual_result.get('home_score', 0)
+            actual_away = actual_result.get('away_score', 0)
+            
+            # Calcular errores absolutos
+            home_error = abs(sim_home - actual_home)
+            away_error = abs(sim_away - actual_away)
+            
+            # Calcular precisión para cada equipo
+            home_accuracy = max(0.0, 1.0 - (home_error / self.tolerance_thresholds['score_tolerance']))
+            away_accuracy = max(0.0, 1.0 - (away_error / self.tolerance_thresholds['score_tolerance']))
+            
+            # Promedio ponderado con bonificación por exactitud perfecta
+            avg_accuracy = (home_accuracy + away_accuracy) / 2
+            
+            # Bonificación por exactitud excepcional (±2 puntos)
+            if home_error <= 2 and away_error <= 2:
+                avg_accuracy = min(1.0, avg_accuracy * 1.2)
+            
+            return avg_accuracy
+            
+        except Exception:
+            return 0.0
+    
+    def _validate_margin(self, sim_result: dict, actual_result: dict) -> float:
+        """Valida la exactitud del margen de victoria"""
+        try:
+            sim_home = sim_result['score_predictions']['home_score']['mean']
+            sim_away = sim_result['score_predictions']['away_score']['mean']
+            sim_margin = sim_home - sim_away
+            
+            actual_home = actual_result.get('home_score', 0)
+            actual_away = actual_result.get('away_score', 0)
+            actual_margin = actual_home - actual_away
+            
+            margin_error = abs(sim_margin - actual_margin)
+            
+            # Precisión del margen
+            margin_accuracy = max(0.0, 1.0 - (margin_error / self.tolerance_thresholds['margin_tolerance']))
+            
+            # Bonificación por predicción de juego cerrado/blowout correcto
+            sim_close = abs(sim_margin) <= 5
+            actual_close = abs(actual_margin) <= 5
+            sim_blowout = abs(sim_margin) >= 15
+            actual_blowout = abs(actual_margin) >= 15
+            
+            if (sim_close and actual_close) or (sim_blowout and actual_blowout):
+                margin_accuracy = min(1.0, margin_accuracy * 1.15)
+            
+            return margin_accuracy
+            
+        except Exception:
+            return 0.0
+    
+    def _validate_total_points(self, sim_result: dict, actual_result: dict) -> float:
+        """Valida la exactitud del total de puntos"""
+        try:
+            sim_total = (sim_result['score_predictions']['home_score']['mean'] + 
+                        sim_result['score_predictions']['away_score']['mean'])
+            
+            actual_total = actual_result.get('home_score', 0) + actual_result.get('away_score', 0)
+            
+            total_error = abs(sim_total - actual_total)
+            
+            # Precisión del total
+            total_accuracy = max(0.0, 1.0 - (total_error / self.tolerance_thresholds['total_tolerance']))
+            
+            # Bonificación por predicción de estilo de juego correcto
+            sim_high_scoring = sim_total >= 220
+            actual_high_scoring = actual_total >= 220
+            sim_defensive = sim_total <= 200
+            actual_defensive = actual_total <= 200
+            
+            if (sim_high_scoring and actual_high_scoring) or (sim_defensive and actual_defensive):
+                total_accuracy = min(1.0, total_accuracy * 1.1)
+            
+            return total_accuracy
+            
+        except Exception:
+            return 0.0
+    
+    def _validate_confidence_intervals(self, sim_result: dict, actual_result: dict) -> float:
+        """Valida si los resultados reales caen dentro de intervalos de confianza"""
+        try:
+            confidence_score = 0.0
+            validations = 0
+            
+            # Validar home score en intervalo de confianza
+            home_pred = sim_result['score_predictions']['home_score']
+            home_mean = home_pred['mean']
+            home_std = home_pred['std']
+            actual_home = actual_result.get('home_score', 0)
+            
+            # Calcular Z-score
+            if home_std > 0:
+                home_z = abs(actual_home - home_mean) / home_std
+                if home_z <= 1.96:  # 95% confianza
+                    confidence_score += 1.0
+                elif home_z <= 1.28:  # 80% confianza
+                    confidence_score += 0.8
+                elif home_z <= 0.67:  # 50% confianza
+                    confidence_score += 0.5
+                validations += 1
+            
+            # Validar away score en intervalo de confianza
+            away_pred = sim_result['score_predictions']['away_score']
+            away_mean = away_pred['mean']
+            away_std = away_pred['std']
+            actual_away = actual_result.get('away_score', 0)
+            
+            if away_std > 0:
+                away_z = abs(actual_away - away_mean) / away_std
+                if away_z <= 1.96:  # 95% confianza
+                    confidence_score += 1.0
+                elif away_z <= 1.28:  # 80% confianza
+                    confidence_score += 0.8
+                elif away_z <= 0.67:  # 50% confianza
+                    confidence_score += 0.5
+                validations += 1
+            
+            return confidence_score / max(1, validations)
+            
+        except Exception:
+            return 0.0
+    
+    def validate_batch(self, simulation_results: List[dict], actual_results: List[dict]) -> dict:
+        """
+        Valida un lote de simulaciones contra resultados reales
+        
+        Args:
+            simulation_results: Lista de resultados de simulación
+            actual_results: Lista de resultados reales
+            
+        Returns:
+            Dict con métricas agregadas de validación
+        """
+        if len(simulation_results) != len(actual_results):
+            raise ValueError("Las listas de simulaciones y resultados reales deben tener la misma longitud")
+        
+        batch_metrics = {
+            'overall_accuracy': [],
+            'winner_accuracy': [],
+            'score_accuracy': [],
+            'margin_accuracy': [],
+            'total_accuracy': [],
+            'confidence_accuracy': []
+        }
+        
+        detailed_results = []
+        
+        for sim_result, actual_result in zip(simulation_results, actual_results):
+            validation = self.validate_simulation(sim_result, actual_result)
+            
+            for metric in batch_metrics:
+                if metric in validation:
+                    batch_metrics[metric].append(validation[metric])
+            
+            detailed_results.append(validation)
+        
+        # Calcular estadísticas agregadas
+        aggregated_metrics = {}
+        for metric, values in batch_metrics.items():
+            if values:
+                aggregated_metrics[metric] = {
+                    'mean': np.mean(values),
+                    'std': np.std(values),
+                    'median': np.median(values),
+                    'min': np.min(values),
+                    'max': np.max(values),
+                    'count': len(values)
+                }
+        
+        # Métricas de rendimiento adicionales
+        overall_scores = batch_metrics['overall_accuracy']
+        if overall_scores:
+            aggregated_metrics['performance_summary'] = {
+                'excellent_predictions': sum(1 for score in overall_scores if score >= 0.85) / len(overall_scores),
+                'good_predictions': sum(1 for score in overall_scores if score >= 0.70) / len(overall_scores),
+                'poor_predictions': sum(1 for score in overall_scores if score < 0.50) / len(overall_scores),
+                'average_accuracy': np.mean(overall_scores),
+                'improvement_needed': 0.85 - np.mean(overall_scores) if np.mean(overall_scores) < 0.85 else 0.0
+            }
+        
+        return {
+            'aggregated_metrics': aggregated_metrics,
+            'detailed_results': detailed_results,
+            'validation_summary': {
+                'total_simulations': len(simulation_results),
+                'average_overall_accuracy': aggregated_metrics.get('overall_accuracy', {}).get('mean', 0.0),
+                'recommendation': self._generate_improvement_recommendation(aggregated_metrics)
+            }
+        }
+    
+    def _generate_improvement_recommendation(self, metrics: dict) -> str:
+        """Genera recomendaciones específicas para mejorar el modelo"""
+        overall_acc = metrics.get('overall_accuracy', {}).get('mean', 0.0)
+        
+        if overall_acc >= 0.85:
+            return "Modelo funcionando excelentemente. Considerar ajuste fino para casos extremos."
+        elif overall_acc >= 0.70:
+            return "Modelo en buen estado. Focar en mejorar intervalos de confianza y precisión de puntuación."
+        elif overall_acc >= 0.55:
+            return "Modelo necesita mejoras significativas. Priorizar calibración de distribuciones y features."
+        else:
+            return "Modelo requiere reconstrucción. Revisar datos de entrada, features y arquitectura."
+
 
 class AdvancedMonteCarloIntegrator:
     """
@@ -420,4 +753,233 @@ class AdvancedMonteCarloIntegrator:
         
         combined_factor = (pts_factor + trb_factor + ast_factor) / 3
         
-        return min(base_prob * combined_factor, 0.95) 
+        return min(base_prob * combined_factor, 0.95)
+
+class EnsembleIntegrator:
+    """
+    Integrador de Ensemble para Monte Carlo NBA
+    ==========================================
+    
+    Combina múltiples modelos y técnicas para maximizar precisión:
+    - Monte Carlo tradicional
+    - Deep Learning predictions
+    - Statistical models
+    - Ensemble weighting
+    """
+    
+    def __init__(self):
+        self.model_weights = {
+            'montecarlo': 0.40,     # 40% Monte Carlo
+            'deep_learning': 0.35,  # 35% Deep Learning 
+            'statistical': 0.25     # 25% Modelos estadísticos
+        }
+        
+        self.confidence_thresholds = {
+            'high_confidence': 0.85,
+            'medium_confidence': 0.65,
+            'low_confidence': 0.45
+        }
+        
+        self.logger = logging.getLogger(__name__)
+    
+    def integrate_predictions(self, 
+                            montecarlo_result: dict,
+                            dl_predictions: dict = None,
+                            statistical_predictions: dict = None) -> dict:
+        """
+        Integra predicciones de múltiples modelos usando ensemble inteligente
+        
+        Args:
+            montecarlo_result: Resultado de simulación Monte Carlo
+            dl_predictions: Predicciones de Deep Learning (opcional)
+            statistical_predictions: Predicciones estadísticas (opcional)
+            
+        Returns:
+            Dict con predicción ensemble integrada
+        """
+        try:
+            # Base: usar Monte Carlo como fundación
+            ensemble_result = montecarlo_result.copy()
+            
+            predictions_available = {'montecarlo': montecarlo_result}
+            
+            if dl_predictions:
+                predictions_available['deep_learning'] = dl_predictions
+            if statistical_predictions:
+                predictions_available['statistical'] = statistical_predictions
+            
+            # Calcular pesos dinámicos basados en confianza
+            dynamic_weights = self._calculate_dynamic_weights(predictions_available)
+            
+            # Integrar predicciones de puntuación
+            integrated_scores = self._integrate_score_predictions(predictions_available, dynamic_weights)
+            ensemble_result['score_predictions'] = integrated_scores
+            
+            # Integrar probabilidades de victoria
+            integrated_probs = self._integrate_win_probabilities(predictions_available, dynamic_weights)
+            ensemble_result['win_probabilities'] = integrated_probs
+            
+            # Calcular métricas de confianza ensemble
+            ensemble_confidence = self._calculate_ensemble_confidence(predictions_available, dynamic_weights)
+            ensemble_result['ensemble_confidence'] = ensemble_confidence
+            
+            # Metadatos del ensemble
+            ensemble_result['ensemble_metadata'] = {
+                'models_used': list(predictions_available.keys()),
+                'dynamic_weights': dynamic_weights,
+                'integration_method': 'weighted_average_with_confidence',
+                'total_models': len(predictions_available)
+            }
+            
+            return ensemble_result
+            
+        except Exception as e:
+            self.logger.error(f"Error en integración ensemble: {str(e)}")
+            return montecarlo_result  # Fallback al Monte Carlo base
+    
+    def _calculate_dynamic_weights(self, predictions: dict) -> dict:
+        """Calcula pesos dinámicos basados en confianza de cada modelo"""
+        weights = {}
+        total_confidence = 0.0
+        
+        for model_name, prediction in predictions.items():
+            # Extraer confianza del modelo
+            confidence = self._extract_model_confidence(prediction)
+            
+            # Peso base del modelo
+            base_weight = self.model_weights.get(model_name, 0.33)
+            
+            # Ajustar peso por confianza
+            adjusted_weight = base_weight * (0.5 + confidence)  # Rango 0.5x - 1.5x
+            
+            weights[model_name] = adjusted_weight
+            total_confidence += adjusted_weight
+        
+        # Normalizar pesos
+        if total_confidence > 0:
+            for model_name in weights:
+                weights[model_name] /= total_confidence
+        
+        return weights
+    
+    def _extract_model_confidence(self, prediction: dict) -> float:
+        """Extrae métrica de confianza de una predicción"""
+        try:
+            # Para Monte Carlo: usar model_reliability
+            if 'confidence_metrics' in prediction:
+                return prediction['confidence_metrics'].get('prediction_confidence', 0.5)
+            
+            # Para Deep Learning: usar accuracy o loss
+            if 'confidence' in prediction:
+                return prediction['confidence']
+            
+            # Para modelos estadísticos: usar R-squared o similar
+            if 'r_squared' in prediction:
+                return prediction['r_squared']
+            
+            # Default: confianza media
+            return 0.5
+            
+        except Exception:
+            return 0.5
+    
+    def _integrate_score_predictions(self, predictions: dict, weights: dict) -> dict:
+        """Integra predicciones de puntuación usando pesos dinámicos"""
+        integrated_home = {'mean': 0.0, 'std': 0.0}
+        integrated_away = {'mean': 0.0, 'std': 0.0}
+        
+        total_weight = sum(weights.values())
+        
+        for model_name, prediction in predictions.items():
+            weight = weights.get(model_name, 0.0) / total_weight
+            
+            if 'score_predictions' in prediction:
+                home_pred = prediction['score_predictions']['home_score']
+                away_pred = prediction['score_predictions']['away_score']
+                
+                integrated_home['mean'] += weight * home_pred['mean']
+                integrated_away['mean'] += weight * away_pred['mean']
+                
+                # Integrar incertidumbre (conservadoramente)
+                integrated_home['std'] += weight * home_pred.get('std', 5.0)
+                integrated_away['std'] += weight * away_pred.get('std', 5.0)
+        
+        # Calcular percentiles basados en distribución normal
+        home_mean, home_std = integrated_home['mean'], integrated_home['std']
+        away_mean, away_std = integrated_away['mean'], integrated_away['std']
+        
+        integrated_home.update({
+            'median': home_mean,
+            'min': max(80, home_mean - 2 * home_std),
+            'max': min(140, home_mean + 2 * home_std),
+            'percentiles': {
+                '25th': home_mean - 0.67 * home_std,
+                '75th': home_mean + 0.67 * home_std
+            }
+        })
+        
+        integrated_away.update({
+            'median': away_mean,
+            'min': max(80, away_mean - 2 * away_std),
+            'max': min(140, away_mean + 2 * away_std),
+            'percentiles': {
+                '25th': away_mean - 0.67 * away_std,
+                '75th': away_mean + 0.67 * away_std
+            }
+        })
+        
+        return {
+            'home_score': integrated_home,
+            'away_score': integrated_away
+        }
+    
+    def _integrate_win_probabilities(self, predictions: dict, weights: dict) -> dict:
+        """Integra probabilidades de victoria usando pesos dinámicos"""
+        integrated_home_prob = 0.0
+        total_weight = sum(weights.values())
+        
+        for model_name, prediction in predictions.items():
+            weight = weights.get(model_name, 0.0) / total_weight
+            
+            if 'win_probabilities' in prediction:
+                home_prob = prediction['win_probabilities'].get('home_win', 0.5)
+                integrated_home_prob += weight * home_prob
+        
+        return {
+            'home_win': integrated_home_prob,
+            'away_win': 1.0 - integrated_home_prob
+        }
+    
+    def _calculate_ensemble_confidence(self, predictions: dict, weights: dict) -> dict:
+        """Calcula métricas de confianza del ensemble"""
+        # Confianza ponderada
+        weighted_confidence = 0.0
+        total_weight = sum(weights.values())
+        
+        for model_name, prediction in predictions.items():
+            weight = weights.get(model_name, 0.0) / total_weight
+            confidence = self._extract_model_confidence(prediction)
+            weighted_confidence += weight * confidence
+        
+        # Consensus entre modelos
+        home_probs = []
+        for prediction in predictions.values():
+            if 'win_probabilities' in prediction:
+                home_probs.append(prediction['win_probabilities'].get('home_win', 0.5))
+        
+        consensus_score = 1.0 - np.std(home_probs) if len(home_probs) > 1 else 0.5
+        
+        # Confianza final
+        final_confidence = (weighted_confidence + consensus_score) / 2
+        
+        confidence_level = 'high' if final_confidence >= self.confidence_thresholds['high_confidence'] else \
+                          'medium' if final_confidence >= self.confidence_thresholds['medium_confidence'] else 'low'
+        
+        return {
+            'weighted_confidence': weighted_confidence,
+            'consensus_score': consensus_score,
+            'final_confidence': final_confidence,
+            'confidence_level': confidence_level,
+            'models_agreement': len(home_probs),
+            'prediction_variance': np.var(home_probs) if len(home_probs) > 1 else 0.0
+        } 

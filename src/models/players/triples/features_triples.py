@@ -292,19 +292,22 @@ class ThreePointsFeatureEngineer:
             # 4. ÍNDICE DE ESPECIALIZACIÓN PROGRESIVA
             if self._register_feature('specialization_progression', 'shooting_volume'):
                 # Mide si el jugador se especializa más en triples con el tiempo
-                early_ratio = df.groupby('Player').apply(
-                    lambda x: x['3PA'].head(10).sum() / (x['FGA'].head(10).sum() + 0.1)
-                    if len(x) >= 10 else np.nan
-                ).reset_index(name='early_spec')
-                
-                recent_ratio = self._get_historical_series(df, '3PA', window=10, operation='sum') / (
-                    self._get_historical_series(df, 'FGA', window=10, operation='sum') + 0.1)
-                
-                # Merge early specialization with current data
-                df = df.merge(early_ratio[['Player', 'early_spec']], on='Player', how='left')
-                progression = (recent_ratio - df['early_spec']) / (df['early_spec'] + 0.1)
-                df['specialization_progression'] = progression.fillna(0)
-                df.drop('early_spec', axis=1, inplace=True)
+                try:
+                    early_ratio = df.groupby('Player').apply(
+                        lambda x: x['3PA'].head(10).sum() / (x['FGA'].head(10).sum() + 0.1)
+                        if len(x) >= 10 else np.nan
+                    ).reset_index(name='early_spec')
+                    
+                    recent_ratio = self._get_historical_series(df, '3PA', window=10, operation='sum') / (
+                        self._get_historical_series(df, 'FGA', window=10, operation='sum') + 0.1)
+                    
+                    # Merge early specialization with current data
+                    df_temp = df.merge(early_ratio[['Player', 'early_spec']], on='Player', how='left')
+                    progression = (recent_ratio - df_temp['early_spec']) / (df_temp['early_spec'] + 0.1)
+                    df['specialization_progression'] = progression.fillna(0)
+                except Exception as e:
+                    # Fallback si hay error
+                    df['specialization_progression'] = 0.0
         
         # FRECUENCIA DE TIRO POR MINUTO
         if '3PA' in df.columns and 'MP' in df.columns:
@@ -317,33 +320,42 @@ class ThreePointsFeatureEngineer:
             # 5. EFICIENCIA DE TIEMPO EN TRIPLES
             if self._register_feature('time_efficiency_3pt', 'shooting_volume'):
                 # Triples anotados por minuto jugado (más predictivo que por juego)
-                threepts_made = self._get_historical_series(df, '3P', window=5, operation='mean')
-                minutes_played = self._get_historical_series(df, 'MP', window=5, operation='mean')
-                time_efficiency = threepts_made / (minutes_played + 0.1)
-                df['time_efficiency_3pt'] = time_efficiency.fillna(0)
+                if '3P' in df.columns:
+                    threepts_made = self._get_historical_series(df, '3P', window=5, operation='mean')
+                    minutes_played = self._get_historical_series(df, 'MP', window=5, operation='mean')
+                    time_efficiency = threepts_made / (minutes_played + 0.1)
+                    df['time_efficiency_3pt'] = time_efficiency.fillna(0)
+                else:
+                    df['time_efficiency_3pt'] = 0.0
         
         # === FEATURES INTERACTIVAS ULTRA-PREDICTIVAS ===
         
         # 6. ÍNDICE DE OPORTUNIDAD SITUACIONAL
         if self._register_feature('situational_opportunity_index', 'shooting_volume'):
             # Combina volumen + contexto del juego
-            recent_attempts = self._get_historical_series(df, '3PA', window=3, operation='mean')
-            home_games = (df['Home'] == 1).astype(int) if 'Home' in df.columns else 0.5
-            
-            # Más oportunidades en casa y con buen ritmo
-            situational_index = recent_attempts * (1 + 0.1 * home_games)
-            df['situational_opportunity_index'] = situational_index.fillna(df['3PA'].mean() if '3PA' in df.columns else 5.0)
+            if '3PA' in df.columns:
+                recent_attempts = self._get_historical_series(df, '3PA', window=3, operation='mean')
+                home_games = (df['Home'] == 1).astype(int) if 'Home' in df.columns else 0.5
+                
+                # Más oportunidades en casa y con buen ritmo
+                situational_index = recent_attempts * (1 + 0.1 * home_games)
+                df['situational_opportunity_index'] = situational_index.fillna(df['3PA'].mean())
+            else:
+                df['situational_opportunity_index'] = 5.0
         
         # 7. PREDICTOR DE VOLUMEN DINÁMICO
         if self._register_feature('dynamic_volume_predictor', 'shooting_volume'):
             # Predictor que combina múltiples factores de volumen
-            season_vol = df.groupby('Player')['3PA'].expanding().mean().shift(1).reset_index(0, drop=True) if '3PA' in df.columns else 5.0
-            recent_vol = self._get_historical_series(df, '3PA', window=3, operation='mean') if '3PA' in df.columns else 5.0
-            recent_eff = self._get_historical_series(df, '3P%', window=3, operation='mean') if '3P%' in df.columns else 0.35
-            
-            # Volumen dinámico basado en eficiencia reciente
-            dynamic_vol = (season_vol * 0.6 + recent_vol * 0.4) * (1 + recent_eff * 0.5)
-            df['dynamic_volume_predictor'] = dynamic_vol.fillna(5.0)
+            if '3PA' in df.columns:
+                season_vol = df.groupby('Player')['3PA'].expanding().mean().shift(1).reset_index(0, drop=True)
+                recent_vol = self._get_historical_series(df, '3PA', window=3, operation='mean')
+                recent_eff = self._get_historical_series(df, '3P%', window=3, operation='mean') if '3P%' in df.columns else 0.35
+                
+                # Volumen dinámico basado en eficiencia reciente
+                dynamic_vol = (season_vol * 0.6 + recent_vol * 0.4) * (1 + recent_eff * 0.5)
+                df['dynamic_volume_predictor'] = dynamic_vol.fillna(5.0)
+            else:
+                df['dynamic_volume_predictor'] = 5.0
     
     def _create_shooting_mechanics_features(self, df: pd.DataFrame) -> None:
         """
@@ -370,11 +382,11 @@ class ThreePointsFeatureEngineer:
         
         # PATRONES DE TIRO POR CUARTO
         if '3P' in df.columns and 'MP' in df.columns:
-            # Eficiencia por minuto jugado
-            if self._register_feature('threept_per_minute', 'shooting_mechanics'):
+            # Eficiencia por minuto jugado (diferente de la anterior - esta es made/minute)
+            if self._register_feature('threept_made_per_minute', 'shooting_mechanics'):
                 made_hist = self._get_historical_series(df, '3P', window=5, operation='mean')
                 minutes_hist = self._get_historical_series(df, 'MP', window=5, operation='mean')
-                df['threept_per_minute'] = (made_hist / (minutes_hist + 1)).fillna(0)
+                df['threept_made_per_minute'] = (made_hist / (minutes_hist + 1)).fillna(0)
         
         # VARIABILIDAD EN RENDIMIENTO
         if '3P' in df.columns:
@@ -910,12 +922,20 @@ class ThreePointsFeatureEngineer:
         
         # 4. RESONANCIA CON OPONENTE (Sinergia/antagonismo con defensa rival)
         if self._register_feature('opponent_resonance', 'quantum_features'):
-            if '3P' in df.columns and 'opponent_3pt_defense' in df.columns:
+            if '3P' in df.columns:
                 player_performance = self._get_historical_series(df, '3P', window=5, operation='mean')
-                opp_defense = df.get('opponent_3pt_defense', 1.0)
+                # Usar una proxy simple si opponent_3pt_defense no existe
+                if 'opponent_3pt_defense' in df.columns:
+                    opp_defense = df.get('opponent_3pt_defense', 1.0)
+                else:
+                    # Proxy: usar el promedio de triples permitidos por el oponente
+                    opp_defense = 1.0
+                
                 # Resonancia: cuando la defensa fuerte mejora al jugador (desafío) o lo empeora
                 resonance = player_performance * np.cos(opp_defense * np.pi) + 0.5
                 df['opponent_resonance'] = resonance.fillna(0.5)
+            else:
+                df['opponent_resonance'] = 0.5
         
         # 5. CAMPO MORFOGÉNICO DE EQUIPO (Influencia colectiva del equipo) 
         if self._register_feature('team_morphic_field', 'quantum_features'):

@@ -133,18 +133,22 @@ class MonteCarloEngine:
                         # Determinar mejor distribución (Gamma para stats positivas)
                         if stat_data.min() >= 0 and stat_data.mean() > 0:
                             # Parámetros Gamma: shape = (mean^2 / var), scale = (var / mean)
-                            stat_mean = stat_data.mean()
-                            stat_var = stat_data.var()
-                            if stat_var > 0:
-                                shape = stat_mean ** 2 / stat_var
-                                scale = stat_var / stat_mean
+                            stat_mean = max(0.1, stat_data.mean())  # Asegurar mean > 0
+                            stat_var = max(0.01, stat_data.var())   # Asegurar var > 0
+                            
+                            # Calcular parámetros con protección contra división por cero
+                            if stat_var > 0 and stat_mean > 0:
+                                shape = max(0.5, stat_mean ** 2 / stat_var)  # Mínimo 0.5
+                                scale = max(0.1, stat_var / stat_mean)       # Mínimo 0.1
                             else:
-                                shape, scale = stat_mean, 1.0
+                                # Valores por defecto seguros
+                                shape = max(1.0, stat_mean)
+                                scale = 1.0
                             
                             distribution_params[stat] = {
                                 'type': 'gamma',
-                                'shape': max(0.1, shape),
-                                'scale': max(0.1, scale),
+                                'shape': shape,
+                                'scale': scale,
                                 'loc': 0.0
                             }
                         else:
