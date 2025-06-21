@@ -23,6 +23,9 @@ from typing import Dict, List, Optional, Tuple, Any
 import platform
 import threading
 import time
+import gc
+import tempfile
+import shutil
 
 import joblib
 import numpy as np
@@ -48,7 +51,45 @@ from sklearn.linear_model import Ridge, Lasso, ElasticNet
 from .features_triples import ThreePointsFeatureEngineer
 
 warnings.filterwarnings('ignore')
+
+# Configurar variables de entorno para evitar problemas de tkinter y matplotlib
+os.environ['MPLBACKEND'] = 'Agg'  # Evitar GUI backends
+os.environ['DISPLAY'] = ''  # Evitar problemas de display en Windows
+os.environ['TK_SILENCE_DEPRECATION'] = '1'  # Silenciar warnings de tkinter
+
+# Configurar joblib para evitar problemas de memoria y threading
+os.environ['JOBLIB_MULTIPROCESSING'] = '0'  # Desactivar multiprocessing
+os.environ['JOBLIB_TEMP_FOLDER'] = tempfile.gettempdir()
+os.environ['OMP_NUM_THREADS'] = '1'  # Limitar threads OpenMP
+os.environ['MKL_NUM_THREADS'] = '1'  # Limitar threads MKL
+
 logger = logging.getLogger(__name__)
+
+
+def configure_safe_environment():
+    """
+    Configura el entorno para evitar problemas de threading y tkinter
+    """
+    try:
+        # Configurar matplotlib sin GUI
+        import matplotlib
+        matplotlib.use('Agg')
+        
+        # Suprimir warnings de tkinter
+        import warnings
+        warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+        warnings.filterwarnings('ignore', message='.*main thread is not in main loop.*')
+        
+        # Configurar threading seguro
+        import threading
+        threading.current_thread().daemon = False
+        
+    except Exception as e:
+        logger.debug(f"Error configurando entorno seguro: {e}")
+
+
+# Configurar entorno seguro al importar el módulo
+configure_safe_environment()
 
 
 class TimeoutError(Exception):
@@ -143,6 +184,13 @@ class Stacking3PTModel:
         # Estado del modelo
         self.is_trained = False
         
+        # Configurar entorno seguro
+        configure_safe_environment()
+        
+        # Configurar gestión de memoria
+        self._temp_dir = None
+        self._cleanup_temp_files()
+        
         # Configurar modelos base especializados para triples
         self._setup_base_models()
         
@@ -180,7 +228,7 @@ class Stacking3PTModel:
             'fixed_params': {
                 'objective': 'reg:squarederror',
                 'random_state': self.random_state,
-                'n_jobs': -1,
+                'n_jobs': 1,  # Evitar problemas de paralelización
                 'verbosity': 0,
                 'tree_method': 'hist'  # Más eficiente para datos tabulares
             },
@@ -206,7 +254,7 @@ class Stacking3PTModel:
                 'objective': 'regression',
                 'metric': 'rmse',
                 'random_state': self.random_state,
-                'n_jobs': -1,
+                'n_jobs': 1,  # Evitar problemas de paralelización
                 'verbosity': -1,
                 'boosting_type': 'gbdt',
                 'force_col_wise': True
@@ -233,7 +281,7 @@ class Stacking3PTModel:
                     'random_seed': self.random_state,
                     'verbose': False,
                     'allow_writing_files': False,
-                    'thread_count': -1,
+                    'thread_count': 1,  # Forzar single thread para evitar problemas de tkinter
                     'boosting_type': 'Plain'
                 },
                 'weight': 0.15
@@ -252,7 +300,7 @@ class Stacking3PTModel:
             },
             'fixed_params': {
                 'random_state': self.random_state,
-                'n_jobs': -1,
+                'n_jobs': 1,  # Evitar problemas de paralelización
                 'oob_score': True
             },
             'weight': 0.15
@@ -271,7 +319,7 @@ class Stacking3PTModel:
             },
             'fixed_params': {
                 'random_state': self.random_state,
-                'n_jobs': -1
+                'n_jobs': 1  # Evitar problemas de paralelización
             },
             'weight': 0.1
         }
@@ -327,6 +375,39 @@ class Stacking3PTModel:
         
         logger.info(f"Configurados {len(self.base_models)} modelos base para triples")
     
+    def _cleanup_temp_files(self):
+        """Limpia archivos temporales y libera memoria"""
+        try:
+            # Limpiar directorio temporal si existe
+            if self._temp_dir and os.path.exists(self._temp_dir):
+                shutil.rmtree(self._temp_dir, ignore_errors=True)
+            
+            # Crear nuevo directorio temporal
+            self._temp_dir = tempfile.mkdtemp(prefix='triples_model_')
+            
+            # Configurar joblib para usar directorio temporal específico
+            os.environ['JOBLIB_TEMP_FOLDER'] = self._temp_dir
+            
+            # Configurar threading para evitar problemas de tkinter
+            import matplotlib
+            matplotlib.use('Agg')  # Asegurar backend sin GUI
+            
+            # Forzar recolección de basura
+            gc.collect()
+            
+        except Exception as e:
+            logger.warning(f"Error limpiando archivos temporales: {e}")
+    
+    def __del__(self):
+        """Limpieza al destruir el objeto"""
+        try:
+            # Configurar entorno seguro antes de limpiar
+            configure_safe_environment()
+            self._cleanup_temp_files()
+        except Exception:
+            # Silenciar errores de destructor para evitar problemas de threading
+            pass
+    
     def _optimize_single_model(self, model_name: str, X_train, y_train, X_val, y_val, sample_weights=None) -> Dict[str, Any]:
         """
         Optimiza un modelo individual usando Optuna
@@ -366,7 +447,8 @@ class Stacking3PTModel:
                 elif model_name == 'catboost_ultra':
                     fit_params = {
                         'eval_set': (X_val, y_val),
-                        'verbose': False
+                        'verbose': False,
+                        'thread_count': 1  # Forzar single thread para evitar problemas
                     }
                     if sample_weights is not None:
                         fit_params['sample_weight'] = sample_weights
@@ -418,6 +500,9 @@ class Stacking3PTModel:
         best_params = study.best_params.copy()
         best_params.update(model_config['fixed_params'])
         
+        # Limpiar memoria antes de entrenar modelo final
+        gc.collect()
+        
         # Entrenar modelo final con sample weights
         best_model = model_config['model_class'](**best_params)
         if model_name == 'lightgbm':
@@ -431,7 +516,8 @@ class Stacking3PTModel:
         elif model_name == 'catboost_ultra':
             fit_params = {
                 'eval_set': (X_val, y_val),
-                'verbose': False
+                'verbose': False,
+                'thread_count': 1  # Forzar single thread para evitar problemas
             }
             if sample_weights is not None:
                 fit_params['sample_weight'] = sample_weights
@@ -451,11 +537,17 @@ class Stacking3PTModel:
                 fit_params['sample_weight'] = sample_weights
             best_model.fit(X_train, y_train, **fit_params)
         
+        # Limpiar memoria después de optimización
+        best_score = study.best_value
+        n_trials = len(study.trials)
+        del study
+        gc.collect()
+        
         return {
             'model': best_model,
             'best_params': best_params,
-            'best_score': study.best_value,
-            'n_trials': len(study.trials)
+            'best_score': best_score,
+            'n_trials': n_trials
         }
     
     def _train_base_models(self, X_train, y_train, X_val, y_val, sample_weights=None) -> Dict[str, Any]:
@@ -515,7 +607,7 @@ class Stacking3PTModel:
                 min_samples_leaf=1,
                 max_features=0.7,
                 random_state=self.random_state,
-                n_jobs=-1,
+                n_jobs=1,  # Evitar problemas de paralelización
                 oob_score=True,
                 bootstrap=True,
                 max_samples=0.8  # Mejor para valores raros
@@ -528,7 +620,7 @@ class Stacking3PTModel:
                 min_samples_leaf=1,
                 max_features=0.6,
                 random_state=self.random_state,
-                n_jobs=-1,
+                n_jobs=1,  # Evitar problemas de paralelización
                 bootstrap=False  # Mejor para extremos
             )),
             # Huber Regressor para robustez con outliers
@@ -568,7 +660,7 @@ class Stacking3PTModel:
             estimators=estimators,
             final_estimator=meta_learner,
             cv=3,  # Menor CV para speed
-            n_jobs=-1,
+            n_jobs=1,  # Evitar problemas de paralelización
             passthrough=False  # Solo usar predicciones de base models
         )
         
@@ -839,6 +931,9 @@ class Stacking3PTModel:
         self.training_metrics = final_metrics
         self.is_trained = True
         
+        # Limpiar memoria después del entrenamiento
+        self._cleanup_temp_files()
+        
         logger.info("Entrenamiento completado para triples")
         logger.info(f"Métricas finales - MAE: {final_metrics['mae']:.4f}, R²: {final_metrics['r2']:.4f}")
         
@@ -923,12 +1018,25 @@ class Stacking3PTModel:
             'is_trained': self.is_trained
         }
         
-        joblib.dump(model_data, filepath)
+        # Configurar entorno para evitar problemas de threading
+        import matplotlib
+        matplotlib.use('Agg')
+        
+        # Configurar joblib para evitar problemas de memoria y threading
+        with joblib.parallel_backend('threading', n_jobs=1):
+            joblib.dump(model_data, filepath, compress=3)
+        
         logger.info(f"Modelo de triples guardado en: {filepath}")
     
     def load_model(self, filepath: str):
         """Carga un modelo previamente entrenado"""
-        model_data = joblib.load(filepath)
+        # Configurar entorno para evitar problemas de threading
+        import matplotlib
+        matplotlib.use('Agg')
+        
+        # Configurar joblib para evitar problemas de memoria y threading
+        with joblib.parallel_backend('threading', n_jobs=1):
+            model_data = joblib.load(filepath)
         
         self.stacking_model = model_data['stacking_model']
         self.trained_base_models = model_data['trained_base_models']
