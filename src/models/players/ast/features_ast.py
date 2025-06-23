@@ -35,9 +35,9 @@ class AssistsFeatureEngineer:
     Basado en los principios fundamentales de los mejores pasadores de la NBA
     """
     
-    def __init__(self, correlation_threshold: float = 0.95, max_features: int = 248, teams_df: pd.DataFrame = None):
+    def __init__(self, correlation_threshold: float = 0.95, max_features: int = 80, teams_df: pd.DataFrame = None):
         self.correlation_threshold = correlation_threshold
-        self.max_features = max_features  # Aumentado de 40 a 50 para nuevas features
+        self.max_features = max_features  # BALANCEADO a 80 para mejor rendimiento
         self.teams_df = teams_df  # Datos de equipos para features avanzadas
         self.feature_registry = {}
         self.feature_categories = {
@@ -60,9 +60,14 @@ class AssistsFeatureEngineer:
             'advanced_playmaking': 15,      # Features avanzadas de playmaking (NUEVAS)
             'revolutionary_team_context': 20, # Features REVOLUCIONARIAS de contexto de equipo real (NUEVAS)
             'interaction_patterns': 17,    # Features de interacción y patrones complejos (NUEVAS)
-            'model_feedback': 15           # Features ultra-predictivas basadas en feedback del modelo (AUMENTADAS)
+            'model_feedback': 15,          # Features ultra-predictivas basadas en feedback del modelo (AUMENTADAS)
+            'neural_patterns': 6,          # Features de patrones neuronales (NUEVAS)
+            'quantum_inspired': 4,         # Features inspiradas en mecánica cuántica (NUEVAS)
+            'chaos_theory': 4,             # Features de teoría del caos (NUEVAS)
+            'fractal_features': 2,         # Features fractales (NUEVAS)
+            'evolutionary_features': 3     # Features evolutivas (NUEVAS)
         }
-        self.protected_features = ['AST', 'Player', 'Date', 'Team', 'Opp']
+        self.protected_features = ['AST', 'Player', 'Date', 'Team', 'Opp', 'Away', 'GS', 'Result']
         
     def _register_feature(self, feature_name: str, category: str):
         """Registra una feature en su categoría correspondiente"""
@@ -176,15 +181,28 @@ class AssistsFeatureEngineer:
         # === FEATURES ULTRA-PREDICTIVAS BASADAS EN FEEDBACK DEL MODELO ===
         self._generate_model_feedback_features(df)
         
+        # === NUEVAS CATEGORÍAS DE FEATURES ULTRA-AVANZADAS ===
+        
+        # Features de patrones neuronales
+        self._generate_neural_pattern_features(df)
+        
+        # Features inspiradas en mecánica cuántica
+        self._generate_quantum_inspired_features(df)
+        
+        # Features de teoría del caos
+        self._generate_chaos_theory_features(df)
+        
+        # Features fractales
+        self._generate_fractal_features(df)
+        
+        # Features evolutivas
+        self._generate_evolutionary_features(df)
+        
         # Obtener lista de features creadas
         all_features = [col for col in df.columns if col not in self.protected_features]
         
-        # Seleccionar features por categoría
-        selected_features = self._select_features_by_category(df, all_features)
-        
-        # Aplicar filtro de correlación adicional si es necesario
-        if len(selected_features) > self.max_features:  # Usar límite configurado (200)
-            selected_features = self._apply_correlation_filter(df, selected_features)
+        # MEJORA CRÍTICA: Usar selección inteligente en lugar del método anterior
+        selected_features = self.intelligent_feature_selection(df, all_features, 'AST')
             
         # Asegurar que las features de model_feedback siempre estén incluidas (son las más importantes)
         model_feedback_features = self.feature_registry.get('model_feedback', [])
@@ -197,6 +215,9 @@ class AssistsFeatureEngineer:
         
         # Validar features finales
         final_features = self._validate_features(df, selected_features)
+        
+        # CRÍTICO: Validar que todas las features sean numéricas
+        final_features = self._ensure_numeric_features(df, final_features)
         
         logger.info(f"FEATURES FINALES GENERADAS: {len(final_features)}")
         logger.info(f"Features por categoría: {dict(self.feature_categories)}")
@@ -2823,3 +2844,415 @@ class AssistsFeatureEngineer:
         logger.info(f"Generadas {len(features)} FEATURES ULTRA-PREDICTIVAS BASADAS EN FEEDBACK DEL MODELO")
         
         return features
+    
+    def _generate_neural_pattern_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        Features que imitan patrones de redes neuronales para capturar 
+        relaciones no lineales complejas en las asistencias
+        """
+        logger.info("Generando features de patrones neuronales...")
+        features = []
+        
+        try:
+            # 1. ACTIVACIONES NO LINEALES
+            if 'AST' in df.columns:
+                ast_hist = self._get_historical_series(df, 'AST', 7, 'mean')
+                
+                # Función de activación ReLU
+                df['ast_relu_activation'] = np.maximum(0, ast_hist - ast_hist.mean())
+                features.append('ast_relu_activation')
+                
+                # Función de activación Sigmoid
+                df['ast_sigmoid_activation'] = 1 / (1 + np.exp(-ast_hist.fillna(0)))
+                features.append('ast_sigmoid_activation')
+                
+                # Función de activación Tanh
+                df['ast_tanh_activation'] = np.tanh(ast_hist.fillna(0))
+                features.append('ast_tanh_activation')
+            
+            # 2. CONVOLUCIONES TEMPORALES
+            if 'AST' in df.columns:
+                # Simular convolución 1D sobre series temporal de asistencias
+                ast_series = self._get_historical_series(df, 'AST', 10, 'mean')
+                ast_5g = self._get_historical_series(df, 'AST', 5, 'mean')
+                ast_3g = self._get_historical_series(df, 'AST', 3, 'mean')
+                
+                # Kernel de detección de tendencias
+                df['ast_trend_convolution'] = (
+                    ast_series * 0.5 + 
+                    ast_5g * 0.3 + 
+                    ast_3g * 0.2
+                ).fillna(0)
+                features.append('ast_trend_convolution')
+            
+            # 3. ATTENTION MECHANISM SIMULADO
+            if all(col in df.columns for col in ['AST', 'MP', 'BPM']):
+                # Simular mecanismo de atención entre diferentes métricas
+                ast_query = self._get_historical_series(df, 'AST', 5, 'mean').fillna(0)
+                mp_key = df['MP'].fillna(0)
+                bmp_value = df['BPM'].fillna(0)
+                
+                # Calcular scores de atención
+                attention_scores = np.exp(ast_query * mp_key / 100) / (np.exp(ast_query * mp_key / 100) + 1e-8)
+                df['attention_weighted_predictor'] = attention_scores * bmp_value
+                features.append('attention_weighted_predictor')
+                
+        except Exception as e:
+            logger.warning(f"Error en features de patrones neuronales: {e}")
+        
+        # Registrar features
+        for feature in features:
+            self._register_feature(feature, 'neural_patterns')
+        
+        return features
+    
+    def _generate_quantum_inspired_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        Features inspiradas en mecánica cuántica para capturar 
+        superposiciones y entrelazamientos en el rendimiento
+        """
+        logger.info("Generando features inspiradas en mecánica cuántica...")
+        features = []
+        
+        try:
+            # 1. SUPERPOSICIÓN DE ESTADOS
+            if 'AST' in df.columns:
+                # Estado de alto rendimiento vs bajo rendimiento
+                ast_mean = self._get_historical_series(df, 'AST', 20, 'mean').fillna(0)
+                ast_recent = self._get_historical_series(df, 'AST', 3, 'mean').fillna(0)
+                
+                # Superposición cuántica (probabilidad de estar en cada estado)
+                high_state_prob = 1 / (1 + np.exp(-(ast_recent - ast_mean)))
+                df['quantum_superposition_ast'] = high_state_prob
+                features.append('quantum_superposition_ast')
+            
+            # 2. ENTRELAZAMIENTO CUÁNTICO
+            if all(col in df.columns for col in ['AST', 'TOV']):
+                # Entrelazamiento entre asistencias y pérdidas de balón
+                ast_normalized = (self._get_historical_series(df, 'AST', 10, 'mean').fillna(0) - 
+                                self._get_historical_series(df, 'AST', 10, 'mean').fillna(0).mean())
+                tov_normalized = (self._get_historical_series(df, 'TOV', 10, 'mean').fillna(0) - 
+                                self._get_historical_series(df, 'TOV', 10, 'mean').fillna(0).mean())
+                
+                # Función de entrelazamiento
+                df['quantum_entanglement_ast_tov'] = np.cos(ast_normalized) * np.sin(tov_normalized)
+                features.append('quantum_entanglement_ast_tov')
+            
+            # 3. PRINCIPIO DE INCERTIDUMBRE
+            if 'AST' in df.columns:
+                # Incertidumbre entre precisión y recall en predicción
+                ast_mean = self._get_historical_series(df, 'AST', 10, 'mean').fillna(0)
+                ast_std = self._get_historical_series(df, 'AST', 10, 'std').fillna(0)
+                
+                # Principio de incertidumbre de Heisenberg aplicado
+                df['quantum_uncertainty_ast'] = ast_mean * ast_std
+                features.append('quantum_uncertainty_ast')
+                
+        except Exception as e:
+            logger.warning(f"Error en features cuánticas: {e}")
+        
+        # Registrar features
+        for feature in features:
+            self._register_feature(feature, 'quantum_inspired')
+        
+        return features
+    
+    def _generate_chaos_theory_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        Features basadas en teoría del caos para capturar 
+        comportamientos no lineales y efectos mariposa
+        """
+        logger.info("Generando features de teoría del caos...")
+        features = []
+        
+        try:
+            # 1. ATRACTORES EXTRAÑOS
+            if 'AST' in df.columns:
+                # Crear espacio de fase para asistencias
+                ast_t = self._get_historical_series(df, 'AST', 1, 'mean').fillna(0)  # AST(t)
+                ast_t1 = self._get_historical_series(df, 'AST', 2, 'mean').fillna(0)  # AST(t-1)
+                ast_t2 = self._get_historical_series(df, 'AST', 3, 'mean').fillna(0)  # AST(t-2)
+                
+                # Atractor de Lorenz simplificado
+                df['chaos_lorenz_x'] = ast_t - ast_t1
+                df['chaos_lorenz_y'] = ast_t1 - ast_t2
+                df['chaos_lorenz_z'] = ast_t * ast_t1 - ast_t2
+                
+                features.extend(['chaos_lorenz_x', 'chaos_lorenz_y', 'chaos_lorenz_z'])
+            
+            # 2. EXPONENTE DE LYAPUNOV
+            if 'AST' in df.columns:
+                # Medir sensibilidad a condiciones iniciales
+                ast_series = self._get_historical_series(df, 'AST', 15, 'mean').fillna(0)
+                ast_diff = ast_series.diff().fillna(0)
+                
+                # Aproximación del exponente de Lyapunov
+                lyapunov_approx = np.log(np.abs(ast_diff) + 1e-8).rolling(5).mean().fillna(0)
+                df['chaos_lyapunov_exponent'] = lyapunov_approx
+                features.append('chaos_lyapunov_exponent')
+                
+        except Exception as e:
+            logger.warning(f"Error en features de teoría del caos: {e}")
+        
+        # Registrar features
+        for feature in features:
+            self._register_feature(feature, 'chaos_theory')
+        
+        return features
+    
+    def _generate_fractal_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        Features basadas en geometría fractal para capturar 
+        patrones auto-similares en el rendimiento
+        """
+        logger.info("Generando features fractales...")
+        features = []
+        
+        try:
+            if 'AST' in df.columns:
+                # 1. DIMENSIÓN FRACTAL
+                ast_series = self._get_historical_series(df, 'AST', 20, 'mean').fillna(0)
+                
+                # Calcular dimensión fractal usando box-counting
+                # Simplificado para series temporales
+                ast_range = ast_series.max() - ast_series.min()
+                if ast_range > 0:
+                    df['fractal_dimension'] = np.log(len(ast_series)) / np.log(ast_range + 1)
+                else:
+                    df['fractal_dimension'] = 0
+                features.append('fractal_dimension')
+                
+                # 2. AUTOSIMILARIDAD
+                # Comparar patrones en diferentes escalas temporales
+                ast_3g = self._get_historical_series(df, 'AST', 3, 'mean').fillna(0)
+                ast_9g = self._get_historical_series(df, 'AST', 9, 'mean').fillna(0)
+                
+                # Medida de autosimilaridad
+                df['fractal_self_similarity'] = np.abs(ast_3g - ast_9g / 3)
+                features.append('fractal_self_similarity')
+                
+        except Exception as e:
+            logger.warning(f"Error en features fractales: {e}")
+        
+        # Registrar features
+        for feature in features:
+            self._register_feature(feature, 'fractal_features')
+        
+        return features
+    
+    def _generate_evolutionary_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        Features basadas en algoritmos evolutivos para capturar 
+        adaptación y evolución del rendimiento
+        """
+        logger.info("Generando features evolutivas...")
+        features = []
+        
+        try:
+            if 'AST' in df.columns:
+                # 1. FITNESS FUNCTION
+                # Función de aptitud basada en múltiples criterios
+                ast_avg = self._get_historical_series(df, 'AST', 10, 'mean').fillna(0)
+                ast_consistency = 1 / (self._get_historical_series(df, 'AST', 10, 'std').fillna(1) + 1)
+                
+                df['evolutionary_fitness'] = ast_avg * ast_consistency
+                features.append('evolutionary_fitness')
+                
+                # 2. MUTATION RATE
+                # Tasa de cambio en el rendimiento
+                ast_recent = self._get_historical_series(df, 'AST', 3, 'mean').fillna(0)
+                ast_baseline = self._get_historical_series(df, 'AST', 15, 'mean').fillna(0)
+                
+                df['evolutionary_mutation_rate'] = np.abs(ast_recent - ast_baseline) / (ast_baseline + 1)
+                features.append('evolutionary_mutation_rate')
+                
+                # 3. SELECTION PRESSURE
+                # Presión de selección basada en competencia
+                if 'MP' in df.columns:
+                    minutes_pressure = df['MP'] / 48  # Normalizado
+                    df['evolutionary_selection_pressure'] = ast_avg * minutes_pressure
+                    features.append('evolutionary_selection_pressure')
+                    
+        except Exception as e:
+            logger.warning(f"Error en features evolutivas: {e}")
+        
+        # Registrar features
+        for feature in features:
+            self._register_feature(feature, 'evolutionary_features')
+        
+        return features
+
+    def intelligent_feature_selection(self, df: pd.DataFrame, features: List[str], target_col: str = 'AST') -> List[str]:
+        """
+        MEJORA CRÍTICA: Selección inteligente de características para reducir sobreingeniería.
+        
+        Estrategia de selección:
+        1. Features básicas esenciales (siempre incluir)
+        2. Selección por importancia usando XGBoost rápido
+        3. Eliminación de características redundantes/correlacionadas
+        4. Límite máximo de características
+        
+        Args:
+            df: DataFrame con todas las características
+            features: Lista de todas las características disponibles
+            target_col: Columna objetivo (AST)
+            
+        Returns:
+            List[str]: Lista de características seleccionadas (máximo self.max_features)
+        """
+        logger.info(f"Selección inteligente de características: {len(features)} → {self.max_features}")
+        
+        # PASO 1: Features básicas esenciales (siempre incluir) - EXPANDIDAS
+        essential_features = [
+            # Promedios históricos básicos
+            'ast_avg_3g', 'ast_avg_5g', 'ast_avg_10g', 'ast_avg_15g',
+            # Eficiencia por minuto (CRÍTICO)
+            'ast_per_minute_5g', 'ast_per_minute_10g',
+            # Contexto de minutos y rol
+            'minutes_expected', 'mp_avg_3g', 'starter_impact',
+            # Métricas fundamentales de playmaking
+            'assist_rate', 'ast_tov_ratio', 'ast_tov_ratio_5g',
+            # Contexto de rol y uso
+            'usage_rate', 'ast_season_avg', 'ast_usage_rate',
+            # Features ultra-predictivas identificadas por el modelo anterior
+            'optimized_hybrid_predictor', 'learning_adaptive_predictor',
+            'minutes_based_ast_predictor', 'home_away_ast_factor',
+            'ultimate_ast_predictor', 'contextual_ast_predictor',
+            # Tendencias y momentum
+            'ast_momentum', 'ast_trend_5g', 'ast_volatility',
+            # Contexto de equipo
+            'team_offensive_pace', 'real_opponent_def_rating'
+        ]
+        
+        # Filtrar features esenciales que existen
+        selected_features = [f for f in essential_features if f in features and f in df.columns]
+        remaining_features = [f for f in features if f not in selected_features and f in df.columns]
+        
+        logger.info(f"Features esenciales incluidas: {len(selected_features)}")
+        
+        # PASO 2: Si ya tenemos suficientes features esenciales
+        if len(selected_features) >= self.max_features:
+            return selected_features[:self.max_features]
+        
+        # PASO 3: Selección por importancia usando XGBoost rápido
+        if len(remaining_features) > 0 and len(df) > 100:
+            try:
+                import xgboost as xgb
+                
+                X_temp = df[remaining_features].fillna(0)
+                y_temp = df[target_col]
+                
+                # XGBoost rápido para feature importance
+                temp_model = xgb.XGBRegressor(
+                    n_estimators=50,  # Muy rápido
+                    max_depth=3,
+                    learning_rate=0.1,
+                    random_state=42,
+                    n_jobs=1,  # Single thread para evitar conflictos
+                    verbosity=0
+                )
+                
+                temp_model.fit(X_temp, y_temp)
+                
+                # Obtener importancias
+                importances = temp_model.feature_importances_
+                feature_importance_pairs = list(zip(remaining_features, importances))
+                
+                # Ordenar por importancia descendente
+                feature_importance_pairs.sort(key=lambda x: x[1], reverse=True)
+                
+                # Seleccionar las mejores características restantes
+                remaining_slots = self.max_features - len(selected_features)
+                top_features = [f[0] for f in feature_importance_pairs[:remaining_slots]]
+                
+                selected_features.extend(top_features)
+                
+                logger.info(f"Features por importancia añadidas: {len(top_features)}")
+                
+            except Exception as e:
+                logger.warning(f"Error en selección por importancia: {e}")
+                # Fallback: tomar features aleatorias
+                remaining_slots = self.max_features - len(selected_features)
+                selected_features.extend(remaining_features[:remaining_slots])
+        
+        # PASO 4: Verificar correlaciones altas y eliminar redundantes
+        if len(selected_features) > 20:  # Solo si tenemos muchas features
+            try:
+                corr_matrix = df[selected_features].corr().abs()
+                
+                # Encontrar pares con correlación > 0.95
+                high_corr_pairs = []
+                for i in range(len(corr_matrix.columns)):
+                    for j in range(i+1, len(corr_matrix.columns)):
+                        if corr_matrix.iloc[i, j] > 0.95:
+                            high_corr_pairs.append((corr_matrix.columns[i], corr_matrix.columns[j]))
+                
+                # Eliminar features redundantes (mantener la primera de cada par)
+                features_to_remove = set()
+                for f1, f2 in high_corr_pairs:
+                    if f1 not in essential_features:  # No eliminar features esenciales
+                        features_to_remove.add(f1)
+                    elif f2 not in essential_features:
+                        features_to_remove.add(f2)
+                
+                selected_features = [f for f in selected_features if f not in features_to_remove]
+                
+                if features_to_remove:
+                    logger.info(f"Features redundantes eliminadas: {len(features_to_remove)}")
+                
+            except Exception as e:
+                logger.warning(f"Error eliminando correlaciones: {e}")
+        
+        # Asegurar que no excedemos el límite
+        final_features = selected_features[:self.max_features]
+        
+        logger.info(f"Selección final: {len(final_features)} características")
+        logger.info(f"Top 10 features: {final_features[:10]}")
+        
+        return final_features
+    
+    def _ensure_numeric_features(self, df: pd.DataFrame, features: List[str]) -> List[str]:
+        """
+        CRÍTICO: Asegurar que todas las características sean numéricas.
+        Elimina características que contienen valores no numéricos.
+        
+        Args:
+            df: DataFrame con las características
+            features: Lista de características a validar
+            
+        Returns:
+            List[str]: Lista de características numéricas válidas
+        """
+        numeric_features = []
+        
+        for feature in features:
+            if feature not in df.columns:
+                continue
+                
+            try:
+                # Verificar si la columna es numérica
+                if df[feature].dtype in ['object', 'string']:
+                    # Intentar convertir a numérico
+                    test_conversion = pd.to_numeric(df[feature], errors='coerce')
+                    if test_conversion.isna().all():
+                        logger.warning(f"Feature '{feature}' eliminada: contiene valores no numéricos")
+                        continue
+                    else:
+                        # Convertir la columna si es posible
+                        df[feature] = test_conversion
+                
+                # Verificar valores no válidos
+                if df[feature].dtype in ['float64', 'int64', 'float32', 'int32']:
+                    # Reemplazar infinitos con NaN
+                    df[feature] = df[feature].replace([np.inf, -np.inf], np.nan)
+                    numeric_features.append(feature)
+                else:
+                    logger.warning(f"Feature '{feature}' eliminada: tipo de dato no numérico ({df[feature].dtype})")
+                    
+            except Exception as e:
+                logger.warning(f"Feature '{feature}' eliminada: error de validación ({e})")
+                continue
+        
+        logger.info(f"Validación numérica: {len(features)} → {len(numeric_features)} características")
+        
+        return numeric_features

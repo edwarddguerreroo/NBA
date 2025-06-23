@@ -98,9 +98,13 @@ class StackingASTModel:
         self.feature_importance = {}
         self.best_params_per_model = {}
         
-        # Configuración de optimización
-        self.n_trials = 25  # Reducido de 50 a 25 para mayor velocidad
-        self.cv_folds = 3   # Reducido de 5 a 3 para mayor velocidad
+        # Configuración de optimización BALANCEADA
+        self.n_trials = 35  # Aumentado de 25 a 35 para mejor optimización
+        self.cv_folds = 5  # Aumentado de 3 a 4 para mejor validación
+        
+        # MEJORA CRÍTICA: Feature selection agresivo
+        self.max_features = 80  # Aumentado de 50 a 80 para mejor rendimiento
+        self.feature_selection_method = 'hybrid'  # Método híbrido más inteligente
         
         # Configurar modelos base
         self._setup_base_models()
@@ -109,6 +113,7 @@ class StackingASTModel:
         model_names = list(self.base_models.keys())
         logger.info(f"Modelo AST inicializado - Ensemble: {', '.join(model_names)}")
         logger.info(f"Configuración: NN={enable_neural_network}, SVR={enable_svr}, GPU={enable_gpu}")
+        logger.info(f"Feature selection: Máximo {self.max_features} características")
     
     def _setup_base_models(self):
         """Configurar modelos base con hiperparámetros optimizados para asistencias"""
@@ -248,6 +253,115 @@ class StackingASTModel:
         
         return train_data, test_data
     
+    def _validate_training_data(self, X: pd.DataFrame, y: pd.Series) -> None:
+        """
+        CRÍTICO: Validar que los datos de entrenamiento sean correctos.
+        
+        Args:
+            X: DataFrame con características
+            y: Serie con variable objetivo
+        """
+        logger.info("Validando datos de entrenamiento...")
+        
+        # Verificar que X sea numérico (específico para LightGBM)
+        non_numeric_cols = []
+        for col in X.columns:
+            dtype = X[col].dtype
+            if dtype == 'object' or dtype.name == 'string':
+                # Verificar si contiene valores no numéricos
+                sample_values = X[col].dropna().head(10).tolist()
+                logger.error(f"Columna no numérica '{col}' (tipo: {dtype}): {sample_values}")
+                non_numeric_cols.append(col)
+            elif dtype.name not in ['int8', 'int16', 'int32', 'int64', 'float16', 'float32', 'float64', 'bool']:
+                logger.error(f"Columna con tipo no compatible '{col}' (tipo: {dtype})")
+                non_numeric_cols.append(col)
+        
+        if non_numeric_cols:
+            raise ValueError(f"Columnas no numéricas detectadas para LightGBM: {non_numeric_cols}")
+        
+        # Verificar valores infinitos
+        inf_cols = []
+        for col in X.columns:
+            if np.isinf(X[col]).any():
+                inf_cols.append(col)
+        
+        if inf_cols:
+            logger.warning(f"Columnas con valores infinitos (serán reemplazados): {inf_cols}")
+            X[inf_cols] = X[inf_cols].replace([np.inf, -np.inf], np.nan).fillna(0)
+        
+        # Verificar NaN en target
+        if y.isna().any():
+            logger.warning(f"Target contiene {y.isna().sum()} valores NaN")
+        
+        # CRÍTICO: Forzar conversión a tipos compatibles con LightGBM
+        for col in X.columns:
+            if X[col].dtype == 'object':
+                # Intentar conversión numérica forzada
+                X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0)
+            elif X[col].dtype not in ['int64', 'float64', 'bool']:
+                # Convertir a float64 para compatibilidad
+                X[col] = X[col].astype('float64')
+        
+        logger.info(f"Validación completada - X: {X.shape}, y: {len(y)}")
+        logger.info(f"Tipos de datos únicos en X: {X.dtypes.unique()}")
+        
+        return
+    
+    def _filter_problematic_columns(self, df: pd.DataFrame, features: List[str]) -> List[str]:
+        """
+        CRÍTICO: Filtrar columnas que causan problemas en LightGBM y otros modelos.
+        
+        Args:
+            df: DataFrame completo
+            features: Lista de características propuestas
+            
+        Returns:
+            List[str]: Lista de características filtradas y seguras
+        """
+        # Columnas problemáticas conocidas (solo las que realmente causan problemas)
+        problematic_columns = {
+            'Away', 'GS', 'Result', 'Pos', 'Player', 'Date', 'Team', 'Opp',
+            # DATA LEAKAGE CRÍTICO: Eliminar columnas que usan información del juego actual
+            'AST_double', 'PTS_double', 'TRB_double', 'STL_double', 'BLK_double',
+            'double_double', 'triple_double', 'AST', 'PTS', 'TRB', 'STL', 'BLK',
+            'GmSc'  # Game Score también usa stats del juego actual
+        }
+        
+        # Filtrar características problemáticas
+        safe_features = []
+        removed_features = []
+        
+        for feature in features:
+            if feature in problematic_columns:
+                removed_features.append(feature)
+                continue
+                
+            # Verificar si la columna existe en el DataFrame
+            if feature not in df.columns:
+                removed_features.append(feature)
+                continue
+                
+            # Verificar tipo de datos
+            if df[feature].dtype == 'object':
+                # Intentar convertir a numérico
+                try:
+                    test_conversion = pd.to_numeric(df[feature], errors='coerce')
+                    if test_conversion.isna().all():
+                        removed_features.append(feature)
+                        continue
+                except:
+                    removed_features.append(feature)
+                    continue
+            
+            safe_features.append(feature)
+        
+        if removed_features:
+            logger.warning(f"Columnas problemáticas eliminadas ({len(removed_features)}): {removed_features[:10]}...")
+        
+        logger.info(f"Filtrado de columnas: {len(features)} → {len(safe_features)} características seguras")
+        
+        return safe_features
+    
     def train(self, df: pd.DataFrame) -> Dict[str, float]:
         """
         Entrenamiento completo del modelo Stacking AST
@@ -268,16 +382,26 @@ class StackingASTModel:
         
         # Generar features especializadas para asistencias
         logger.info("Generando características especializadas...")
-        features = self.feature_engineer.generate_all_features(df)  # Modificar DataFrame directamente
+        all_features = self.feature_engineer.generate_all_features(df)  # Modificar DataFrame directamente
         
-        if not features:
+        if not all_features:
             raise ValueError("No se pudieron generar features para AST")
         
-        logger.info(f"Features seleccionadas: {len(features)}")
+        logger.info(f"Features generadas: {len(all_features)}")
+        
+        # MEJORA CRÍTICA: Las características ya están seleccionadas por el feature engineer
+        features = all_features
+        
+        logger.info(f"Features seleccionadas tras filtrado: {len(features)}")
         
         # Preparar datos (ahora df tiene las features)
         X = df[features].fillna(0)
         y = df['AST']
+        
+        # CRÍTICO: Filtrar columnas problemáticas y validar datos numéricos
+        features = self._filter_problematic_columns(df, features)
+        X = df[features].fillna(0)
+        self._validate_training_data(X, y)
         
         # División temporal
         train_data, test_data = self._temporal_split(df)
@@ -286,6 +410,10 @@ class StackingASTModel:
         y_train = train_data['AST']
         X_test = test_data[features].fillna(0)
         y_test = test_data['AST']
+        
+        # Validar datos de entrenamiento y prueba
+        self._validate_training_data(X_train, y_train)
+        self._validate_training_data(X_test, y_test)
         
         logger.info(f"Entrenamiento: {X_train.shape[0]} muestras, Prueba: {X_test.shape[0]} muestras")
         
@@ -662,7 +790,13 @@ class StackingASTModel:
         
         # Generar features (modificar DataFrame directamente)
         features = self.feature_engineer.generate_all_features(df)
+        
+        # Filtrar columnas problemáticas
+        features = self._filter_problematic_columns(df, features)
         X = df[features].fillna(0)
+        
+        # Validar datos para predicción
+        self._validate_training_data(X, pd.Series([0] * len(X)))
         
         # Realizar predicciones usando el modelo principal entrenado
         predictions = self.stacking_model.predict(X)
