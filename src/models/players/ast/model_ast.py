@@ -191,15 +191,6 @@ class StackingASTModel:
             }
         }
         
-        # Ridge - Regularización L2 para estabilidad en features de historial
-        self.base_models['ridge'] = {
-            'model': Ridge(random_state=self.random_state),
-            'param_space': {
-                'alpha': (0.1, 10.0),        # Rango reducido
-                'fit_intercept': [True, False]
-            }
-        }
-        
         # Neural Network (opcional) - Excelente para patrones complejos de Basketball IQ
         if self.enable_neural_network:
             self.base_models['neural_network'] = {

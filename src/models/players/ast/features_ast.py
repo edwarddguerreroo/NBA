@@ -67,7 +67,7 @@ class AssistsFeatureEngineer:
             'fractal_features': 2,         # Features fractales (NUEVAS)
             'evolutionary_features': 3     # Features evolutivas (NUEVAS)
         }
-        self.protected_features = ['AST', 'Player', 'Date', 'Team', 'Opp', 'Away', 'GS', 'Result']
+        self.protected_features = ['AST', 'Player', 'Date', 'Team', 'Opp', 'Away', 'GS', 'Result', 'Pos']
         
     def _register_feature(self, feature_name: str, category: str):
         """Registra una feature en su categoría correspondiente"""
@@ -181,22 +181,6 @@ class AssistsFeatureEngineer:
         # === FEATURES ULTRA-PREDICTIVAS BASADAS EN FEEDBACK DEL MODELO ===
         self._generate_model_feedback_features(df)
         
-        # === NUEVAS CATEGORÍAS DE FEATURES ULTRA-AVANZADAS ===
-        
-        # Features de patrones neuronales
-        self._generate_neural_pattern_features(df)
-        
-        # Features inspiradas en mecánica cuántica
-        self._generate_quantum_inspired_features(df)
-        
-        # Features de teoría del caos
-        self._generate_chaos_theory_features(df)
-        
-        # Features fractales
-        self._generate_fractal_features(df)
-        
-        # Features evolutivas
-        self._generate_evolutionary_features(df)
         
         # Obtener lista de features creadas
         all_features = [col for col in df.columns if col not in self.protected_features]
@@ -3085,12 +3069,14 @@ class AssistsFeatureEngineer:
     def intelligent_feature_selection(self, df: pd.DataFrame, features: List[str], target_col: str = 'AST') -> List[str]:
         """
         MEJORA CRÍTICA: Selección inteligente de características para reducir sobreingeniería.
+        ACTUALIZADO: Elimina features de bajo rendimiento que generan ruido.
         
         Estrategia de selección:
         1. Features básicas esenciales (siempre incluir)
         2. Selección por importancia usando XGBoost rápido
         3. Eliminación de características redundantes/correlacionadas
-        4. Límite máximo de características
+        4. Eliminación de features con importancia < 0.003 (ruido)
+        5. Límite máximo de características
         
         Args:
             df: DataFrame con todas las características
@@ -3102,26 +3088,17 @@ class AssistsFeatureEngineer:
         """
         logger.info(f"Selección inteligente de características: {len(features)} → {self.max_features}")
         
-        # PASO 1: Features básicas esenciales (siempre incluir) - EXPANDIDAS
+        # PASO 1: Features básicas esenciales (OPTIMIZADAS - solo las más importantes)
         essential_features = [
-            # Promedios históricos básicos
-            'ast_avg_3g', 'ast_avg_5g', 'ast_avg_10g', 'ast_avg_15g',
-            # Eficiencia por minuto (CRÍTICO)
-            'ast_per_minute_5g', 'ast_per_minute_10g',
-            # Contexto de minutos y rol
-            'minutes_expected', 'mp_avg_3g', 'starter_impact',
-            # Métricas fundamentales de playmaking
-            'assist_rate', 'ast_tov_ratio', 'ast_tov_ratio_5g',
-            # Contexto de rol y uso
-            'usage_rate', 'ast_season_avg', 'ast_usage_rate',
-            # Features ultra-predictivas identificadas por el modelo anterior
+            # Top features identificadas por el modelo
             'optimized_hybrid_predictor', 'learning_adaptive_predictor',
-            'minutes_based_ast_predictor', 'home_away_ast_factor',
-            'ultimate_ast_predictor', 'contextual_ast_predictor',
-            # Tendencias y momentum
-            'ast_momentum', 'ast_trend_5g', 'ast_volatility',
-            # Contexto de equipo
-            'team_offensive_pace', 'real_opponent_def_rating'
+            'TS%', 'BPM', 'MP', '3P%', 'FG%',
+            'minutes_based_ast_predictor', 'ast_per_minute_10g', 'FG',
+            'TOV', 'ast_per_minute_5g', '2P%', 'total_score',
+            'contextual_ast_predictor', 'home_away_ast_factor',
+            # Features de contexto críticas
+            'ast_avg_15g', 'ast_season_avg', 'real_opponent_def_rating',
+            'ultimate_ast_predictor', 'usage_rate', 'assist_rate'
         ]
         
         # Filtrar features esenciales que existen
@@ -3139,10 +3116,18 @@ class AssistsFeatureEngineer:
             try:
                 import xgboost as xgb
                 
-                X_temp = df[remaining_features].fillna(0)
+                # Preparar datos asegurando que sean numéricos
+                X_temp = df[remaining_features].copy()
+                
+                # Convertir categóricas a numéricas antes de XGBoost
+                for col in X_temp.columns:
+                    if X_temp[col].dtype in ['object', 'string', 'category']:
+                        X_temp[col] = pd.to_numeric(X_temp[col], errors='coerce')
+                
+                X_temp = X_temp.fillna(0)
                 y_temp = df[target_col]
                 
-                # XGBoost rápido para feature importance
+                # XGBoost rápido para feature importance (solo con datos numéricos)
                 temp_model = xgb.XGBRegressor(
                     n_estimators=50,  # Muy rápido
                     max_depth=3,
@@ -3158,12 +3143,17 @@ class AssistsFeatureEngineer:
                 importances = temp_model.feature_importances_
                 feature_importance_pairs = list(zip(remaining_features, importances))
                 
+                # NUEVO: Filtrar features con importancia muy baja (< 0.003)
+                filtered_pairs = [(f, imp) for f, imp in feature_importance_pairs if imp >= 0.003]
+                
+                logger.info(f"Features filtradas por baja importancia: {len(feature_importance_pairs) - len(filtered_pairs)}")
+                
                 # Ordenar por importancia descendente
-                feature_importance_pairs.sort(key=lambda x: x[1], reverse=True)
+                filtered_pairs.sort(key=lambda x: x[1], reverse=True)
                 
                 # Seleccionar las mejores características restantes
                 remaining_slots = self.max_features - len(selected_features)
-                top_features = [f[0] for f in feature_importance_pairs[:remaining_slots]]
+                top_features = [f[0] for f in filtered_pairs[:remaining_slots]]
                 
                 selected_features.extend(top_features)
                 
@@ -3171,12 +3161,23 @@ class AssistsFeatureEngineer:
                 
             except Exception as e:
                 logger.warning(f"Error en selección por importancia: {e}")
-                # Fallback: tomar features aleatorias
+                # Fallback: tomar features aleatorias pero filtrar las conocidas de bajo rendimiento
+                low_performance_features = [
+                    'is_home', 'ast_usage_rate', 'is_started', 'is_win',
+                    'starter_impact', 'ast_consistency', 'ast_max_5g',
+                    'ast_last_game', 'ast_consistency_3g', 'overtime_periods',
+                    'team_offensive_pace', '2P', 'ast_improvement_ratio',
+                    'ast_avg_3g', '3PA', 'ast_tov_ratio', 'ast_momentum',
+                    'ast_volatility', 'ast_avg_5g', 'ast_volatility_3g',
+                    'FT%', 'ast_trend_5g', 'point_diff', '2PA'
+                ]
+                
+                filtered_remaining = [f for f in remaining_features if f not in low_performance_features]
                 remaining_slots = self.max_features - len(selected_features)
-                selected_features.extend(remaining_features[:remaining_slots])
+                selected_features.extend(filtered_remaining[:remaining_slots])
         
-        # PASO 4: Verificar correlaciones altas y eliminar redundantes
-        if len(selected_features) > 20:  # Solo si tenemos muchas features
+        # PASO 4: Verificar correlaciones altas y eliminar redundantes (solo si tenemos muchas)
+        if len(selected_features) > 30:  # Solo si tenemos muchas features
             try:
                 corr_matrix = df[selected_features].corr().abs()
                 
@@ -3215,6 +3216,7 @@ class AssistsFeatureEngineer:
         """
         CRÍTICO: Asegurar que todas las características sean numéricas.
         Elimina características que contienen valores no numéricos.
+        MEJORADO: Maneja mejor las columnas categóricas problemáticas.
         
         Args:
             df: DataFrame con las características
@@ -3224,34 +3226,67 @@ class AssistsFeatureEngineer:
             List[str]: Lista de características numéricas válidas
         """
         numeric_features = []
+        removed_features = []
+        
+        # Columnas categóricas conocidas que causan problemas
+        categorical_columns = ['Pos', 'Team', 'Opp', 'Player', 'Date', 'Away', 'GS', 'Result']
         
         for feature in features:
             if feature not in df.columns:
+                removed_features.append(f"{feature} (no existe)")
+                continue
+            
+            # Saltar columnas categóricas conocidas
+            if feature in categorical_columns:
+                removed_features.append(f"{feature} (categórica)")
                 continue
                 
             try:
                 # Verificar si la columna es numérica
-                if df[feature].dtype in ['object', 'string']:
+                if df[feature].dtype in ['object', 'string', 'category']:
+                    # Verificar si contiene solo valores numéricos como strings
+                    sample_values = df[feature].dropna().head(100)
+                    
+                    if len(sample_values) == 0:
+                        removed_features.append(f"{feature} (vacía)")
+                        continue
+                    
                     # Intentar convertir a numérico
-                    test_conversion = pd.to_numeric(df[feature], errors='coerce')
+                    test_conversion = pd.to_numeric(sample_values, errors='coerce')
+                    
                     if test_conversion.isna().all():
-                        logger.warning(f"Feature '{feature}' eliminada: contiene valores no numéricos")
+                        # Contiene valores no numéricos
+                        unique_vals = sample_values.unique()[:5]  # Primeros 5 valores únicos
+                        removed_features.append(f"{feature} (valores no numéricos: {list(unique_vals)})")
+                        continue
+                    elif test_conversion.isna().sum() / len(test_conversion) > 0.5:
+                        # Más del 50% son valores no numéricos
+                        removed_features.append(f"{feature} (>50% no numéricos)")
                         continue
                     else:
-                        # Convertir la columna si es posible
-                        df[feature] = test_conversion
+                        # Convertir toda la columna
+                        df[feature] = pd.to_numeric(df[feature], errors='coerce').fillna(0)
                 
-                # Verificar valores no válidos
-                if df[feature].dtype in ['float64', 'int64', 'float32', 'int32']:
-                    # Reemplazar infinitos con NaN
-                    df[feature] = df[feature].replace([np.inf, -np.inf], np.nan)
+                # Verificar que el tipo final sea numérico
+                if df[feature].dtype in ['float64', 'int64', 'float32', 'int32', 'bool', 'int8', 'int16']:
+                    # Reemplazar infinitos con NaN y luego con 0
+                    if np.isinf(df[feature]).any():
+                        df[feature] = df[feature].replace([np.inf, -np.inf], np.nan).fillna(0)
+                    
+                    # Reemplazar NaN con 0
+                    if df[feature].isna().any():
+                        df[feature] = df[feature].fillna(0)
+                    
                     numeric_features.append(feature)
                 else:
-                    logger.warning(f"Feature '{feature}' eliminada: tipo de dato no numérico ({df[feature].dtype})")
+                    removed_features.append(f"{feature} (tipo final no numérico: {df[feature].dtype})")
                     
             except Exception as e:
-                logger.warning(f"Feature '{feature}' eliminada: error de validación ({e})")
+                removed_features.append(f"{feature} (error: {str(e)[:50]})")
                 continue
+        
+        if removed_features:
+            logger.warning(f"Features eliminadas ({len(removed_features)}): {removed_features[:5]}...")
         
         logger.info(f"Validación numérica: {len(features)} → {len(numeric_features)} características")
         
