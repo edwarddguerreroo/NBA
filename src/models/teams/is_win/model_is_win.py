@@ -1221,63 +1221,70 @@ class IsWinModel:
     def _setup_models(self):
         """Configurar modelos individuales con REGULARIZACIÓN EXTREMA ANTI-OVERFITTING"""
         
-        # XGBoost con regularización ULTRA AGRESIVA
+        # XGBoost con regularización ULTRA AGRESIVA MÁXIMA
         self.models['xgboost'] = xgb.XGBClassifier(
-            n_estimators=50,        # Reducido drásticamente de 100
-            max_depth=3,            # Reducido de 4 para árboles más simples
-            learning_rate=0.02,     # Reducido de 0.05 para aprendizaje más lento
-            subsample=0.6,          # Reducido de 0.8 para más regularización
-            colsample_bytree=0.6,   # Reducido de 0.8
-            reg_alpha=3.0,          # Aumentado de 1.0 (regularización L1)
-            reg_lambda=5.0,         # Aumentado de 2.0 (regularización L2)
-            min_child_weight=10,    # Aumentado de 5
-            gamma=2.0,              # Aumentado de 1.0
-            max_delta_step=1,       # Nuevo: limitar cambios extremos
+            n_estimators=35,        # Reducido drásticamente de 50 a 35
+            max_depth=2,            # Reducido de 3 a 2 para árboles muy simples
+            learning_rate=0.015,    # Reducido de 0.02 a 0.015 para aprendizaje muy lento
+            subsample=0.5,          # Reducido de 0.6 a 0.5 para más regularización
+            colsample_bytree=0.5,   # Reducido de 0.6 a 0.5
+            reg_alpha=5.0,          # Aumentado de 3.0 a 5.0 (regularización L1 muy fuerte)
+            reg_lambda=8.0,         # Aumentado de 5.0 a 8.0 (regularización L2 muy fuerte)
+            min_child_weight=15,    # Aumentado de 10 a 15
+            gamma=3.0,              # Aumentado de 2.0 a 3.0
+            max_delta_step=0.5,     # Reducido de 1 a 0.5: limitar cambios extremos
             random_state=42, 
             n_jobs=-1, 
             eval_metric='logloss'
         )
         
-        # LightGBM con regularización ULTRA AGRESIVA
+        # LightGBM con regularización ULTRA AGRESIVA MÁXIMA
         self.models['lightgbm'] = lgb.LGBMClassifier(
-            n_estimators=50,        # Reducido drásticamente de 100
-            max_depth=3,            # Reducido de 4
-            learning_rate=0.02,     # Reducido de 0.05
-            subsample=0.6,          # Reducido de 0.8
-            colsample_bytree=0.6,   # Reducido de 0.8
-            reg_alpha=3.0,          # Aumentado de 1.0
-            reg_lambda=5.0,         # Aumentado de 2.0
-            min_child_samples=50,   # Aumentado drásticamente de 20
-            min_split_gain=0.5,     # Aumentado de 0.1
-            num_leaves=15,          # Nuevo: limitar complejidad del árbol
-            feature_fraction=0.6,   # Nuevo: usar solo 60% de features
-            bagging_fraction=0.6,   # Nuevo: usar solo 60% de datos
-            bagging_freq=5,         # Nuevo: bagging cada 5 iteraciones
+            n_estimators=35,        # Reducido drásticamente de 50 a 35
+            max_depth=2,            # Reducido de 3 a 2
+            learning_rate=0.015,    # Reducido de 0.02 a 0.015
+            subsample=0.5,          # Reducido de 0.6 a 0.5
+            colsample_bytree=0.5,   # Reducido de 0.6 a 0.5
+            reg_alpha=5.0,          # Aumentado de 3.0 a 5.0
+            reg_lambda=8.0,         # Aumentado de 5.0 a 8.0
+            min_child_samples=80,   # Aumentado drásticamente de 50 a 80
+            min_split_gain=1.0,     # Aumentado de 0.5 a 1.0
+            num_leaves=10,          # Reducido de 15 a 10: limitar complejidad del árbol
+            feature_fraction=0.4,   # Reducido de 0.6 a 0.4: usar solo 40% de features
+            bagging_fraction=0.4,   # Reducido de 0.6 a 0.4: usar solo 40% de datos
+            bagging_freq=3,         # Reducido de 5 a 3: bagging más frecuente
+            min_data_in_leaf=40,    # Nuevo: mínimo de datos por hoja
+            lambda_l1=5.0,          # Nuevo: regularización L1 adicional
+            lambda_l2=8.0,          # Nuevo: regularización L2 adicional
             random_state=42, 
             n_jobs=-1, 
             verbosity=-1
         )
         
-        # Random Forest con regularización EXTREMA
+        # Random Forest con regularización ULTRA EXTREMA (ANTI-OVERFITTING MÁXIMO)
         self.models['random_forest'] = RandomForestClassifier(
-            n_estimators=50,        # Reducido drásticamente de 100
-            max_depth=4,            # Reducido de 6
-            min_samples_split=50,   # Aumentado drásticamente de 20
-            min_samples_leaf=25,    # Aumentado drásticamente de 10
-            max_features=0.4,       # Reducido de 'sqrt' para usar menos features
+            n_estimators=25,        # Reducido drásticamente de 50 a 25
+            max_depth=3,            # Reducido de 4 a 3 para árboles más simples
+            min_samples_split=100,  # Aumentado drásticamente de 50 a 100
+            min_samples_leaf=50,    # Aumentado drásticamente de 25 a 50
+            max_features=0.25,      # Reducido de 0.4 a 0.25 (solo 25% de features)
+            max_leaf_nodes=20,      # Nuevo: limitar cantidad máxima de hojas
+            min_impurity_decrease=0.01,  # Nuevo: requerir mejora mínima para split
             bootstrap=True,         # Asegurar que bootstrap esté habilitado
             oob_score=True, 
             random_state=42, 
             n_jobs=-1
         )
         
-        # Extra Trees con regularización EXTREMA
+        # Extra Trees con regularización ULTRA EXTREMA
         self.models['extra_trees'] = ExtraTreesClassifier(
-            n_estimators=50,        # Reducido drásticamente de 100
-            max_depth=4,            # Reducido de 6
-            min_samples_split=60,   # Aumentado drásticamente de 25
-            min_samples_leaf=30,    # Aumentado drásticamente de 15
-            max_features=0.3,       # Reducido drásticamente para usar menos features
+            n_estimators=20,        # Reducido drásticamente de 50 a 20
+            max_depth=3,            # Reducido de 4 a 3
+            min_samples_split=120,  # Aumentado drásticamente de 60 a 120
+            min_samples_leaf=60,    # Aumentado drásticamente de 30 a 60
+            max_features=0.2,       # Reducido de 0.3 a 0.2 (solo 20% de features)
+            max_leaf_nodes=15,      # Nuevo: limitar cantidad máxima de hojas
+            min_impurity_decrease=0.015,  # Nuevo: requerir mejora mínima para split
             bootstrap=True,         # Asegurar que bootstrap esté habilitado
             oob_score=True, 
             random_state=42, 
@@ -1299,15 +1306,15 @@ class IsWinModel:
             random_state=42
         )
         
-        # Red Neuronal con DROPOUT EXTREMO y arquitectura mínima
+        # Red Neuronal BALANCEADA: evitar overfitting SIN underfitting
         self.models['neural_network'] = PyTorchNBAClassifier(
-            hidden_size=32,         # Reducido drásticamente de 64
-            epochs=50,              # Reducido drásticamente de 100
-            batch_size=128,         # Aumentado para más estabilidad
-            learning_rate=0.0005,   # Reducido de 0.001
-            weight_decay=0.05,      # Aumentado drásticamente de 0.01
-            early_stopping_patience=8,  # Reducido de 15
-            dropout_rate=0.7,       # Aumentado drásticamente de 0.5
+            hidden_size=24,         # Reducido de 32 a 24 pero no demasiado pequeño
+            epochs=40,              # Reducido de 50 a 40
+            batch_size=96,          # Reducido de 128 a 96 para mejor gradientes
+            learning_rate=0.0008,   # Aumentado ligeramente de 0.0005 para evitar underfitting
+            weight_decay=0.08,      # Aumentado de 0.05 a 0.08 para más regularización
+            early_stopping_patience=6,  # Reducido de 8 a 6
+            dropout_rate=0.6,       # Reducido de 0.7 a 0.6 para evitar underfitting severo
             device=self.device, 
             min_memory_gb=self.min_memory_gb, 
             auto_batch_size=True
@@ -1748,18 +1755,96 @@ class IsWinModel:
                     best_iter = early_stopping_info.get('best_iteration', 'N/A')
                     logger.debug(f"⏹️  {name} | Early stopping en iteración {best_iter}")
                 
-                # Advertencia de overfitting (solo si es significativo)
-                if overfitting > 0.1:
-                    logger.warning(f"🚨 {name} | Overfitting detectado: {overfitting:+.4f}")
-                elif overfitting > 0.05:
-                    logger.warning(f"⚠️  {name} | Overfitting moderado: {overfitting:+.4f}")
+                # ANÁLISIS ANTI-OVERFITTING MEJORADO
+                overfitting_auc = train_metrics['auc_roc'] - val_metrics['auc_roc']
+                avg_overfitting = (overfitting + overfitting_auc) / 2
+                
+                # Determinar estado del modelo
+                if avg_overfitting > 0.05:
+                    model_status = "OVERFITTING_SEVERO"
+                elif avg_overfitting > 0.02:
+                    model_status = "OVERFITTING_MODERADO" 
+                elif avg_overfitting > 0.01:
+                    model_status = "OVERFITTING_LEVE"
+                elif avg_overfitting > -0.01:
+                    model_status = "BALANCEADO"
+                else:
+                    model_status = "POSIBLE_UNDERFITTING"
+                
+                # Agregar métricas adicionales al resultado
+                results[name]['overfitting_auc'] = overfitting_auc
+                results[name]['avg_overfitting'] = avg_overfitting
+                results[name]['model_status'] = model_status
+                
+                # Log detallado del estado del modelo
+                if model_status == "OVERFITTING_SEVERO":
+                    logger.warning(f"🚨 {name} | OVERFITTING SEVERO - ACC: {overfitting:+.4f}, AUC: {overfitting_auc:+.4f}")
+                elif model_status == "OVERFITTING_MODERADO":
+                    logger.warning(f"⚠️  {name} | OVERFITTING MODERADO - ACC: {overfitting:+.4f}, AUC: {overfitting_auc:+.4f}")
+                elif model_status == "OVERFITTING_LEVE":
+                    logger.info(f"⚠️  {name} | Overfitting leve - ACC: {overfitting:+.4f}, AUC: {overfitting_auc:+.4f}")
+                elif model_status == "BALANCEADO":
+                    logger.info(f"✅ {name} | MODELO BALANCEADO - ACC: {overfitting:+.4f}, AUC: {overfitting_auc:+.4f}")
+                else:  # POSIBLE_UNDERFITTING
+                    logger.warning(f"🔻 {name} | POSIBLE UNDERFITTING - ACC: {overfitting:+.4f}, AUC: {overfitting_auc:+.4f}")
                 
             except Exception as e:
                 logger.error(f"❌ Error entrenando {name}: {e}")
                 results[name] = {'error': str(e)}
         
+        # RESUMEN FINAL DE ANÁLISIS ANTI-OVERFITTING
+        overfitting_summary = self._analyze_overfitting_summary(results)
         logger.info(f"✅ Entrenamiento individual completado ({len(results)} modelos)")
+        logger.info("📊 RESUMEN ANTI-OVERFITTING:")
+        
+        balanced_models = overfitting_summary['balanced_count']
+        overfitting_models = overfitting_summary['overfitting_count'] 
+        underfitting_models = overfitting_summary['underfitting_count']
+        
+        logger.info(f"  • Modelos BALANCEADOS: {balanced_models}")
+        logger.info(f"  • Modelos con OVERFITTING: {overfitting_models}")
+        logger.info(f"  • Modelos con UNDERFITTING: {underfitting_models}")
+        
+        if overfitting_models > balanced_models:
+            logger.warning("🚨 ATENCIÓN: Mayoría de modelos con overfitting - Considerar más regularización")
+        elif underfitting_models > balanced_models:
+            logger.warning("🔻 ATENCIÓN: Mayoría de modelos con underfitting - Considerar menos regularización")
+        else:
+            logger.info("✅ Balance adecuado entre modelos")
+        
         return results
+    
+    def _analyze_overfitting_summary(self, results: Dict) -> Dict:
+        """Analizar resumen de overfitting en todos los modelos"""
+        summary = {
+            'balanced_count': 0,
+            'overfitting_count': 0,
+            'underfitting_count': 0,
+            'avg_overfitting_all': 0.0
+        }
+        
+        valid_models = 0
+        total_overfitting = 0.0
+        
+        for model_name, model_results in results.items():
+            if 'error' not in model_results and 'model_status' in model_results:
+                status = model_results['model_status']
+                avg_overfitting = model_results['avg_overfitting']
+                
+                if status == "BALANCEADO":
+                    summary['balanced_count'] += 1
+                elif "OVERFITTING" in status:
+                    summary['overfitting_count'] += 1
+                elif "UNDERFITTING" in status:
+                    summary['underfitting_count'] += 1
+                
+                total_overfitting += avg_overfitting
+                valid_models += 1
+        
+        if valid_models > 0:
+            summary['avg_overfitting_all'] = total_overfitting / valid_models
+            
+        return summary
     
     def predict(self, df: pd.DataFrame) -> np.ndarray:
         """Realizar predicciones con el modelo entrenado"""

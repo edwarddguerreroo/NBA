@@ -71,9 +71,9 @@ class TransformerConfig(BaseConfig):
 class GNNConfig(BaseConfig):
     """Configuración específica para Graph Neural Networks."""
     
-    # Arquitectura GNN
-    node_features: int = 20
-    edge_features: int = 10
+    # Arquitectura GNN - CORREGIDA para compatibilidad con features reales
+    node_features: int = 259  # Usar el mismo número que input_features
+    edge_features: int = 0    # Sin features de aristas por simplicidad
     hidden_dim: int = 64
     num_gnn_layers: int = 3
     gnn_type: str = "GCN"  # GCN, GAT, GraphSAGE
@@ -88,6 +88,10 @@ class GNNConfig(BaseConfig):
     # Configuración de grafo
     max_nodes: int = 50  # Máximo jugadores + equipos en el grafo
     self_loops: bool = True
+    
+    def __post_init__(self):
+        # Asegurar que node_features coincida con input_features
+        self.node_features = self.input_features
 
 
 @dataclass

@@ -328,6 +328,10 @@ class DLTrainer:
                 predictions, reconstruction, mu, logvar = self.model(data)
                 loss_dict = self.model.compute_loss(predictions, target, reconstruction, data, mu, logvar)
                 loss = loss_dict['total_loss']
+            elif self.model_type == "gnn":
+                # GNN models need special handling for graph structure
+                predictions = self._forward_gnn(data)
+                loss = self.model.compute_loss(predictions, target)
             else:
                 # Standard models
                 predictions = self.model(data)
@@ -376,6 +380,10 @@ class DLTrainer:
                     predictions, reconstruction, mu, logvar = self.model(data)
                     loss_dict = self.model.compute_loss(predictions, target, reconstruction, data, mu, logvar)
                     loss = loss_dict['total_loss']
+                elif self.model_type == "gnn":
+                    # GNN models need special handling for graph structure
+                    predictions = self._forward_gnn(data)
+                    loss = self.model.compute_loss(predictions, target)
                 else:
                     predictions = self.model(data)
                     loss = self.model.compute_loss(predictions, target)
@@ -410,6 +418,8 @@ class DLTrainer:
                 
                 if self.model_type in ["vae", "conditional_vae", "beta_vae", "sequential_vae"]:
                     predictions, _, _, _ = self.model(data)
+                elif self.model_type == "gnn":
+                    predictions = self._forward_gnn(data)
                 else:
                     predictions = self.model(data)
                 
@@ -486,6 +496,9 @@ class DLTrainer:
                         predictions, reconstruction, mu, logvar = model(data)
                         loss_dict = model.compute_loss(predictions, target, reconstruction, data, mu, logvar)
                         loss = loss_dict['total_loss']
+                    elif self.model_type == "gnn":
+                        predictions = self._forward_gnn_with_model(model, data)
+                        loss = model.compute_loss(predictions, target)
                     else:
                         predictions = model(data)
                         loss = model.compute_loss(predictions, target)
@@ -504,6 +517,8 @@ class DLTrainer:
                     
                     if self.model_type in ["vae", "conditional_vae", "beta_vae", "sequential_vae"]:
                         predictions, _, _, _ = model(data)
+                    elif self.model_type == "gnn":
+                        predictions = self._forward_gnn_with_model(model, data)
                     else:
                         predictions = model(data)
                     
@@ -598,6 +613,8 @@ class DLTrainer:
                 
                 if self.model_type in ["vae", "conditional_vae", "beta_vae", "sequential_vae"]:
                     pred, _, _, _ = self.model(data)
+                elif self.model_type == "gnn":
+                    pred = self._forward_gnn(data)
                 else:
                     pred = self.model(data)
                 
@@ -609,3 +626,94 @@ class DLTrainer:
         ).flatten()
         
         return predictions_denorm 
+    
+    def _forward_gnn(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass específico para modelos GNN.
+        
+        Args:
+            data: Tensor de features [batch_size, seq_len, num_features]
+            
+        Returns:
+            Predicciones del modelo GNN
+        """
+        # Para GNN, necesitamos crear estructura de grafo desde las features
+        batch_size, seq_len, num_features = data.shape
+        
+        # Reshape para crear nodos: [batch_size * seq_len, num_features]
+        node_features = data.view(-1, num_features)
+        
+        # Crear edge_index básico (conexiones temporales)
+        edge_index = self._create_temporal_edges(batch_size, seq_len)
+        
+        # Crear batch tensor para identificar a qué grafo pertenece cada nodo
+        batch = torch.repeat_interleave(torch.arange(batch_size), seq_len).to(self.device)
+        
+        # Forward pass del GNN
+        predictions = self.model(node_features, edge_index, batch=batch)
+        
+        return predictions
+    
+    def _forward_gnn_with_model(self, model: nn.Module, data: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass específico para modelos GNN con modelo personalizado.
+        
+        Args:
+            model: Modelo GNN específico
+            data: Tensor de features [batch_size, seq_len, num_features]
+            
+        Returns:
+            Predicciones del modelo GNN
+        """
+        # Para GNN, necesitamos crear estructura de grafo desde las features
+        batch_size, seq_len, num_features = data.shape
+        
+        # Reshape para crear nodos: [batch_size * seq_len, num_features]
+        node_features = data.view(-1, num_features)
+        
+        # Crear edge_index básico (conexiones temporales)
+        edge_index = self._create_temporal_edges(batch_size, seq_len)
+        
+        # Crear batch tensor para identificar a qué grafo pertenece cada nodo
+        batch = torch.repeat_interleave(torch.arange(batch_size), seq_len).to(self.device)
+        
+        # Forward pass del GNN
+        predictions = model(node_features, edge_index, batch=batch)
+        
+        return predictions
+    
+    def _create_temporal_edges(self, batch_size: int, seq_len: int) -> torch.Tensor:
+        """
+        Crea conexiones temporales para el grafo.
+        
+        Args:
+            batch_size: Tamaño del batch
+            seq_len: Longitud de la secuencia
+            
+        Returns:
+            edge_index: [2, num_edges] tensor con conexiones del grafo
+        """
+        edges = []
+        
+        for batch_idx in range(batch_size):
+            offset = batch_idx * seq_len
+            
+            # Conexiones temporales secuenciales: t -> t+1
+            for t in range(seq_len - 1):
+                edges.append([offset + t, offset + t + 1])
+                edges.append([offset + t + 1, offset + t])  # Bidireccional
+            
+            # Conexiones adicionales para capturar dependencias a largo plazo
+            if seq_len > 3:
+                # Conexiones t -> t+2
+                for t in range(seq_len - 2):
+                    edges.append([offset + t, offset + t + 2])
+                    edges.append([offset + t + 2, offset + t])
+        
+        if not edges:
+            # Si no hay conexiones, crear una conexión dummy
+            edge_index = torch.zeros((2, 1), dtype=torch.long, device=self.device)
+        else:
+            edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous().to(self.device)
+        
+        return edge_index
