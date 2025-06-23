@@ -36,6 +36,7 @@ from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score, 
     roc_auc_score, classification_report, confusion_matrix, log_loss
 )
+from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 from sklearn.model_selection import (
     StratifiedKFold, cross_val_score, RandomizedSearchCV, train_test_split
 )
@@ -434,44 +435,45 @@ class NBAWinPredictionNet(nn.Module):
         self.ln3 = nn.LayerNorm(hidden_size // 2)
         self.dropout3 = nn.Dropout(dropout_rate * 0.5)
         
-        # Capa de salida para clasificación binaria
-        self.output = nn.Linear(hidden_size // 2, 1)
+        # Capa de salida para clasificación con 2 clases (softmax)
+        self.output = nn.Linear(hidden_size // 2, 2)
         
-        # Inicialización de pesos
+        # Inicialización de pesos mejorada
         self._initialize_weights()
     
     def _initialize_weights(self):
-        """Inicialización optimizada de pesos para clasificación"""
+        """Inicialización optimizada de pesos para mejor convergencia"""
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', 
+                # He initialization para mejor convergencia con ReLU
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', 
                                       nonlinearity='relu')
                 if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
+                    nn.init.constant_(m.bias, 0.01)  # Pequeño bias positivo
             elif isinstance(m, nn.LayerNorm):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0.0)
     
     def forward(self, x):
-        # Normalización de entrada
+        # Normalización de entrada mejorada
         x = self.input_ln(x)
         
-        # Primera capa con activación y dropout
-        x = F.relu(self.ln1(self.fc1(x)))
-        x = self.dropout1(x)
+        # Primera capa con activación ELU para mejor gradiente
+        x1 = F.elu(self.ln1(self.fc1(x)))
+        x1 = self.dropout1(x1)
         
-        # Segunda capa
-        x = F.relu(self.ln2(self.fc2(x)))
-        x = self.dropout2(x)
+        # Segunda capa con ReLU clásico
+        x2 = F.relu(self.ln2(self.fc2(x1)))
+        x2 = self.dropout2(x2)
         
-        # Tercera capa  
-        x = F.relu(self.ln3(self.fc3(x)))
-        x = self.dropout3(x)
+        # Tercera capa con Leaky ReLU para evitar dying neurons
+        x3 = F.leaky_relu(self.ln3(self.fc3(x2)), negative_slope=0.1)
+        x3 = self.dropout3(x3)
         
-        # Salida con sigmoid para probabilidad
-        x = torch.sigmoid(self.output(x))
+        # Salida con log_softmax para estabilidad numérica
+        output = F.log_softmax(self.output(x3), dim=1)
         
-        return x
+        return output
 
 
 class PyTorchNBAClassifier(ClassifierMixin, BaseEstimator):
@@ -626,15 +628,15 @@ class PyTorchNBAClassifier(ClassifierMixin, BaseEstimator):
             
             nn_logger.info(f"📊 Datos preparados | Train: {len(X_train)} | Val: {len(X_val)}")
             
-            # Convertir a tensores
+            # Convertir a tensores - cambio para softmax de 2 clases
             X_train_tensor = torch.FloatTensor(X_train).to(self.device)
             
-            # Manejar tanto numpy arrays como pandas Series
+            # Manejar tanto numpy arrays como pandas Series para targets de clase
             if hasattr(y_train, 'values'):
                 y_train_values = y_train.values
             else:
                 y_train_values = y_train
-            y_train_tensor = torch.FloatTensor(y_train_values.reshape(-1, 1)).to(self.device)
+            y_train_tensor = torch.LongTensor(y_train_values).to(self.device)  # LongTensor para clases
             
             X_val_tensor = torch.FloatTensor(X_val).to(self.device)
             
@@ -642,7 +644,7 @@ class PyTorchNBAClassifier(ClassifierMixin, BaseEstimator):
                 y_val_values = y_val.values
             else:
                 y_val_values = y_val
-            y_val_tensor = torch.FloatTensor(y_val_values.reshape(-1, 1)).to(self.device)
+            y_val_tensor = torch.LongTensor(y_val_values).to(self.device)  # LongTensor para clases
             
             # Auto-ajustar batch_size si está habilitado
             optimal_batch_size = self._auto_adjust_batch_size(
@@ -679,7 +681,8 @@ class PyTorchNBAClassifier(ClassifierMixin, BaseEstimator):
                 optimizer, mode='min', factor=0.7, patience=10
             )
             
-            criterion = nn.BCELoss()
+            # Cambio a NLLLoss para trabajar con log_softmax
+            criterion = nn.NLLLoss()
             
             # Entrenamiento con early stopping y monitoreo de memoria
             self.training_history = {
@@ -725,8 +728,8 @@ class PyTorchNBAClassifier(ClassifierMixin, BaseEstimator):
                     val_outputs = self.model(X_val_tensor)
                     val_loss = criterion(val_outputs, y_val_tensor).item()
                     
-                    # Calcular accuracy
-                    val_preds = (val_outputs > 0.5).float()
+                    # Calcular accuracy para softmax de 2 clases
+                    val_preds = torch.argmax(val_outputs, dim=1)
                     val_accuracy = (val_preds == y_val_tensor).float().mean().item()
                 
                 # Guardar métricas
@@ -814,22 +817,20 @@ class PyTorchNBAClassifier(ClassifierMixin, BaseEstimator):
                 X_batch = X_scaled[i:batch_end]
                 
                 X_tensor = torch.FloatTensor(X_batch).to(self.device)
-                batch_probabilities = self.model(X_tensor).cpu().numpy()
+                # Convertir de log_softmax a probabilidades normales
+                log_probabilities = self.model(X_tensor)
+                batch_probabilities = torch.exp(log_probabilities).cpu().numpy()
                 all_probabilities.append(batch_probabilities)
         
-        # Concatenar resultados
+        # Concatenar resultados y retornar probabilidades para ambas clases
         probabilities = np.concatenate(all_probabilities, axis=0)
         
-        # Retornar probabilidades para ambas clases
-        prob_positive = probabilities.flatten()
-        prob_negative = 1 - prob_positive
-        
-        return np.column_stack([prob_negative, prob_positive])
+        return probabilities  # Ya está en formato [prob_clase_0, prob_clase_1]
     
     def predict(self, X):
         """Predicción de clases"""
         probabilities = self.predict_proba(X)
-        return (probabilities[:, 1] > 0.5).astype(int)
+        return np.argmax(probabilities, axis=1)
     
     def get_params(self, deep=True):
         """Obtener parámetros del modelo"""
@@ -1189,6 +1190,10 @@ class IsWinModel:
         self.bayesian_results = {}
         self.gpu_config = {}
         
+        # Calibración de probabilidades
+        self.probability_calibrator = None
+        self.calibration_curve_data = None
+        
         # Configurar entorno GPU
         self._setup_gpu_environment()
         
@@ -1427,6 +1432,110 @@ class IsWinModel:
         
         logger.debug("✅ Modelo de stacking configurado con regularización extrema")
     
+    def _train_advanced_stacking(self, X_train, y_train, X_val, y_val) -> Dict[str, Any]:
+        """
+        Entrena múltiples configuraciones de stacking y selecciona la mejor
+        """
+        logger.info("🚀 Iniciando entrenamiento de stacking avanzado...")
+        
+        # Definir múltiples meta-learners
+        meta_learners = {
+            'logistic_l1': LogisticRegression(
+                C=0.1, penalty='l1', solver='liblinear', 
+                random_state=42, max_iter=1000
+            ),
+            'logistic_l2': LogisticRegression(
+                C=0.5, penalty='l2', solver='liblinear', 
+                random_state=42, max_iter=1000
+            ),
+            'xgb_meta': xgb.XGBClassifier(
+                n_estimators=30, max_depth=3, learning_rate=0.1,
+                subsample=0.8, colsample_bytree=0.8, random_state=42,
+                eval_metric='logloss', n_jobs=-1
+            ),
+            'lightgbm_meta': lgb.LGBMClassifier(
+                n_estimators=30, max_depth=3, learning_rate=0.1,
+                subsample=0.8, colsample_bytree=0.8, random_state=42,
+                verbose=-1, n_jobs=-1
+            ),
+            'rf_meta': RandomForestClassifier(
+                n_estimators=20, max_depth=4, min_samples_split=10,
+                min_samples_leaf=5, random_state=42, n_jobs=-1
+            )
+        }
+        
+        # Estimadores base (ya configurados en _setup_stacking_model)
+        base_estimators = self.stacking_model.estimators
+        
+        stacking_results = {}
+        best_score = 0
+        best_meta_name = None
+        
+        # Entrenar cada configuración de stacking
+        for meta_name, meta_learner in meta_learners.items():
+            logger.info(f"🔧 Entrenando stacking con meta-learner: {meta_name}")
+            
+            try:
+                # Crear modelo de stacking
+                stacking_model = StackingClassifier(
+                    estimators=base_estimators,
+                    final_estimator=meta_learner,
+                    cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
+                    stack_method='predict_proba',
+                    n_jobs=-1,
+                    verbose=0
+                )
+                
+                # Entrenar
+                stacking_model.fit(X_train, y_train)
+                
+                # Evaluar en validación
+                val_pred = stacking_model.predict(X_val)
+                val_proba = stacking_model.predict_proba(X_val)[:, 1]
+                
+                # Calcular métricas
+                metrics = MetricsCalculator.calculate_classification_metrics(
+                    y_val, val_pred, val_proba
+                )
+                
+                stacking_results[meta_name] = {
+                    'model': stacking_model,
+                    'metrics': metrics,
+                    'auc_score': metrics['auc_roc']
+                }
+                
+                logger.info(f"✅ {meta_name}: AUC={metrics['auc_roc']:.4f}, ACC={metrics['accuracy']:.4f}")
+                
+                # Actualizar mejor modelo
+                if metrics['auc_roc'] > best_score:
+                    best_score = metrics['auc_roc']
+                    best_meta_name = meta_name
+                    
+            except Exception as e:
+                logger.error(f"❌ Error entrenando {meta_name}: {e}")
+                continue
+        
+        # Seleccionar mejor modelo
+        if best_meta_name:
+            self.stacking_model = stacking_results[best_meta_name]['model']
+            logger.info(f"🏆 Mejor meta-learner seleccionado: {best_meta_name}")
+            logger.info(f"🎯 Mejor AUC: {best_score:.4f}")
+            
+            # Guardar información del mejor modelo
+            best_results = {
+                'best_meta_learner': best_meta_name,
+                'best_auc': best_score,
+                'all_results': {k: v['metrics'] for k, v in stacking_results.items()},
+                'meta_learner_comparison': stacking_results
+            }
+            
+        else:
+            logger.warning("⚠️ No se pudo entrenar ningún meta-learner, usando configuración por defecto")
+            self.stacking_model.fit(X_train, y_train)
+            best_results = {'best_meta_learner': 'default', 'best_auc': 0.0}
+        
+        return best_results
+    
     def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
         """Obtener columnas de features generadas CON CACHE"""
         
@@ -1483,6 +1592,10 @@ class IsWinModel:
         X = df[feature_columns].fillna(0)
         y = df['is_win']
         
+        # IMPORTANTE: Guardar las features usadas en entrenamiento para consistencia en predicción
+        self.feature_columns_ = feature_columns.copy()
+        logger.info(f"Guardando {len(self.feature_columns_)} features para consistencia en predicción")
+        
         # Verificar balance de clases
         class_balance = y.value_counts(normalize=True)
         logger.info(f"Balance: Victorias={class_balance.get(1, 0):.3f}, Derrotas={class_balance.get(0, 0):.3f}")
@@ -1505,15 +1618,15 @@ class IsWinModel:
             logger.info("Optimización bayesiana...")
             self._optimize_with_bayesian(X_train_scaled, y_train)
         
-        # Entrenar modelo de stacking
-        logger.info("Entrenando stacking...")
-        self.stacking_model.fit(X_train_scaled, y_train)
+        # Entrenar múltiples modelos de stacking y seleccionar el mejor
+        logger.info("Entrenando sistema de stacking avanzado...")
+        best_stacking_results = self._train_advanced_stacking(X_train_scaled, y_train, X_val_scaled, y_val)
         
-        # Evaluación completa
+        # Evaluación completa del mejor stacking
         stacking_val_pred = self.stacking_model.predict(X_val_scaled)
         stacking_val_proba = self.stacking_model.predict_proba(X_val_scaled)[:, 1]
         
-        # Métricas del stacking
+        # Métricas del mejor stacking
         stacking_metrics = MetricsCalculator.calculate_classification_metrics(
             y_val, stacking_val_pred, stacking_val_proba
         )
@@ -1527,13 +1640,22 @@ class IsWinModel:
         self.training_results = {
             'individual_models': individual_results,
             'stacking_metrics': stacking_metrics,
+            'advanced_stacking': best_stacking_results,
             'feature_count': len(feature_columns),
             'training_samples': len(X_train_scaled),
             'validation_samples': len(X_val_scaled),
             'class_balance': class_balance.to_dict()
         }
         
-        # Validación cruzada del modelo final
+        # Calibrar probabilidades para mejor separación
+        calibration_results = self._calibrate_probabilities(X_val_scaled, y_val)
+        self.training_results['calibration'] = calibration_results
+        
+        # Validación temporal rigurosa (prioritaria)
+        temporal_results = self._perform_temporal_validation(df)
+        self.training_results['temporal_validation'] = temporal_results
+        
+        # Validación cruzada del modelo final (como respaldo)
         cv_results = self._perform_cross_validation(X, y)
         self.training_results['cross_validation'] = cv_results
         
@@ -1647,21 +1769,39 @@ class IsWinModel:
         # Validar consistencia de features
         self._validate_feature_consistency(df, "predicción")
         
-        # Obtener features
-        feature_columns = self.get_feature_columns(df)
-        X = df[feature_columns].fillna(0)
-        
-        # Verificar que tenemos las mismas features que en entrenamiento
+        # SOLUCIÓN: Usar DIRECTAMENTE las features guardadas durante entrenamiento
+        # En lugar de generar nuevas features que pueden ser inconsistentes
         if hasattr(self, 'feature_columns_') and self.feature_columns_:
-            # Asegurar que tenemos exactamente las mismas features
-            missing_features = set(self.feature_columns_) - set(feature_columns)
-            if missing_features:
-                logger.warning(f"Agregando features faltantes con valores por defecto: {list(missing_features)}")
-                for feature in missing_features:
-                    X[feature] = 0.5  # Valor neutro
+            logger.debug(f"Usando features de entrenamiento: {len(self.feature_columns_)} features")
             
-            # Reordenar columnas para que coincidan con el entrenamiento
-            X = X.reindex(columns=self.feature_columns_, fill_value=0.5)
+            # Crear DataFrame con solo las features del entrenamiento
+            X = pd.DataFrame(index=df.index)
+            
+            for feature in self.feature_columns_:
+                if feature in df.columns:
+                    X[feature] = df[feature]
+                else:
+                    # Feature no existe, usar valor por defecto apropiado
+                    if 'win_rate' in feature or 'form' in feature:
+                        X[feature] = 0.5  # Valor neutro para probabilidades
+                    elif 'advantage' in feature or 'penalty' in feature:
+                        X[feature] = 0.0  # Valor neutro para ventajas/penalizaciones
+                    else:
+                        X[feature] = 0.0  # Valor por defecto general
+                    
+                    logger.debug(f"Feature '{feature}' no disponible, usando valor por defecto")
+            
+            # Asegurar orden correcto de columnas
+            X = X[self.feature_columns_]
+            
+        else:
+            # Fallback: generar features si no hay referencia de entrenamiento
+            logger.warning("No hay features de referencia del entrenamiento, generando nuevas")
+            feature_columns = self.get_feature_columns(df)
+            X = df[feature_columns].fillna(0)
+        
+        # Rellenar cualquier valor faltante
+        X = X.fillna(0)
         
         # Escalar features
         X_scaled = self.scaler.transform(X)
@@ -1686,21 +1826,39 @@ class IsWinModel:
         # Validar consistencia de features
         self._validate_feature_consistency(df, "predicción de probabilidades")
         
-        # Obtener features
-        feature_columns = self.get_feature_columns(df)
-        X = df[feature_columns].fillna(0)
-        
-        # Verificar que tenemos las mismas features que en entrenamiento
+        # SOLUCIÓN: Usar DIRECTAMENTE las features guardadas durante entrenamiento
+        # En lugar de generar nuevas features que pueden ser inconsistentes
         if hasattr(self, 'feature_columns_') and self.feature_columns_:
-            # Asegurar que tenemos exactamente las mismas features
-            missing_features = set(self.feature_columns_) - set(feature_columns)
-            if missing_features:
-                logger.warning(f"Agregando features faltantes con valores por defecto: {list(missing_features)}")
-                for feature in missing_features:
-                    X[feature] = 0.5  # Valor neutro
+            logger.debug(f"Usando features de entrenamiento: {len(self.feature_columns_)} features")
             
-            # Reordenar columnas para que coincidan con el entrenamiento
-            X = X.reindex(columns=self.feature_columns_, fill_value=0.5)
+            # Crear DataFrame con solo las features del entrenamiento
+            X = pd.DataFrame(index=df.index)
+            
+            for feature in self.feature_columns_:
+                if feature in df.columns:
+                    X[feature] = df[feature]
+                else:
+                    # Feature no existe, usar valor por defecto apropiado
+                    if 'win_rate' in feature or 'form' in feature:
+                        X[feature] = 0.5  # Valor neutro para probabilidades
+                    elif 'advantage' in feature or 'penalty' in feature:
+                        X[feature] = 0.0  # Valor neutro para ventajas/penalizaciones
+                    else:
+                        X[feature] = 0.0  # Valor por defecto general
+                    
+                    logger.debug(f"Feature '{feature}' no disponible, usando valor por defecto")
+            
+            # Asegurar orden correcto de columnas
+            X = X[self.feature_columns_]
+            
+        else:
+            # Fallback: generar features si no hay referencia de entrenamiento
+            logger.warning("No hay features de referencia del entrenamiento, generando nuevas")
+            feature_columns = self.get_feature_columns(df)
+            X = df[feature_columns].fillna(0)
+        
+        # Rellenar cualquier valor faltante
+        X = X.fillna(0)
         
         # Escalar features
         X_scaled = self.scaler.transform(X)
@@ -1709,6 +1867,16 @@ class IsWinModel:
         # Predicción de probabilidades con modelo stacking
         if self.stacking_model is not None:
             probabilities = self.stacking_model.predict_proba(X_scaled)
+            
+            # Aplicar calibración si está disponible
+            if self.probability_calibrator is not None:
+                # Calibrar solo la probabilidad de la clase positiva
+                uncalibrated_probs = probabilities[:, 1]
+                calibrated_probs = self.probability_calibrator.predict(uncalibrated_probs)
+                
+                # Reconstruir matriz de probabilidades
+                probabilities = np.column_stack([1 - calibrated_probs, calibrated_probs])
+                
         else:
             # Fallback: usar modelo con mejor rendimiento
             best_model_name = max(self.cv_results.items(), key=lambda x: x[1]['accuracy_mean'])[0]
@@ -2082,7 +2250,7 @@ class IsWinModel:
     
     def _calculate_feature_importance(self, 
                                     feature_columns: List[str]) -> Dict[str, Any]:
-        """Calcular importancia de features desde múltiples modelos"""
+        """Calcular importancia de features desde múltiples modelos con filtrado de ruido"""
         
         importance_dict = {}
         
@@ -2096,21 +2264,33 @@ class IsWinModel:
         ]
         
         # Extraer importancia de cada modelo
+        valid_models = 0
         for model_name, attr_name in importance_models:
             if model_name in self.models:
                 try:
                     model = self.models[model_name]
                     if hasattr(model, attr_name):
                         importance_values = getattr(model, attr_name)
-                        importance_dict[model_name] = dict(
-                            zip(feature_columns, importance_values)
-                        )
+                        if len(importance_values) == len(feature_columns):
+                            importance_dict[model_name] = dict(
+                                zip(feature_columns, importance_values)
+                            )
+                            valid_models += 1
+                        else:
+                            logger.warning(f"Mismatch en features para {model_name}: "
+                                         f"{len(importance_values)} vs {len(feature_columns)}")
                 except Exception as e:
                     logger.debug(f"Error obteniendo importancia de {model_name}: {e}")
         
-        # Importancia promedio
+        if valid_models == 0:
+            logger.warning("No se pudo obtener feature importance de ningún modelo")
+            return {}
+        
+        # Importancia promedio con filtrado de ruido
         if importance_dict:
             avg_importance = {}
+            feature_stats = {}
+            
             for feature in feature_columns:
                 importances = []
                 for model_importance in importance_dict.values():
@@ -2118,13 +2298,31 @@ class IsWinModel:
                         importances.append(model_importance[feature])
                 
                 if importances:
-                    avg_importance[feature] = np.mean(importances)
+                    mean_imp = np.mean(importances)
+                    std_imp = np.std(importances)
+                    
+                    # Filtrar features con muy baja importancia o alta variabilidad
+                    if mean_imp > 0.001 and (std_imp / mean_imp < 2.0 if mean_imp > 0 else True):
+                        avg_importance[feature] = mean_imp
+                        feature_stats[feature] = {
+                            'mean': mean_imp,
+                            'std': std_imp,
+                            'cv': std_imp / mean_imp if mean_imp > 0 else 0,
+                            'models_count': len(importances)
+                        }
             
             # Ordenar por importancia
             sorted_importance = sorted(
                 avg_importance.items(), key=lambda x: x[1], reverse=True
             )
+            
             importance_dict['average'] = dict(sorted_importance)
+            importance_dict['stats'] = feature_stats
+            importance_dict['models_used'] = valid_models
+            
+            # Log top features
+            top_5 = list(sorted_importance)[:5]
+            logger.info(f"Top 5 features: {[f'{name}: {imp:.4f}' for name, imp in top_5]}")
         
         return importance_dict
     
@@ -2132,7 +2330,12 @@ class IsWinModel:
         """Obtener importancia de features del modelo entrenado"""
         
         if not self.feature_importance:
-            raise ValueError("Modelo no entrenado o importancia no calculada")
+            logger.warning("Modelo no entrenado o importancia no calculada")
+            return {
+                'feature_importance': {},
+                'top_features': [],
+                'total_features': 0
+            }
         
         # Top features promedio
         if 'average' in self.feature_importance:
@@ -2141,6 +2344,7 @@ class IsWinModel:
             )[:top_n]
             
             return {
+                'feature_importance': dict(top_features),  # Para compatibilidad con visualización
                 'top_features': top_features,
                 'feature_importance_by_model': self.feature_importance,
                 'total_features': len(
@@ -2148,7 +2352,12 @@ class IsWinModel:
                 )
             }
         
-        return self.feature_importance
+        # Fallback si no hay promedio
+        return {
+            'feature_importance': {},
+            'top_features': [],
+            'total_features': 0
+        }
     
     def validate_model(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Validación completa del modelo en datos nuevos"""
@@ -2693,7 +2902,7 @@ class IsWinModel:
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
         # Convertir a JSON serializable
-        export_data = safe_json_serialize(self.threshold_results)
+        export_data = self._safe_json_serialize(self.threshold_results)
         
         # Guardar archivo
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -2709,6 +2918,216 @@ class IsWinModel:
         return (self.stacking_model is not None and 
                 hasattr(self, 'training_results') and 
                 self.training_results)
+    
+    def _calibrate_probabilities(self, X_val, y_val):
+        """Calibrar probabilidades del modelo para mejor separación de clases"""
+        logger.info("🎯 Iniciando calibración de probabilidades...")
+        
+        # Obtener probabilidades sin calibrar del stacking model
+        uncalibrated_probs = self.stacking_model.predict_proba(X_val)[:, 1]
+        
+        # Usar calibración isotónica para mejor separación
+        from sklearn.isotonic import IsotonicRegression
+        
+        self.probability_calibrator = IsotonicRegression(out_of_bounds='clip')
+        self.probability_calibrator.fit(uncalibrated_probs, y_val)
+        
+        # Generar curva de calibración para análisis
+        from sklearn.calibration import calibration_curve
+        
+        prob_true, prob_pred = calibration_curve(
+            y_val, uncalibrated_probs, n_bins=10, strategy='quantile'
+        )
+        
+        self.calibration_curve_data = {
+            'prob_true': prob_true.tolist(),
+            'prob_pred': prob_pred.tolist(),
+            'perfect_calibration': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        }
+        
+        # Evaluar mejora en calibración
+        calibrated_probs = self.probability_calibrator.predict(uncalibrated_probs)
+        
+        # Calcular métricas de calibración
+        from sklearn.metrics import brier_score_loss
+        
+        brier_uncalibrated = brier_score_loss(y_val, uncalibrated_probs)
+        brier_calibrated = brier_score_loss(y_val, calibrated_probs)
+        
+        logger.info(f"📊 Brier Score - Sin calibrar: {brier_uncalibrated:.4f}, Calibrado: {brier_calibrated:.4f}")
+        logger.info(f"🎯 Mejora en calibración: {((brier_uncalibrated - brier_calibrated) / brier_uncalibrated * 100):.1f}%")
+        
+        return {
+            'brier_uncalibrated': brier_uncalibrated,
+            'brier_calibrated': brier_calibrated,
+            'calibration_improvement': (brier_uncalibrated - brier_calibrated) / brier_uncalibrated
+        }
+    
+    def _perform_temporal_validation(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Realiza validación temporal rigurosa para evitar data leakage
+        """
+        logger.info("🕐 Iniciando validación temporal rigurosa...")
+        
+        # Verificar que tenemos columna de fecha
+        if 'Date' not in df.columns:
+            logger.warning("⚠️ Columna 'Date' no encontrada, usando validación cruzada estándar")
+            return self._perform_cross_validation(df[self.get_feature_columns(df)], df['is_win'])
+        
+        # Convertir fecha y ordenar
+        df_sorted = df.copy()
+        df_sorted['Date'] = pd.to_datetime(df_sorted['Date'])
+        df_sorted = df_sorted.sort_values('Date').reset_index(drop=True)
+        
+        # Definir splits temporales
+        total_samples = len(df_sorted)
+        
+        # Configurar ventanas temporales (evitando data leakage)
+        temporal_splits = [
+            {
+                'name': 'split_1',
+                'train_end': int(total_samples * 0.6),   # 60% para entrenamiento
+                'val_start': int(total_samples * 0.6),   # 60-80% para validación
+                'val_end': int(total_samples * 0.8)
+            },
+            {
+                'name': 'split_2', 
+                'train_end': int(total_samples * 0.7),   # 70% para entrenamiento
+                'val_start': int(total_samples * 0.7),   # 70-85% para validación
+                'val_end': int(total_samples * 0.85)
+            },
+            {
+                'name': 'split_3',
+                'train_end': int(total_samples * 0.75),  # 75% para entrenamiento
+                'val_start': int(total_samples * 0.75),  # 75-90% para validación
+                'val_end': int(total_samples * 0.9)
+            }
+        ]
+        
+        temporal_results = {}
+        feature_columns = self.get_feature_columns(df_sorted)
+        
+        for split_config in temporal_splits:
+            split_name = split_config['name']
+            logger.info(f"📅 Evaluando {split_name}...")
+            
+            try:
+                # Dividir datos temporalmente
+                train_idx = slice(0, split_config['train_end'])
+                val_idx = slice(split_config['val_start'], split_config['val_end'])
+                
+                X_train_temp = df_sorted.iloc[train_idx][feature_columns].fillna(0)
+                y_train_temp = df_sorted.iloc[train_idx]['is_win']
+                X_val_temp = df_sorted.iloc[val_idx][feature_columns].fillna(0)
+                y_val_temp = df_sorted.iloc[val_idx]['is_win']
+                
+                # Verificar que tenemos datos suficientes
+                if len(X_train_temp) < 100 or len(X_val_temp) < 50:
+                    logger.warning(f"⚠️ {split_name}: Datos insuficientes, saltando...")
+                    continue
+                
+                # Escalar datos
+                scaler_temp = StandardScaler()
+                X_train_scaled = scaler_temp.fit_transform(X_train_temp)
+                X_val_scaled = scaler_temp.transform(X_val_temp)
+                
+                # Entrenar modelo temporal (solo XGBoost para rapidez)
+                temp_model = xgb.XGBClassifier(
+                    n_estimators=100,
+                    max_depth=4,
+                    learning_rate=0.1,
+                    random_state=42,
+                    eval_metric='logloss',
+                    n_jobs=-1
+                )
+                
+                temp_model.fit(X_train_scaled, y_train_temp)
+                
+                # Predicciones
+                val_pred = temp_model.predict(X_val_scaled)
+                val_proba = temp_model.predict_proba(X_val_scaled)[:, 1]
+                
+                # Métricas
+                metrics = MetricsCalculator.calculate_classification_metrics(
+                    y_val_temp, val_pred, val_proba
+                )
+                
+                # Información temporal
+                train_date_range = (
+                    df_sorted.iloc[train_idx]['Date'].min(),
+                    df_sorted.iloc[train_idx]['Date'].max()
+                )
+                val_date_range = (
+                    df_sorted.iloc[val_idx]['Date'].min(),
+                    df_sorted.iloc[val_idx]['Date'].max()
+                )
+                
+                temporal_results[split_name] = {
+                    'metrics': metrics,
+                    'train_samples': len(X_train_temp),
+                    'val_samples': len(X_val_temp),
+                    'train_date_range': train_date_range,
+                    'val_date_range': val_date_range,
+                    'temporal_gap': (val_date_range[0] - train_date_range[1]).days
+                }
+                
+                logger.info(f"✅ {split_name}: AUC={metrics['auc_roc']:.4f}, ACC={metrics['accuracy']:.4f}")
+                
+            except Exception as e:
+                logger.error(f"❌ Error en {split_name}: {e}")
+                continue
+        
+        # Calcular estadísticas agregadas
+        if temporal_results:
+            all_aucs = [r['metrics']['auc_roc'] for r in temporal_results.values()]
+            all_accs = [r['metrics']['accuracy'] for r in temporal_results.values()]
+            
+            temporal_summary = {
+                'temporal_splits': temporal_results,
+                'average_auc': np.mean(all_aucs),
+                'std_auc': np.std(all_aucs),
+                'average_accuracy': np.mean(all_accs),
+                'std_accuracy': np.std(all_accs),
+                'temporal_stability': 1.0 - (np.std(all_aucs) / np.mean(all_aucs)),  # Medida de estabilidad
+                'num_splits': len(temporal_results)
+            }
+            
+            logger.info(f"📊 Validación temporal completada:")
+            logger.info(f"   • AUC promedio: {temporal_summary['average_auc']:.4f} ± {temporal_summary['std_auc']:.4f}")
+            logger.info(f"   • Accuracy promedio: {temporal_summary['average_accuracy']:.4f} ± {temporal_summary['std_accuracy']:.4f}")
+            logger.info(f"   • Estabilidad temporal: {temporal_summary['temporal_stability']:.4f}")
+            
+        else:
+            logger.warning("⚠️ No se pudieron completar splits temporales")
+            temporal_summary = {'error': 'No temporal splits completed'}
+        
+        return temporal_summary
+    
+    def _safe_json_serialize(self, obj):
+        """
+        Convierte objetos a formato JSON serializable
+        """
+        if isinstance(obj, dict):
+            return {k: self._safe_json_serialize(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._safe_json_serialize(item) for item in obj]
+        elif isinstance(obj, tuple):
+            return list(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        elif hasattr(obj, 'isoformat'):  # datetime objects
+            return obj.isoformat()
+        elif obj is None or isinstance(obj, (str, int, float, bool)):
+            return obj
+        else:
+            # Para objetos no serializables, convertir a string
+            return str(obj)
 
 
 class NBAConfidenceThresholdOptimizer:

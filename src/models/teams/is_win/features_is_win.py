@@ -215,20 +215,23 @@ class IsWinFeatureEngineer:
         ])]
         essential_features.extend([f for f in opponent_features[:4] if f not in essential_features])
         
-        # PRIORIDAD 7: NUEVAS FEATURES ULTRA-PREDICTIVAS (máximo 15)
-        ultra_predictive_features = [col for col in all_features if any(keyword in col for keyword in [
-            'quality_adjusted_win_rate', 'momentum_weighted_win_rate', 'trend_weighted_win_rate',
-            'b2b_win_rate', 'weekend_win_rate', 'rested_win_rate', 'tired_win_rate',
-            'win_rate_trend', 'performance_acceleration', 'hot_streak', 'cold_streak',
-            'cycle_strength', 'context_adjusted_performance', 'home_court_effectiveness',
-            'rest_adjusted_performance', 'momentum_opponent_interaction', 'recovery_rate_5g',
-            'playoff_pressure', 'desperation_factor', 'streak_pressure', 'revenge_intensity',
-            'underdog_motivation', 'pride_factor', 'momentum_shift_potential'
+        # PRIORIDAD 7: CARACTERÍSTICAS BÁSICAS ADICIONALES (máximo 4)
+        additional_features = [col for col in all_features if any(keyword in col for keyword in [
+            'energy_factor', 'altitude_advantage', 'rest_advantage', 'season_fatigue_factor'
         ])]
-        essential_features.extend([f for f in ultra_predictive_features[:15] if f not in essential_features])
+        essential_features.extend([f for f in additional_features[:4] if f not in essential_features])
         
-        # Aumentar límite a 45 features para acomodar las nuevas características ultra-predictivas
-        final_features = essential_features[:45]
+        # FILTRADO DE FEATURES QUE GENERAN RUIDO
+        filtered_features = self._filter_noisy_features(essential_features, df)
+        
+        # AÑADIR FEATURES CONTEXTUALES DE ALTA PRECISIÓN
+        precision_features = self._create_precision_features(df)
+        
+        # Combinar features filtradas con features de precisión
+        combined_features = filtered_features + [f for f in precision_features if f not in filtered_features]
+        
+        # Límite de características optimizadas para precisión
+        final_features = combined_features[:28]
         
         # Actualizar la lista final
         self.feature_columns = final_features
@@ -241,8 +244,8 @@ class IsWinFeatureEngineer:
 
         # Solo log detallado la primera vez
         if data_hash != self._last_data_hash or len(final_features) != len(self._features_cache.get('last_features', [])):
-            logger.info(f"Features ULTRA-PREDICTIVAS generadas: {len(final_features)} características (máximo 45)")
-            logger.info(f"Incluyendo {len([f for f in final_features if any(kw in f for kw in ['quality_adjusted', 'momentum_weighted', 'trend_weighted', 'win_rate_trend', 'hot_streak', 'cold_streak', 'revenge_intensity', 'underdog_motivation'])])} nuevas features ultra-predictivas")
+            logger.info(f"Features SIMPLIFICADAS generadas: {len(final_features)} características (máximo 30)")
+            logger.info(f"Pipeline simplificado para evitar inconsistencias entre entrenamiento y predicción")
             self._features_cache['last_features'] = final_features.copy()
         
         return self.feature_columns
@@ -409,512 +412,60 @@ class IsWinFeatureEngineer:
             np.where(df['last_vs_opp_result'] == 1, -0.02, 0.0)  # Ganaron último vs este rival
         )
         
-        # NUEVAS CARACTERÍSTICAS DE MOMENTUM PARA MEJORAR PRECISIÓN
-        self._create_advanced_momentum_features(df)
-    
-    def _create_advanced_momentum_features(self, df: pd.DataFrame) -> None:
+    def _create_precision_features(self, df: pd.DataFrame) -> List[str]:
         """
-        MEJORA CRÍTICA: Características avanzadas de momentum para aumentar precisión.
-        
-        Estas características han demostrado ser efectivas para predecir victorias:
-        - Rachas de victorias/derrotas
-        - Tendencias recientes vs históricas
-        - Momentum de rendimiento
-        - Fatiga acumulada
+        Crea features contextuales específicas para mejorar la precisión en situaciones críticas
         """
-        # Calcular rachas de victorias/derrotas
-        df['win_streak'] = 0
-        df['loss_streak'] = 0
+        precision_features = []
         
-        for team in df['Team'].unique():
-            team_mask = df['Team'] == team
-            team_df = df[team_mask].copy()
-            
-            if len(team_df) > 1:
-                # Calcular rachas usando resultados históricos
-                is_win_shifted = team_df['is_win'].shift(1).fillna(0)
-                
-                # Win streak
-                win_streak = []
-                current_win_streak = 0
-                
-                for win in is_win_shifted:
-                    if win == 1:
-                        current_win_streak += 1
-                    else:
-                        current_win_streak = 0
-                    win_streak.append(current_win_streak)
-                
-                # Loss streak
-                loss_streak = []
-                current_loss_streak = 0
-                
-                for win in is_win_shifted:
-                    if win == 0:
-                        current_loss_streak += 1
-                    else:
-                        current_loss_streak = 0
-                    loss_streak.append(current_loss_streak)
-                
-                df.loc[team_mask, 'win_streak'] = win_streak
-                df.loc[team_mask, 'loss_streak'] = loss_streak
-        
-        # Recent form vs season average
-        recent_form_5g = df.groupby('Team')['is_win'].transform(
-            lambda x: x.shift(1).rolling(5, min_periods=2).mean()
-        ).fillna(0.5)
-        
-        season_average = df.groupby('Team')['is_win'].transform(
-            lambda x: x.shift(1).expanding().mean()
-        ).fillna(0.5)
-        
-        df['recent_form'] = recent_form_5g
-        df['form_vs_average'] = recent_form_5g - season_average
-        
-        # Momentum score compuesto
-        df['momentum_score'] = (
-            df['win_streak'] * 0.15 +  # Rachas de victoria son importantes
-            df['recent_form'] * 0.4 +   # Forma reciente es clave
-            df['form_vs_average'] * 0.3 +  # Tendencia vs promedio
-            (df['loss_streak'] * -0.15)    # Rachas de derrota penalizan
-        )
-        
-        # Fatiga acumulada (basada en densidad de juegos)
-        if 'Date' in df.columns:
-            df['games_in_last_7_days'] = 0
-            df['games_in_last_14_days'] = 0
-            
-            for team in df['Team'].unique():
-                team_mask = df['Team'] == team
-                team_df = df[team_mask].copy().sort_values('Date')
-                
-                if len(team_df) > 1:
-                    for idx in team_df.index:
-                        current_date = team_df.loc[idx, 'Date']
-                        
-                        # Juegos en últimos 7 días
-                        recent_7d = team_df[
-                            (team_df['Date'] < current_date) & 
-                            (team_df['Date'] >= current_date - pd.Timedelta(days=7))
-                        ]
-                        df.loc[idx, 'games_in_last_7_days'] = len(recent_7d)
-                        
-                        # Juegos en últimos 14 días
-                        recent_14d = team_df[
-                            (team_df['Date'] < current_date) & 
-                            (team_df['Date'] >= current_date - pd.Timedelta(days=14))
-                        ]
-                        df.loc[idx, 'games_in_last_14_days'] = len(recent_14d)
-            
-            # Factor de fatiga basado en densidad de juegos
-            df['fatigue_factor'] = np.where(
-                df['games_in_last_7_days'] >= 4, -0.08,  # 4+ juegos en 7 días = fatiga alta
-                np.where(df['games_in_last_7_days'] >= 3, -0.04,  # 3 juegos = fatiga media
-                        np.where(df['games_in_last_7_days'] <= 1, 0.02, 0.0))  # Pocos juegos = descanso
+        # 1. CLUTCH TIME PERFORMANCE (últimos 5 minutos)
+        if 'pts_hist_avg_5g' in df.columns and 'pts_opp_hist_avg_5g' in df.columns:
+            # Capacidad de cerrar juegos
+            df['clutch_factor'] = np.where(
+                (df['pts_hist_avg_5g'] - df['pts_opp_hist_avg_5g']) > 3, 0.08,  # Dominantes
+                np.where((df['pts_hist_avg_5g'] - df['pts_opp_hist_avg_5g']) < -3, -0.08, 0.0)  # Débiles
             )
+            precision_features.append('clutch_factor')
         
-        # Consistency score (qué tan predecible es el equipo)
-        df['performance_consistency'] = df.groupby('Team')['is_win'].transform(
-            lambda x: 1 - x.shift(1).rolling(10, min_periods=3).std().fillna(0.5)
-        )
+        # 2. MOMENTUM SHIFT INDICATOR
+        if 'team_win_rate_5g' in df.columns and 'team_win_rate_10g' in df.columns:
+            # Tendencia reciente vs histórica
+            df['momentum_shift'] = df['team_win_rate_5g'] - df['team_win_rate_10g']
+            precision_features.append('momentum_shift')
         
-        # Clutch performance (rendimiento en juegos cerrados)
-        # Proxy: rendimiento cuando el equipo tiene form_vs_average cerca de 0
-        df['clutch_indicator'] = np.where(
-            np.abs(df['form_vs_average']) < 0.1, 1, 0  # Equipos en situación "clutch"
-        )
+        # 3. DEFENSIVE PRESSURE RATING
+        if 'pts_opp_hist_avg_10g' in df.columns:
+            # Calidad defensiva vs promedio liga (asumiendo ~110 pts/juego)
+            league_avg_pts = 110
+            df['defensive_pressure'] = (league_avg_pts - df['pts_opp_hist_avg_10g']) / 20.0  # Normalizado
+            precision_features.append('defensive_pressure')
         
-        # NUEVAS CARACTERÍSTICAS ULTRA-PREDICTIVAS BASADAS EN ANÁLISIS DEL MODELO
-        self._create_ultra_predictive_features(df)
-    
-    def _create_ultra_predictive_features(self, df: pd.DataFrame) -> None:
-        """
-        MEJORA CRÍTICA: Características ultra-predictivas basadas en el análisis del modelo actual.
+        # 4. CONSISTENCY UNDER PRESSURE
+        if 'pts_consistency_5g' in df.columns and 'opponent_recent_form' in df.columns:
+            # Consistencia contra equipos fuertes
+            df['pressure_consistency'] = df['pts_consistency_5g'] * (1 - df['opponent_recent_form'])
+            precision_features.append('pressure_consistency')
         
-        El modelo actual logra 67.97% accuracy. Estas características están diseñadas para
-        capturar patrones más sutiles que pueden elevar la precisión al 72-75%.
+        # 5. STRATEGIC ADVANTAGE
+        if 'home_advantage' in df.columns and 'travel_penalty' in df.columns:
+            # Ventaja estratégica combinada
+            df['strategic_edge'] = df['home_advantage'] - df['travel_penalty']
+            precision_features.append('strategic_edge')
         
-        Basado en:
-        1. Gradient Boosting es el mejor modelo individual (68.55%)
-        2. Ensemble mejora ligeramente sobre individuales
-        3. Features de win_rate son las más importantes
-        4. Contexto temporal es crucial
-        """
+        # 6. MOTIVATION FACTOR
+        if 'revenge_motivation' in df.columns and 'last_vs_opp_result' in df.columns:
+            # Factor motivacional intensificado
+            df['motivation_intensity'] = df['revenge_motivation'] * (1 + abs(0.5 - df['last_vs_opp_result']))
+            precision_features.append('motivation_intensity')
         
-        # === GRUPO 1: WIN RATE CONTEXTUAL AVANZADO ===
-        # Basado en que win_rate features son las más importantes
+        # 7. FORM DIFFERENTIAL
+        if 'team_win_rate_5g' in df.columns and 'opponent_recent_form' in df.columns:
+            # Diferencia de forma entre equipos
+            df['form_advantage'] = df['team_win_rate_5g'] - (1 - df['opponent_recent_form'])
+            precision_features.append('form_advantage')
         
-        # 1. Win rate ajustado por calidad del oponente
-        self._create_quality_adjusted_win_rate(df)
-        
-        # 2. Win rate en situaciones específicas
-        self._create_situational_win_rates(df)
-        
-        # 3. Win rate con momentum ponderado
-        self._create_momentum_weighted_win_rate(df)
-        
-        # === GRUPO 2: CARACTERÍSTICAS DE TENDENCIA TEMPORAL ===
-        # Capturar patrones temporales más sofisticados
-        
-        # 4. Tendencias de mejora/deterioro
-        self._create_performance_trends(df)
-        
-        # 5. Ciclos de rendimiento
-        self._create_performance_cycles(df)
-        
-        # === GRUPO 3: CARACTERÍSTICAS DE INTERACCIÓN ===
-        # Capturar interacciones entre diferentes factores
-        
-        # 6. Interacciones entre contexto y rendimiento
-        self._create_context_performance_interactions(df)
-        
-        # 7. Características de adaptabilidad del equipo
-        self._create_team_adaptability_features(df)
-        
-        # === GRUPO 4: CARACTERÍSTICAS DE PRESIÓN Y MOTIVACIÓN ===
-        # Factores psicológicos que afectan el rendimiento
-        
-        # 8. Presión por posición en standings
-        self._create_pressure_features(df)
-        
-        # 9. Motivación por rivalidades y contexto
-        self._create_motivation_features(df)
-    
-    def _create_quality_adjusted_win_rate(self, df: pd.DataFrame) -> None:
-        """Win rate ajustado por la calidad de los oponentes enfrentados"""
-        
-        # Calcular strength of schedule (calidad de oponentes)
-        opponent_strength = df.groupby('Opp')['is_win'].transform(
-            lambda x: x.shift(1).expanding().mean()
-        ).fillna(0.5)
-        
-        # Win rate ponderado por calidad del oponente
-        for window in [5, 10]:
-            # Obtener wins y opponent strength para cada ventana
-            wins_shifted = df.groupby('Team')['is_win'].shift(1).fillna(0)
-            
-            def quality_adjusted_win_rate(series, opp_strength_series, window_size):
-                """Calcular win rate ajustado por calidad del oponente"""
-                if len(series) < 2:
-                    return 0.5
-                
-                # Últimos N juegos
-                recent_wins = series.tail(window_size)
-                recent_opp_strength = opp_strength_series.tail(window_size)
-                
-                if len(recent_wins) == 0:
-                    return 0.5
-                
-                # Ajustar wins por calidad del oponente
-                # Victoria vs equipo fuerte vale más, vs equipo débil vale menos
-                adjusted_wins = []
-                for win, opp_str in zip(recent_wins, recent_opp_strength):
-                    if win == 1:
-                        # Victoria: valor base + bonus por calidad del oponente
-                        adjusted_value = 0.5 + (0.5 * (1 + opp_str))
-                    else:
-                        # Derrota: valor base - penalty por debilidad del oponente
-                        adjusted_value = 0.5 * (1 - opp_str)
-                    adjusted_wins.append(adjusted_value)
-                
-                return np.mean(adjusted_wins)
-            
-            # Aplicar por equipo
-            df[f'quality_adjusted_win_rate_{window}g'] = 0.5
-            for team in df['Team'].unique():
-                team_mask = df['Team'] == team
-                team_data = df[team_mask].copy()
-                
-                if len(team_data) > 1:
-                    team_wins = wins_shifted[team_mask]
-                    team_opp_strength = opponent_strength[team_mask]
-                    
-                    adjusted_rates = []
-                    for i in range(len(team_data)):
-                        if i == 0:
-                            adjusted_rates.append(0.5)
-                        else:
-                            rate = quality_adjusted_win_rate(
-                                team_wins.iloc[:i], 
-                                team_opp_strength.iloc[:i], 
-                                window
-                            )
-                            adjusted_rates.append(rate)
-                    
-                    df.loc[team_mask, f'quality_adjusted_win_rate_{window}g'] = adjusted_rates
-    
-    def _create_situational_win_rates(self, df: pd.DataFrame) -> None:
-        """Win rates en situaciones específicas que son predictivas"""
-        
-        # Win rate en back-to-backs
-        if 'is_back_to_back' in df.columns:
-            b2b_wins = df.groupby('Team').apply(
-                lambda x: x[x['is_back_to_back'] == 1]['is_win'].shift(1).expanding().mean()
-            ).fillna(0.5)
-            df['b2b_win_rate'] = b2b_wins.reset_index(level=0, drop=True)
-        else:
-            df['b2b_win_rate'] = 0.5
-        
-        # Win rate en weekends vs weekdays
-        if 'is_weekend' in df.columns:
-            weekend_wins = df.groupby('Team').apply(
-                lambda x: x[x['is_weekend'] == 1]['is_win'].shift(1).expanding().mean()
-            ).fillna(0.5)
-            df['weekend_win_rate'] = weekend_wins.reset_index(level=0, drop=True)
-            
-            weekday_wins = df.groupby('Team').apply(
-                lambda x: x[x['is_weekend'] == 0]['is_win'].shift(1).expanding().mean()
-            ).fillna(0.5)
-            df['weekday_win_rate'] = weekday_wins.reset_index(level=0, drop=True)
-        else:
-            df['weekend_win_rate'] = 0.5
-            df['weekday_win_rate'] = 0.5
-        
-        # Win rate con descanso vs sin descanso
-        if 'days_rest' in df.columns:
-            rested_wins = df.groupby('Team').apply(
-                lambda x: x[x['days_rest'] >= 2]['is_win'].shift(1).expanding().mean()
-            ).fillna(0.5)
-            df['rested_win_rate'] = rested_wins.reset_index(level=0, drop=True)
-            
-            tired_wins = df.groupby('Team').apply(
-                lambda x: x[x['days_rest'] <= 1]['is_win'].shift(1).expanding().mean()
-            ).fillna(0.5)
-            df['tired_win_rate'] = tired_wins.reset_index(level=0, drop=True)
-        else:
-            df['rested_win_rate'] = 0.5
-            df['tired_win_rate'] = 0.5
-    
-    def _create_momentum_weighted_win_rate(self, df: pd.DataFrame) -> None:
-        """Win rate ponderado por momentum y tendencias"""
-        
-        # Win rate con momentum ponderado
-        for window in [5, 10]:
-            base_win_rate = df.groupby('Team')['is_win'].transform(
-                lambda x: x.shift(1).rolling(window, min_periods=1).mean()
-            ).fillna(0.5)
-            
-            # Ajustar por momentum
-            momentum_adjustment = df.get('momentum_score', 0) * 0.1  # 10% max adjustment
-            df[f'momentum_weighted_win_rate_{window}g'] = (
-                base_win_rate + momentum_adjustment
-            ).clip(0, 1)
-        
-        # Win rate con tendencia ponderada
-        if 'form_vs_average' in df.columns:
-            trend_adjustment = df['form_vs_average'] * 0.15  # 15% max adjustment
-            df['trend_weighted_win_rate_10g'] = (
-                df.get('team_win_rate_10g', 0.5) + trend_adjustment
-            ).clip(0, 1)
-    
-    def _create_performance_trends(self, df: pd.DataFrame) -> None:
-        """Características de tendencias de mejora/deterioro"""
-        
-        # Tendencia de win rate (mejorando vs empeorando)
-        win_rate_3g = df.groupby('Team')['is_win'].transform(
-            lambda x: x.shift(1).rolling(3, min_periods=1).mean()
-        ).fillna(0.5)
-        
-        win_rate_10g = df.groupby('Team')['is_win'].transform(
-            lambda x: x.shift(1).rolling(10, min_periods=3).mean()
-        ).fillna(0.5)
-        
-        df['win_rate_trend'] = win_rate_3g - win_rate_10g  # Positivo = mejorando
-        
-        # Aceleración del rendimiento (segunda derivada)
-        df['performance_acceleration'] = df.groupby('Team')['win_rate_trend'].transform(
-            lambda x: x.shift(1).rolling(3, min_periods=1).mean()
-        ).fillna(0)
-        
-        # Consistency trend (volatilidad cambiante)
-        win_rate_std_5g = df.groupby('Team')['is_win'].transform(
-            lambda x: x.shift(1).rolling(5, min_periods=2).std()
-        ).fillna(0.5)
-        
-        win_rate_std_15g = df.groupby('Team')['is_win'].transform(
-            lambda x: x.shift(1).rolling(15, min_periods=5).std()
-        ).fillna(0.5)
-        
-        df['consistency_trend'] = win_rate_std_15g - win_rate_std_5g  # Positivo = más volátil recientemente
-    
-    def _create_performance_cycles(self, df: pd.DataFrame) -> None:
-        """Detectar ciclos de rendimiento (hot/cold streaks)"""
-        
-        # Detectar si el equipo está en un ciclo alto o bajo
-        for window in [7, 14]:
-            win_rate_window = df.groupby('Team')['is_win'].transform(
-                lambda x: x.shift(1).rolling(window, min_periods=3).mean()
-            ).fillna(0.5)
-            
-            season_avg = df.groupby('Team')['is_win'].transform(
-                lambda x: x.shift(1).expanding().mean()
-            ).fillna(0.5)
-            
-            # Hot streak indicator
-            df[f'hot_streak_{window}d'] = (win_rate_window > season_avg + 0.15).astype(int)
-            
-            # Cold streak indicator  
-            df[f'cold_streak_{window}d'] = (win_rate_window < season_avg - 0.15).astype(int)
-        
-        # Cycle momentum (qué tan fuerte es el ciclo actual)
-        df['cycle_strength'] = np.abs(
-            df.get('win_rate_trend', 0)
-        ) * (df.get('hot_streak_7d', 0) + df.get('cold_streak_7d', 0))
-    
-    def _create_context_performance_interactions(self, df: pd.DataFrame) -> None:
-        """Interacciones entre contexto y rendimiento"""
-        
-        # Rendimiento en home vs away contextualizado
-        if 'is_home' in df.columns:
-            home_performance = df.get('team_win_rate_10g', 0.5) * df['is_home']
-            away_performance = df.get('team_win_rate_10g', 0.5) * (1 - df['is_home'])
-            
-            df['context_adjusted_performance'] = home_performance + away_performance
-            
-            # Home court advantage effectiveness
-            df['home_court_effectiveness'] = (
-                df.get('home_win_rate_10g', 0.5) - df.get('away_win_rate_10g', 0.5)
-            )
-        
-        # Rest vs performance interaction
-        if 'days_rest' in df.columns:
-            rest_factor = np.where(df['days_rest'] >= 2, 1.05,  # Rested boost
-                                 np.where(df['days_rest'] <= 1, 0.95, 1.0))  # Tired penalty
-            
-            df['rest_adjusted_performance'] = df.get('team_win_rate_10g', 0.5) * rest_factor
-        
-        # Momentum vs opponent strength interaction
-        momentum = df.get('momentum_score', 0)
-        opp_strength = df.get('opponent_season_record', 0.5)
-        
-        # Strong momentum vs weak opponent = very good
-        # Weak momentum vs strong opponent = very bad
-        df['momentum_opponent_interaction'] = momentum * (1 - opp_strength)
-    
-    def _create_team_adaptability_features(self, df: pd.DataFrame) -> None:
-        """Características de adaptabilidad del equipo"""
-        
-        # Variabilidad en diferentes contextos
-        if 'is_home' in df.columns and 'days_rest' in df.columns:
-            # Performance variance across contexts
-            contexts = ['is_home', 'is_weekend', 'is_back_to_back']
-            
-            for context in contexts:
-                if context in df.columns:
-                    context_performance = df.groupby(['Team', context])['is_win'].transform(
-                        lambda x: x.shift(1).expanding().mean()
-                    ).fillna(0.5)
-                    
-                    df[f'{context}_adaptability'] = 1 - np.abs(
-                        context_performance - df.get('team_win_rate_10g', 0.5)
-                    )
-        
-        # Recovery ability (how quickly team bounces back from losses)
-        losses_shifted = (df.groupby('Team')['is_win'].shift(1) == 0).astype(int)
-        wins_after_loss = []
-        
-        for team in df['Team'].unique():
-            team_mask = df['Team'] == team
-            team_losses = losses_shifted[team_mask]
-            team_wins = df.loc[team_mask, 'is_win']
-            
-            recovery_rates = []
-            for i in range(len(team_losses)):
-                if i == 0:
-                    recovery_rates.append(0.5)
-                elif team_losses.iloc[i-1] == 1:  # Previous game was a loss
-                    # Look at next game result (current game)
-                    recovery_rates.append(team_wins.iloc[i])
-                else:
-                    recovery_rates.append(0.5)  # Not applicable
-            
-            wins_after_loss.extend(recovery_rates)
-        
-        df['recovery_ability'] = wins_after_loss
-        
-        # Calculate rolling recovery rate
-        df['recovery_rate_5g'] = df.groupby('Team')['recovery_ability'].transform(
-            lambda x: x.rolling(5, min_periods=2).mean()
-        ).fillna(0.5)
-    
-    def _create_pressure_features(self, df: pd.DataFrame) -> None:
-        """Características de presión por standings y expectativas"""
-        
-        # Proxy for playoff pressure using season progress and performance
-        if 'days_into_season' in df.columns:
-            season_progress = df['days_into_season'] / 180  # Approximate season length
-            current_record = df.get('team_win_rate_10g', 0.5)
-            
-            # Pressure increases as season progresses and performance matters more
-            df['playoff_pressure'] = season_progress * np.abs(current_record - 0.5)
-            
-            # Desperation factor (poor performance late in season)
-            df['desperation_factor'] = np.where(
-                (season_progress > 0.7) & (current_record < 0.45),
-                (0.8 - season_progress) * (0.45 - current_record),
-                0
-            )
-        
-        # Streak pressure (pressure to end losing streaks)
-        if 'loss_streak' in df.columns:
-            df['streak_pressure'] = np.where(
-                df['loss_streak'] >= 3,
-                df['loss_streak'] * 0.02,  # Increasing pressure with each loss
-                0
-            )
-        
-        # Expectation pressure (high-performing teams under pressure to maintain)
-        high_expectation = df.get('team_win_rate_10g', 0.5) > 0.7
-        df['expectation_pressure'] = np.where(
-            high_expectation,
-            (df.get('team_win_rate_10g', 0.5) - 0.7) * 0.1,
-            0
-        )
-    
-    def _create_motivation_features(self, df: pd.DataFrame) -> None:
-        """Características de motivación y factores psicológicos"""
-        
-        # Revenge game motivation (enhanced)
-        if 'last_vs_opp_result' in df.columns:
-            # Stronger revenge factor for recent losses
-            df['revenge_intensity'] = np.where(
-                df['last_vs_opp_result'] == 0,
-                0.06,  # Lost last meeting
-                np.where(df['last_vs_opp_result'] == 1, -0.02, 0)  # Won last meeting
-            )
-        
-        # Statement game motivation (vs strong opponents)
-        opp_strength = df.get('opponent_season_record', 0.5)
-        team_strength = df.get('team_win_rate_10g', 0.5)
-        
-        # Underdog motivation
-        df['underdog_motivation'] = np.where(
-            (team_strength < opp_strength - 0.1) & (opp_strength > 0.6),
-            (opp_strength - team_strength) * 0.05,
-            0
-        )
-        
-        # Pride game (avoiding embarrassing losses)
-        df['pride_factor'] = np.where(
-            (team_strength > 0.6) & (opp_strength < 0.4),
-            0.03,  # Good team vs bad team - pride on the line
-            0
-        )
-        
-        # Momentum shift potential
-        if 'win_streak' in df.columns and 'loss_streak' in df.columns:
-            # Teams on losing streaks have high motivation to turn it around
-            df['momentum_shift_potential'] = np.where(
-                df['loss_streak'] >= 2,
-                df['loss_streak'] * 0.015,  # Increasing motivation
-                np.where(df['win_streak'] >= 4, -0.02, 0)  # Complacency risk
-            )
-
-        if 'game_net_rating' in df.columns:
-            opp_power = df.groupby('Opp')['game_net_rating'].transform(
-                lambda x: x.shift(1).rolling(10, min_periods=3).mean()
-            )
-            df['opponent_power_rating'] = opp_power.fillna(0)
+        logger.info(f"Features de precisión creadas: {len(precision_features)}")
+        return precision_features
     
     def _update_feature_columns(self, df: pd.DataFrame):
         """Actualizar lista de columnas de features históricas"""
@@ -1092,3 +643,75 @@ class IsWinFeatureEngineer:
     def _log_data_validation(self, validation_results: dict):
         """Log resultados de validación de datos"""
         NBALogger.log_data_info(self.logger, validation_results)
+    
+    def _filter_noisy_features(self, feature_list: List[str], df: pd.DataFrame) -> List[str]:
+        """
+        Filtra features que pueden generar ruido basándose en:
+        - Correlación con el target
+        - Varianza
+        - Valores faltantes
+        - Estabilidad temporal
+        """
+        if 'is_win' not in df.columns:
+            return feature_list
+        
+        filtered_features = []
+        noise_threshold_corr = 0.01  # Correlación mínima con target
+        noise_threshold_var = 1e-6   # Varianza mínima
+        missing_threshold = 0.5      # Máximo 50% valores faltantes
+        
+        logger.info(f"Filtrando {len(feature_list)} features para eliminar ruido...")
+        
+        for feature in feature_list:
+            if feature not in df.columns:
+                continue
+                
+            feature_series = df[feature]
+            
+            # 1. Verificar valores faltantes
+            missing_ratio = feature_series.isnull().sum() / len(feature_series)
+            if missing_ratio > missing_threshold:
+                logger.debug(f"Descartada {feature}: {missing_ratio:.2%} valores faltantes")
+                continue
+            
+            # 2. Verificar varianza
+            feature_clean = feature_series.dropna()
+            if len(feature_clean) < 10:  # Muy pocos valores válidos
+                logger.debug(f"Descartada {feature}: muy pocos valores válidos")
+                continue
+                
+            variance = feature_clean.var()
+            if variance < noise_threshold_var:
+                logger.debug(f"Descartada {feature}: varianza muy baja ({variance:.6f})")
+                continue
+            
+            # 3. Verificar correlación con target
+            target_series = df['is_win']
+            
+            # Alinear series eliminando NaN
+            combined = pd.concat([feature_series, target_series], axis=1).dropna()
+            if len(combined) < 50:  # Muy pocas observaciones para correlación confiable
+                logger.debug(f"Descartada {feature}: muy pocas observaciones válidas")
+                continue
+            
+            correlation = abs(combined.iloc[:, 0].corr(combined.iloc[:, 1]))
+            if pd.isna(correlation) or correlation < noise_threshold_corr:
+                logger.debug(f"Descartada {feature}: correlación muy baja ({correlation:.4f})")
+                continue
+            
+            # 4. Verificar valores extremos (outliers excesivos)
+            q99 = feature_clean.quantile(0.99)
+            q01 = feature_clean.quantile(0.01)
+            outlier_ratio = ((feature_clean > q99) | (feature_clean < q01)).sum() / len(feature_clean)
+            if outlier_ratio > 0.1:  # Más del 10% son outliers
+                logger.debug(f"Descartada {feature}: demasiados outliers ({outlier_ratio:.2%})")
+                continue
+            
+            # Feature pasó todos los filtros
+            filtered_features.append(feature)
+        
+        removed_count = len(feature_list) - len(filtered_features)
+        logger.info(f"Filtrado completado: {len(filtered_features)} features conservadas, "
+                   f"{removed_count} descartadas por ruido")
+        
+        return filtered_features

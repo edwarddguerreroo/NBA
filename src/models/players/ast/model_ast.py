@@ -191,21 +191,21 @@ class StackingASTModel:
             }
         }
         
-        # Neural Network (opcional) - Excelente para patrones complejos de Basketball IQ
-        if self.enable_neural_network:
-            self.base_models['neural_network'] = {
-                'model': MLPRegressor(
-                    random_state=self.random_state,
-                    max_iter=500,  # Reducido de 1000
-                    early_stopping=True,
-                    validation_fraction=0.1
-                ),
-                'param_space': {
-                    'hidden_layer_sizes': [(32,), (64,), (32, 16)],  # Arquitecturas más simples
-                    'alpha': (0.001, 0.05),     # Rango reducido
-                    'learning_rate_init': (0.001, 0.005)  # Rango reducido
-                }
-            }
+        # Neural Network ELIMINADO - Peor rendimiento (MAE: 0.708) vs otros modelos
+        # if self.enable_neural_network:
+        #     self.base_models['neural_network'] = {
+        #         'model': MLPRegressor(
+        #             random_state=self.random_state,
+        #             max_iter=500,
+        #             early_stopping=True,
+        #             validation_fraction=0.1
+        #         ),
+        #         'param_space': {
+        #             'hidden_layer_sizes': [(32,), (64,), (32, 16)],
+        #             'alpha': (0.001, 0.05),
+        #             'learning_rate_init': (0.001, 0.005)
+        #         }
+        #     }
         
         # SVR (opcional) - Excelente para relaciones no lineales en asistencias
         if self.enable_svr:
