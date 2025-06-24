@@ -798,33 +798,46 @@ class StackingASTModel:
         return predictions
     
     def save_model(self, filepath: str):
-        """Guardar modelo entrenado"""
-        model_data = {
-            'stacking_model': self.stacking_model,
-            'base_models': self.base_models,
-            'feature_engineer': self.feature_engineer,
-            'validation_metrics': self.validation_metrics,
-            'cv_scores': self.cv_scores,
-            'feature_importance': self.feature_importance,
-            'best_params_per_model': self.best_params_per_model
-        }
+        """Guardar modelo entrenado como objeto directo"""
+        if self.stacking_model is None:
+            raise ValueError("Modelo no entrenado. Ejecutar train() primero.")
         
-        joblib.dump(model_data, filepath)
-        logger.info(f"Modelo guardado en: {filepath}")
+        # Crear directorio si no existe
+        import os
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
+        # Guardar SOLO el modelo entrenado como objeto directo
+        joblib.dump(self.stacking_model, filepath)
+        logger.info(f"Modelo AST guardado como objeto directo: {filepath}")
     
     def load_model(self, filepath: str):
-        """Cargar modelo entrenado"""
-        model_data = joblib.load(filepath)
-        
-        self.stacking_model = model_data['stacking_model']
-        self.base_models = model_data['base_models']
-        self.feature_engineer = model_data['feature_engineer']
-        self.validation_metrics = model_data['validation_metrics']
-        self.cv_scores = model_data['cv_scores']
-        self.feature_importance = model_data['feature_importance']
-        self.best_params_per_model = model_data['best_params_per_model']
-        
-        logger.info(f"Modelo cargado desde: {filepath}")
+        """Cargar modelo entrenado (compatible con ambos formatos)"""
+        try:
+            # Intentar cargar modelo directo (nuevo formato)
+            self.stacking_model = joblib.load(filepath)
+            if hasattr(self.stacking_model, 'predict'):
+                logger.info(f"Modelo AST (objeto directo) cargado desde: {filepath}")
+                return
+            else:
+                # No es un modelo directo, tratar como formato antiguo
+                raise ValueError("No es modelo directo")
+        except (ValueError, AttributeError):
+            # Formato antiguo (diccionario)
+            try:
+                model_data = joblib.load(filepath)
+                if isinstance(model_data, dict) and 'stacking_model' in model_data:
+                    self.stacking_model = model_data['stacking_model']
+                    self.base_models = model_data.get('base_models', {})
+                    self.feature_engineer = model_data.get('feature_engineer')
+                    self.validation_metrics = model_data.get('validation_metrics', {})
+                    self.cv_scores = model_data.get('cv_scores', {})
+                    self.feature_importance = model_data.get('feature_importance', {})
+                    self.best_params_per_model = model_data.get('best_params_per_model', {})
+                    logger.info(f"Modelo AST (formato legacy) cargado desde: {filepath}")
+                else:
+                    raise ValueError("Formato de archivo no reconocido")
+            except Exception as e:
+                raise ValueError(f"No se pudo cargar el modelo AST: {e}")
     
     def get_model_summary(self) -> Dict[str, Any]:
         """Obtener resumen del modelo"""

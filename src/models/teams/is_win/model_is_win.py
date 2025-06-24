@@ -2508,39 +2508,25 @@ class IsWinModel:
         return validation_report
     
     def save_model(self, save_path: str = None):
-        """Guardar modelo entrenado"""
+        """Guardar modelo entrenado como objeto directo"""
         
         if save_path is None:
             save_path = "trained_models/is_win_model.joblib"
+        
+        if self.stacking_model is None:
+            raise ValueError("Modelo no entrenado. Ejecutar train() primero.")
         
         logger.info(f"💾 Guardando modelo en: {save_path}")
         
         # Crear directorio si no existe
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         
-        # Preparar objeto para guardar
-        model_data = {
-            'stacking_model': self.stacking_model,
-            'models': self.models,
-            'scaler': self.scaler,
-            'feature_engineer': self.feature_engineer,
-            'training_results': self.training_results,
-            'feature_importance': self.feature_importance,
-            'bayesian_results': self.bayesian_results,
-            'model_metadata': {
-                'created_at': datetime.now().isoformat(),
-                'optimize_hyperparams': self.optimize_hyperparams,
-                'device': str(self.device) if self.device else None
-            }
-        }
-        
-        # Guardar modelo
-        joblib.dump(model_data, save_path)
+        # Guardar SOLO el modelo entrenado como objeto directo
+        joblib.dump(self.stacking_model, save_path)
         
         # Log información del modelo guardado
         model_size_mb = os.path.getsize(save_path) / (1024 * 1024)
-        logger.info(f"✅ Modelo guardado | Tamaño: {model_size_mb:.1f}MB | "
-                   f"Modelos: {len(self.models)} | Features: {len(self.feature_importance.get('average', {}))}")
+        logger.info(f"✅ Modelo Is Win guardado como objeto directo | Tamaño: {model_size_mb:.1f}MB")
         
         return save_path
     

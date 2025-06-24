@@ -1003,51 +1003,65 @@ class Stacking3PTModel:
         return {}
     
     def save_model(self, filepath: str):
-        """Guarda el modelo entrenado"""
+        """Guarda el modelo entrenado como objeto directo"""
         if not self.is_trained:
             raise ValueError("No hay modelo entrenado para guardar")
         
-        model_data = {
-            'stacking_model': self.stacking_model,
-            'trained_base_models': self.trained_base_models,
-            'feature_names': self.feature_names,
-            'selected_features': self.selected_features,
-            'training_metrics': self.training_metrics,
-            'best_params_per_model': self.best_params_per_model,
-            'scaler': self.scaler,
-            'is_trained': self.is_trained
-        }
+        if self.stacking_model is None:
+            raise ValueError("Modelo no entrenado. Ejecutar train() primero.")
+        
+        # Crear directorio si no existe
+        import os
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
         # Configurar entorno para evitar problemas de threading
         import matplotlib
         matplotlib.use('Agg')
         
-        # Configurar joblib para evitar problemas de memoria y threading
+        # Guardar SOLO el modelo entrenado como objeto directo
         with joblib.parallel_backend('threading', n_jobs=1):
-            joblib.dump(model_data, filepath, compress=3)
+            joblib.dump(self.stacking_model, filepath, compress=3)
         
-        logger.info(f"Modelo de triples guardado en: {filepath}")
+        logger.info(f"Modelo de triples guardado como objeto directo: {filepath}")
     
     def load_model(self, filepath: str):
-        """Carga un modelo previamente entrenado"""
+        """Carga un modelo previamente entrenado (compatible con ambos formatos)"""
         # Configurar entorno para evitar problemas de threading
         import matplotlib
         matplotlib.use('Agg')
         
-        # Configurar joblib para evitar problemas de memoria y threading
-        with joblib.parallel_backend('threading', n_jobs=1):
-            model_data = joblib.load(filepath)
-        
-        self.stacking_model = model_data['stacking_model']
-        self.trained_base_models = model_data['trained_base_models']
-        self.feature_names = model_data['feature_names']
-        self.selected_features = model_data['selected_features']
-        self.training_metrics = model_data['training_metrics']
-        self.best_params_per_model = model_data['best_params_per_model']
-        self.scaler = model_data['scaler']
-        self.is_trained = model_data['is_trained']
-        
-        logger.info(f"Modelo de triples cargado desde: {filepath}")
+        try:
+            # Intentar cargar modelo directo (nuevo formato)
+            with joblib.parallel_backend('threading', n_jobs=1):
+                self.stacking_model = joblib.load(filepath)
+            
+            if hasattr(self.stacking_model, 'predict'):
+                self.is_trained = True
+                logger.info(f"Modelo de triples (objeto directo) cargado desde: {filepath}")
+                return
+            else:
+                # No es un modelo directo, tratar como formato antiguo
+                raise ValueError("No es modelo directo")
+        except (ValueError, AttributeError):
+            # Formato antiguo (diccionario)
+            try:
+                with joblib.parallel_backend('threading', n_jobs=1):
+                    model_data = joblib.load(filepath)
+                
+                if isinstance(model_data, dict) and 'stacking_model' in model_data:
+                    self.stacking_model = model_data['stacking_model']
+                    self.trained_base_models = model_data.get('trained_base_models', {})
+                    self.feature_names = model_data.get('feature_names', [])
+                    self.selected_features = model_data.get('selected_features', [])
+                    self.training_metrics = model_data.get('training_metrics', {})
+                    self.best_params_per_model = model_data.get('best_params_per_model', {})
+                    self.scaler = model_data.get('scaler')
+                    self.is_trained = model_data.get('is_trained', True)
+                    logger.info(f"Modelo de triples (formato legacy) cargado desde: {filepath}")
+                else:
+                    raise ValueError("Formato de archivo no reconocido")
+            except Exception as e:
+                raise ValueError(f"No se pudo cargar el modelo de triples: {e}")
 
 
 class XGBoost3PTModel(Stacking3PTModel):

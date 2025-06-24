@@ -1617,30 +1617,19 @@ class NBATotalPointsPredictor:
         return predictions
     
     def save_model(self, filepath: str = 'models/total_points_predictor.pkl'):
-        """Guarda el modelo completo"""
+        """Guarda el modelo entrenado como objeto directo"""
+        
+        # Verificar que hay un modelo ensemble entrenado para guardar
+        if not self.ensemble_models or 'stacking' not in self.ensemble_models:
+            raise ValueError("Modelo no entrenado. Ejecutar train() primero.")
         
         # Crear directorio si no existe
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
-        # Preparar objeto para guardar
-        model_data = {
-            'feature_engineer': self.feature_engineer,
-            'feature_columns': self.feature_columns,
-            'scaler': self.scaler,
-            'optimized_models': self.optimized_models,
-            'ensemble_models': self.ensemble_models,
-            'training_results': self.training_results,
-            'optimization_history': self.optimization_history,
-            'metadata': {
-                'version': '1.0',
-                'training_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'n_features': len(self.feature_columns) if self.feature_columns else 0
-            }
-        }
-        
-        # Guardar
-        joblib.dump(model_data, filepath)
-        logger.info(f"Modelo guardado en: {filepath}")
+        # Guardar SOLO el modelo ensemble principal como objeto directo
+        model_to_save = self.ensemble_models['stacking']
+        joblib.dump(model_to_save, filepath)
+        logger.info(f"Modelo Total Points guardado como objeto directo: {filepath}")
     
     @staticmethod
     def load_model(filepath: str = 'models/total_points_predictor.pkl'):

@@ -3330,36 +3330,28 @@ class DoubleDoubleAdvancedModel:
         return metrics
     
     def save_model(self, filepath: str):
-        """Guardar modelo completo"""
+        """Guardar modelo entrenado como objeto directo"""
         if not self.is_fitted:
             raise ValueError("Modelo no está entrenado")
         
-        # Preparar datos para guardar
-        model_data = {
-            'models': {},
-            'stacking_model': self.stacking_model,
-            'scaler': self.scaler,
-            'feature_importance': self.feature_importance,
-            'cv_scores': self.cv_scores,
-            'training_results': self.training_results,
-            'bayesian_results': getattr(self, 'bayesian_results', {}),
-            'gpu_config': self.gpu_config
-        }
+        if self.stacking_model is None:
+            raise ValueError("Modelo no entrenado. Ejecutar train() primero.")
         
-        # Guardar modelos individuales (excepto neural network)
-        for name, model_info in self.training_results['individual_models'].items():
-            if 'model' in model_info and name != 'neural_network':
-                model_data['models'][name] = model_info['model']
+        # Crear directorio si no existe
+        import os
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
-        # Guardar modelos tradicionales
-        joblib.dump(model_data, filepath)
+        # Guardar SOLO el modelo entrenado como objeto directo
+        joblib.dump(self.stacking_model, filepath)
+        self.logger.info(f"Modelo Double Double guardado como objeto directo: {filepath}")
         
-        # Guardar red neuronal por separado si existe
+        # Guardar red neuronal por separado si existe (para preservar funcionalidad específica de PyTorch)
         if 'neural_network' in self.training_results['individual_models']:
             nn_model = self.training_results['individual_models']['neural_network'].get('model')
             if nn_model and hasattr(nn_model, 'model') and nn_model.model is not None:
                 nn_filepath = filepath.replace('.pkl', '_neural_network.pth')
                 torch.save(nn_model.model.state_dict(), nn_filepath)
+                self.logger.info(f"Red neuronal guardada por separado: {nn_filepath}")
     
     def load_model(self, filepath: str):
         """Cargar modelo completo"""

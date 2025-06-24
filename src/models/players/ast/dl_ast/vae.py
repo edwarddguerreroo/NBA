@@ -37,7 +37,14 @@ class BasketballVAE(BaseDLModel):
         """
         super(BasketballVAE, self).__init__(config, "BasketballVAE")
         
-        self.input_dim = config.input_features
+        # CORREGIDO: Para datos secuenciales, la dimensión de entrada es seq_len * features
+        if hasattr(config, 'sequence_length') and config.sequence_length > 1:
+            self.input_dim = config.sequence_length * config.input_features
+            self.is_sequential = True
+        else:
+            self.input_dim = config.input_features
+            self.is_sequential = False
+            
         self.latent_dim = config.latent_dim
         self.encoder_dims = config.encoder_dims
         self.decoder_dims = config.decoder_dims
@@ -63,8 +70,9 @@ class BasketballVAE(BaseDLModel):
         # Inicializar pesos
         self.apply(initialize_weights)
         
-        logger.info(f"VAE inicializado: latent_dim={self.latent_dim}, "
-                   f"encoder_dims={self.encoder_dims}, decoder_dims={self.decoder_dims}")
+        logger.info(f"VAE inicializado: input_dim={self.input_dim}, latent_dim={self.latent_dim}, "
+                   f"encoder_dims={self.encoder_dims}, decoder_dims={self.decoder_dims}, "
+                   f"sequential={self.is_sequential}")
     
     def _build_encoder(self, config) -> nn.Module:
         """Construye el encoder."""
@@ -172,19 +180,35 @@ class BasketballVAE(BaseDLModel):
         Forward pass completo del VAE.
         
         Args:
-            x: Tensor de entrada [batch_size, input_dim]
+            x: Tensor de entrada [batch_size, seq_len, features] o [batch_size, features]
             
         Returns:
             Tuple de (ast_prediction, reconstruction, mu, logvar)
         """
+        # CORREGIDO: Manejar secuencias temporales
+        original_shape = x.shape
+        if len(x.shape) == 3:  # [batch_size, seq_len, features]
+            batch_size, seq_len, features = x.shape
+            # Flatten secuencia temporal: [batch_size, seq_len * features]
+            x_flattened = x.view(batch_size, -1)
+        else:  # [batch_size, features]
+            x_flattened = x
+            batch_size = x.shape[0]
+        
         # Encoding
-        mu, logvar = self.encode(x)
+        mu, logvar = self.encode(x_flattened)
         
         # Reparametrización
         z = self.reparameterize(mu, logvar)
         
         # Decoding
-        reconstruction = self.decode(z)
+        reconstruction_flat = self.decoder(z)
+        
+        # Reshape reconstruction para coincidir con entrada original
+        if len(original_shape) == 3:
+            reconstruction = reconstruction_flat.view(original_shape)
+        else:
+            reconstruction = reconstruction_flat
         
         # Predicción de AST
         ast_prediction = self.ast_predictor(z)
@@ -291,13 +315,19 @@ class ConditionalVAE(BasketballVAE):
         self.condition_dim = condition_dim
         
         # Modificar dimensiones para incluir condiciones
+        original_input_features = config.input_features
         original_input_dim = config.input_features
-        config.input_features += condition_dim  # Concatenar condiciones
+        
+        # Para datos secuenciales, ajustar correctamente
+        if hasattr(config, 'sequence_length') and config.sequence_length > 1:
+            config.input_features += condition_dim  # Condiciones por timestep
+        else:
+            config.input_features += condition_dim  # Concatenar condiciones
         
         super(ConditionalVAE, self).__init__(config)
         
         # Restaurar dimensión original
-        config.input_features = original_input_dim
+        config.input_features = original_input_features
         
         # Embedding para condiciones
         self.condition_embedding = nn.Sequential(

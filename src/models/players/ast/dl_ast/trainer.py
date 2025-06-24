@@ -328,7 +328,7 @@ class DLTrainer:
                 predictions, reconstruction, mu, logvar = self.model(data)
                 loss_dict = self.model.compute_loss(predictions, target, reconstruction, data, mu, logvar)
                 loss = loss_dict['total_loss']
-            elif self.model_type == "gnn":
+            elif self.model_type in ["gnn", "hierarchical_gnn"]:
                 # GNN models need special handling for graph structure
                 predictions = self._forward_gnn(data)
                 loss = self.model.compute_loss(predictions, target)
@@ -380,7 +380,7 @@ class DLTrainer:
                     predictions, reconstruction, mu, logvar = self.model(data)
                     loss_dict = self.model.compute_loss(predictions, target, reconstruction, data, mu, logvar)
                     loss = loss_dict['total_loss']
-                elif self.model_type == "gnn":
+                elif self.model_type in ["gnn", "hierarchical_gnn"]:
                     # GNN models need special handling for graph structure
                     predictions = self._forward_gnn(data)
                     loss = self.model.compute_loss(predictions, target)
@@ -418,7 +418,7 @@ class DLTrainer:
                 
                 if self.model_type in ["vae", "conditional_vae", "beta_vae", "sequential_vae"]:
                     predictions, _, _, _ = self.model(data)
-                elif self.model_type == "gnn":
+                elif self.model_type in ["gnn", "hierarchical_gnn"]:
                     predictions = self._forward_gnn(data)
                 else:
                     predictions = self.model(data)
@@ -496,7 +496,7 @@ class DLTrainer:
                         predictions, reconstruction, mu, logvar = model(data)
                         loss_dict = model.compute_loss(predictions, target, reconstruction, data, mu, logvar)
                         loss = loss_dict['total_loss']
-                    elif self.model_type == "gnn":
+                    elif self.model_type in ["gnn", "hierarchical_gnn"]:
                         predictions = self._forward_gnn_with_model(model, data)
                         loss = model.compute_loss(predictions, target)
                     else:
@@ -517,7 +517,7 @@ class DLTrainer:
                     
                     if self.model_type in ["vae", "conditional_vae", "beta_vae", "sequential_vae"]:
                         predictions, _, _, _ = model(data)
-                    elif self.model_type == "gnn":
+                    elif self.model_type in ["gnn", "hierarchical_gnn"]:
                         predictions = self._forward_gnn_with_model(model, data)
                     else:
                         predictions = model(data)
@@ -613,7 +613,7 @@ class DLTrainer:
                 
                 if self.model_type in ["vae", "conditional_vae", "beta_vae", "sequential_vae"]:
                     pred, _, _, _ = self.model(data)
-                elif self.model_type == "gnn":
+                elif self.model_type in ["gnn", "hierarchical_gnn"]:
                     pred = self._forward_gnn(data)
                 else:
                     pred = self.model(data)

@@ -1344,11 +1344,13 @@ class StackingPTSModel:
         # Crear directorio si no existe
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
-        # Guardar modelo completo
-        model_data = {
-            'stacking_model': self.stacking_model,
+        joblib.dump(self.stacking_model, filepath)
+        logger.info(f"Modelo de stacking (solo objeto) guardado en: {filepath}")
+        
+        # Guardar metadata por separado si es necesario para debugging
+        metadata_path = filepath.replace('.pkl', '_metadata.pkl')
+        model_metadata = {
             'trained_base_models': self.trained_base_models,
-            'base_models_config': self.base_models,
             'best_params_per_model': self.best_params_per_model,
             'feature_engineer': self.feature_engineer,
             'scaler': self.scaler,
@@ -1368,9 +1370,8 @@ class StackingPTSModel:
             },
             'is_trained': self.is_trained
         }
-        
-        joblib.dump(model_data, filepath)
-        logger.info(f"Modelo de stacking guardado en: {filepath}")
+        joblib.dump(model_metadata, metadata_path)
+        logger.info(f"Metadata guardada en: {metadata_path}")
     
     def load_model(self, filepath: str):
         """
@@ -1379,32 +1380,54 @@ class StackingPTSModel:
         Args:
             filepath: Ruta del modelo a cargar
         """
-        model_data = joblib.load(filepath)
-        
-        self.stacking_model = model_data['stacking_model']
-        self.trained_base_models = model_data['trained_base_models']
-        self.base_models = model_data['base_models_config']
-        self.best_params_per_model = model_data['best_params_per_model']
-        self.feature_engineer = model_data['feature_engineer']
-        self.scaler = model_data['scaler']
-        self.selected_features = model_data['selected_features']
-        self.feature_importance = model_data['feature_importance']
-        self.training_metrics = model_data['training_metrics']
-        self.validation_metrics = model_data['validation_metrics']
-        self.cv_scores = model_data['cv_scores']
-        self.is_trained = model_data['is_trained']
-        
-        # Restaurar configuración
-        config = model_data['model_config']
-        self.n_trials = config['n_trials']
-        self.cv_folds = config['cv_folds']
-        self.early_stopping_rounds = config['early_stopping_rounds']
-        self.random_state = config['random_state']
-        self.enable_neural_networks = config['enable_neural_networks']
-        self.enable_gpu = config['enable_gpu']
-        self.enable_svr = config['enable_svr']
-        
-        logger.info(f"Modelo de stacking cargado desde: {filepath}")
+        try:
+            # Intentar cargar modelo directo (nuevo formato)
+            self.stacking_model = joblib.load(filepath)
+            self.is_trained = True
+            logger.info(f"Modelo de stacking (objeto directo) cargado desde: {filepath}")
+            
+            # Intentar cargar metadata si existe
+            metadata_path = filepath.replace('.pkl', '_metadata.pkl')
+            if os.path.exists(metadata_path):
+                metadata = joblib.load(metadata_path)
+                self.trained_base_models = metadata.get('trained_base_models', {})
+                self.best_params_per_model = metadata.get('best_params_per_model', {})
+                self.feature_engineer = metadata.get('feature_engineer', PointsFeatureEngineer())
+                self.scaler = metadata.get('scaler', StandardScaler())
+                self.selected_features = metadata.get('selected_features', [])
+                self.feature_importance = metadata.get('feature_importance', {})
+                self.training_metrics = metadata.get('training_metrics', {})
+                self.validation_metrics = metadata.get('validation_metrics', {})
+                self.cv_scores = metadata.get('cv_scores', {})
+                
+                # Restaurar configuración
+                config = metadata.get('model_config', {})
+                self.n_trials = config.get('n_trials', self.n_trials)
+                self.cv_folds = config.get('cv_folds', self.cv_folds)
+                logger.info(f"Metadata cargada desde: {metadata_path}")
+            
+        except Exception as e:
+            # Fallback: intentar cargar formato antiguo (diccionario)
+            logger.warning(f"Error cargando modelo directo, intentando formato legacy: {e}")
+            try:
+                model_data = joblib.load(filepath)
+                if isinstance(model_data, dict) and 'stacking_model' in model_data:
+                    self.stacking_model = model_data['stacking_model']
+                    self.trained_base_models = model_data.get('trained_base_models', {})
+                    self.best_params_per_model = model_data.get('best_params_per_model', {})
+                    self.feature_engineer = model_data.get('feature_engineer', PointsFeatureEngineer())
+                    self.scaler = model_data.get('scaler', StandardScaler())
+                    self.selected_features = model_data.get('selected_features', [])
+                    self.feature_importance = model_data.get('feature_importance', {})
+                    self.training_metrics = model_data.get('training_metrics', {})
+                    self.validation_metrics = model_data.get('validation_metrics', {})
+                    self.cv_scores = model_data.get('cv_scores', {})
+                    self.is_trained = model_data.get('is_trained', True)
+                    logger.info(f"Modelo legacy (diccionario) cargado desde: {filepath}")
+                else:
+                    raise ValueError("Formato de archivo no reconocido")
+            except Exception as e2:
+                raise ValueError(f"No se pudo cargar el modelo. Error formato directo: {e}, Error formato legacy: {e2}")
     
     def generate_report(self) -> Dict:
         """
