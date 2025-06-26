@@ -14,7 +14,6 @@ victorias de equipos NBA utilizando:
 
 # Standard Library
 import os
-import pickle
 import warnings
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -2516,23 +2515,23 @@ class IsWinModel:
         if self.stacking_model is None:
             raise ValueError("Modelo no entrenado. Ejecutar train() primero.")
         
-        logger.info(f"💾 Guardando modelo en: {save_path}")
+        logger.info(f"Guardando modelo en: {save_path}")
         
         # Crear directorio si no existe
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         
-        # Guardar SOLO el modelo entrenado como objeto directo
-        joblib.dump(self.stacking_model, save_path)
+        # Guardar SOLO el modelo entrenado como objeto directo usando JOBLIB con compresión
+        joblib.dump(self.stacking_model, save_path, compress=3)
         
         # Log información del modelo guardado
         model_size_mb = os.path.getsize(save_path) / (1024 * 1024)
-        logger.info(f"✅ Modelo Is Win guardado como objeto directo | Tamaño: {model_size_mb:.1f}MB")
+        logger.info(f"Modelo Is Win guardado como objeto directo (JOBLIB) | Tamaño: {model_size_mb:.1f}MB")
         
         return save_path
     
     @staticmethod
     def load_model(model_path: str = "trained_models/is_win_model.joblib"):
-        """Cargar modelo entrenado"""
+        """Cargar modelo entrenado (compatible con ambos formatos)"""
         
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Modelo no encontrado en: {model_path}")
@@ -2545,22 +2544,34 @@ class IsWinModel:
         # Recrear instancia del modelo
         model = IsWinModel(optimize_hyperparams=False)
         
-        # Restaurar componentes
-        model.stacking_model = model_data['stacking_model']
-        model.models = model_data['models']
-        model.scaler = model_data['scaler']
-        model.feature_engineer = model_data['feature_engineer']
-        model.training_results = model_data.get('training_results', {})
-        model.feature_importance = model_data.get('feature_importance', {})
-        model.bayesian_results = model_data.get('bayesian_results', {})
-        
-        # Log información del modelo cargado
-        metadata = model_data.get('model_metadata', {})
-        created_at = metadata.get('created_at', 'Desconocido')
-        device = metadata.get('device', 'Desconocido')
-        
-        logger.info(f"✅ Modelo cargado | Creado: {created_at} | "
-                   f"Dispositivo: {device} | Modelos: {len(model.models)}")
+        # Verificar formato
+        if hasattr(model_data, 'predict'):
+            # Formato objeto directo (nuevo)
+            model.stacking_model = model_data
+            model.models = {}
+            model.scaler = None
+            model.feature_engineer = None  # Se inicializa en __init__
+            model.training_results = {}
+            model.feature_importance = {}
+            model.bayesian_results = {}
+            logger.info(f"✅ Modelo Is Win (objeto directo) cargado desde: {model_path}")
+        else:
+            # Formato diccionario (legacy)
+            model.stacking_model = model_data['stacking_model']
+            model.models = model_data['models']
+            model.scaler = model_data['scaler']
+            model.feature_engineer = model_data['feature_engineer']
+            model.training_results = model_data.get('training_results', {})
+            model.feature_importance = model_data.get('feature_importance', {})
+            model.bayesian_results = model_data.get('bayesian_results', {})
+            
+            # Log información del modelo cargado
+            metadata = model_data.get('model_metadata', {})
+            created_at = metadata.get('created_at', 'Desconocido')
+            device = metadata.get('device', 'Desconocido')
+            
+            logger.info(f"✅ Modelo Is Win (formato legacy) cargado | Creado: {created_at} | "
+                       f"Dispositivo: {device} | Modelos: {len(model.models)}")
         
         return model
     

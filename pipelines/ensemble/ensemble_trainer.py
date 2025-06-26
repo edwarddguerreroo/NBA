@@ -22,7 +22,7 @@ from typing import Dict, List, Tuple, Any, Optional, Union
 from datetime import datetime
 import warnings
 import json
-import pickle
+import joblib
 
 # ML/DL Libraries
 import torch
@@ -42,7 +42,7 @@ from optuna.samplers import TPESampler
 
 # Proyecto imports  
 from src.models.ensemble import FinalEnsembleModel, EnsembleConfig
-from src.models.ensemble.ultra_robust_registry import UltraRobustModelRegistry
+from src.models.ensemble.model_registry import ModelRegistry
 from src.preprocessing.data_loader import NBADataLoader
 from config.logging_config import NBALogger
 
@@ -327,7 +327,7 @@ class AdvancedEnsembleTrainer:
         self.optimization_trials = optimization_trials
         
         # Componentes principales
-        self.model_registry = UltraRobustModelRegistry(models_path)
+        self.model_registry = ModelRegistry(models_path)
         self.nature_analyzer = ModelNatureAnalyzer()
         self.hierarchical_builder = HierarchicalEnsembleBuilder()
         
@@ -373,7 +373,72 @@ class AdvancedEnsembleTrainer:
         
         # Usar FinalEnsembleModel para preparar datos base
         ensemble_model = FinalEnsembleModel(self.config, self.models_path)
-        ensemble_model.loaded_models = self.loaded_models
+        
+        # Convertir loaded_models al formato esperado por FinalEnsembleModel
+        formatted_models = {}
+        for model_name, model_wrapper in self.loaded_models.items():
+            # Obtener configuración del modelo desde EnsembleConfig
+            enabled_models = self.config.get_enabled_models()
+            model_config = enabled_models.get(model_name)
+            
+            if model_config:
+                formatted_models[model_name] = {
+                    'model': model_wrapper,  # Usar el wrapper directamente
+                    'config': model_config,
+                    'type': model_config.type
+                }
+            else:
+                # Crear configuración básica si no existe
+                from src.models.ensemble.ensemble_config import ModelConfig
+                
+                # Determinar tipo y target basado en el nombre del modelo
+                if 'player' in model_name:
+                    if 'pts' in model_name:
+                        target_col = 'PTS'
+                        model_type = 'regression'
+                    elif 'trb' in model_name:
+                        target_col = 'TRB'
+                        model_type = 'regression'
+                    elif 'ast' in model_name:
+                        target_col = 'AST'
+                        model_type = 'regression'
+                    elif 'triples' in model_name or '3pt' in model_name:
+                        target_col = '3P'
+                        model_type = 'regression'
+                    elif 'double_double' in model_name:
+                        target_col = 'DD'
+                        model_type = 'classification'
+                    else:
+                        target_col = 'PTS'  # Default
+                        model_type = 'regression'
+                else:
+                    # Modelos de equipos
+                    if 'teams_points' in model_name:
+                        target_col = 'PTS'
+                        model_type = 'regression'
+                    elif 'total_points' in model_name:
+                        target_col = 'total_points'
+                        model_type = 'regression'
+                    elif 'is_win' in model_name:
+                        target_col = 'is_win'
+                        model_type = 'classification'
+                    else:
+                        target_col = 'PTS'  # Default
+                        model_type = 'regression'
+                
+                basic_config = ModelConfig(
+                    name=model_name,
+                    type=model_type,
+                    target_column=target_col,
+                    enabled=True
+                )
+                formatted_models[model_name] = {
+                    'model': model_wrapper,  # Usar el wrapper directamente
+                    'config': basic_config,
+                    'type': basic_config.type
+                }
+        
+        ensemble_model.loaded_models = formatted_models
         
         features_dict, targets_dict = ensemble_model.prepare_ensemble_data(df_players, df_teams)
         
@@ -760,34 +825,54 @@ class AdvancedEnsembleTrainer:
         return evaluation_results
     
     def save_ensemble(self, filepath: str):
-        """Guardar ensemble entrenado"""
+        """Guardar ensemble entrenado como objeto directo"""
         if not self.ensemble_results:
             raise ValueError("No hay ensemble entrenado para guardar")
         
-        save_data = {
-            'ensemble_results': self.ensemble_results,
-            'model_natures': self.model_natures,
-            'config': self.config,
-            'training_timestamp': datetime.now()
-        }
+        # Determinar qué modelo ensemble guardar (priorizar el mejor entrenado)
+        ensemble_to_save = None
+        
+        if hasattr(self, 'final_ensemble') and self.final_ensemble:
+            # Si tenemos un ensemble final combinado, usarlo
+            if 'regression' in self.final_ensemble and self.final_ensemble['regression']:
+                ensemble_to_save = self.final_ensemble['regression']
+                logger.info("Guardando ensemble de regresión como modelo principal")
+            elif 'classification' in self.final_ensemble and self.final_ensemble['classification']:
+                ensemble_to_save = self.final_ensemble['classification']
+                logger.info("Guardando ensemble de clasificación como modelo principal")
+        
+        if ensemble_to_save is None:
+            raise ValueError("No hay ensemble entrenado válido para guardar como objeto")
         
         Path(filepath).parent.mkdir(parents=True, exist_ok=True)
         
-        with open(filepath, 'wb') as f:
-            pickle.dump(save_data, f)
+        # Guardar SOLO el modelo ensemble como objeto directo usando JOBLIB con compresión
+        joblib.dump(ensemble_to_save, filepath, compress=3)
         
-        logger.info(f"Ensemble guardado en: {filepath}")
+        logger.info(f"Ensemble guardado como objeto directo (JOBLIB): {filepath}")
     
     def load_ensemble(self, filepath: str):
-        """Cargar ensemble desde archivo"""
-        with open(filepath, 'rb') as f:
-            save_data = pickle.load(f)
-        
-        self.ensemble_results = save_data['ensemble_results']
-        self.model_natures = save_data['model_natures']
-        self.config = save_data['config']
-        
-        logger.info(f"Ensemble cargado desde: {filepath}")
+        """Cargar ensemble desde archivo con compatibilidad para ambos formatos"""
+        try:
+            ensemble_data = joblib.load(filepath)
+            
+            if hasattr(ensemble_data, 'predict'):
+                # Es un modelo ensemble directo (nuevo formato)
+                self.final_ensemble = {'regression': ensemble_data}
+                self.ensemble_results = {'final_ensemble': {'regression': ensemble_data}}
+                logger.info(f"Ensemble (objeto directo) cargado desde: {filepath}")
+            elif isinstance(ensemble_data, dict):
+                # Es formato legacy con diccionario
+                self.ensemble_results = ensemble_data.get('ensemble_results', {})
+                self.model_natures = ensemble_data.get('model_natures', {})
+                self.config = ensemble_data.get('config', self.config)
+                logger.info(f"Ensemble (formato legacy) cargado desde: {filepath}")
+            else:
+                raise ValueError("Formato de ensemble no reconocido")
+                
+        except Exception as e:
+            logger.error(f"Error cargando ensemble: {e}")
+            raise ValueError(f"No se pudo cargar el ensemble: {e}")
 
 
 class UnifiedEnsemblePipeline:

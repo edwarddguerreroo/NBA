@@ -806,9 +806,9 @@ class StackingASTModel:
         import os
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
-        # Guardar SOLO el modelo entrenado como objeto directo
-        joblib.dump(self.stacking_model, filepath)
-        logger.info(f"Modelo AST guardado como objeto directo: {filepath}")
+        # Guardar SOLO el modelo entrenado como objeto directo usando JOBLIB con compresión
+        joblib.dump(self.stacking_model, filepath, compress=3)
+        logger.info(f"Modelo AST guardado como objeto directo (JOBLIB): {filepath}")
     
     def load_model(self, filepath: str):
         """Cargar modelo entrenado (compatible con ambos formatos)"""

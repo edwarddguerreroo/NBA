@@ -15,7 +15,6 @@ puntos de equipo NBA utilizando:
 
 # Standard Library
 import os
-import pickle
 import warnings
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -1659,6 +1658,59 @@ class TeamPointsModel(BaseNBATeamModel):
         logger.info(f"Precisión ±3pts: {metrics['accuracy_3pt']:.1f}%")
         
         return metrics
+    
+    def save_model(self, filepath: str):
+        """Guardar modelo entrenado como objeto directo"""
+        if not self.is_trained:
+            raise ValueError("Modelo no entrenado. Ejecutar train() primero.")
+        
+        if not hasattr(self, 'stacking_model') or self.stacking_model is None:
+            # Usar el mejor modelo individual si no hay stacking
+            if hasattr(self, 'trained_models') and self.best_model_name in self.trained_models:
+                model_to_save = self.trained_models[self.best_model_name]
+            else:
+                raise ValueError("No hay modelo entrenado para guardar")
+        else:
+            model_to_save = self.stacking_model
+        
+        # Crear directorio si no existe
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
+        # Guardar SOLO el modelo entrenado como objeto directo usando JOBLIB con compresión
+        joblib.dump(model_to_save, filepath, compress=3)
+        logger.info(f"Modelo Teams Points guardado como objeto directo (JOBLIB): {filepath}")
+    
+    def load_model(self, filepath: str):
+        """Cargar modelo entrenado (compatible con ambos formatos)"""
+        try:
+            # Intentar cargar modelo directo (nuevo formato)
+            model_data = joblib.load(filepath)
+            if hasattr(model_data, 'predict'):
+                # Es un modelo directo
+                if not hasattr(self, 'trained_models'):
+                    self.trained_models = {}
+                self.trained_models['loaded_model'] = model_data
+                self.best_model_name = 'loaded_model'
+                self.stacking_model = model_data if hasattr(model_data, 'estimators_') else None
+                self.is_trained = True
+                logger.info(f"Modelo Teams Points (objeto directo) cargado desde: {filepath}")
+            else:
+                # Formato diccionario legacy
+                if isinstance(model_data, dict):
+                    if 'model' in model_data:
+                        model = model_data['model']
+                        if not hasattr(self, 'trained_models'):
+                            self.trained_models = {}
+                        self.trained_models['loaded_model'] = model
+                        self.best_model_name = 'loaded_model'
+                        self.is_trained = True
+                        logger.info(f"Modelo Teams Points (formato legacy) cargado desde: {filepath}")
+                    else:
+                        raise ValueError("Formato de diccionario no reconocido")
+                else:
+                    raise ValueError("Formato de archivo no reconocido")
+        except Exception as e:
+            raise ValueError(f"No se pudo cargar el modelo Teams Points: {e}")
     
     def save_production_model(self, save_path: str = None):
         """

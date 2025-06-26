@@ -17,7 +17,6 @@ Objetivo: 97%+ de precisión en predicción de puntos totales
 
 # Standard Library
 import os
-import pickle
 import warnings
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -1626,14 +1625,14 @@ class NBATotalPointsPredictor:
         # Crear directorio si no existe
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
-        # Guardar SOLO el modelo ensemble principal como objeto directo
+        # Guardar SOLO el modelo ensemble principal como objeto directo usando JOBLIB con compresión
         model_to_save = self.ensemble_models['stacking']
-        joblib.dump(model_to_save, filepath)
-        logger.info(f"Modelo Total Points guardado como objeto directo: {filepath}")
+        joblib.dump(model_to_save, filepath, compress=3)
+        logger.info(f"Modelo Total Points guardado como objeto directo (JOBLIB): {filepath}")
     
     @staticmethod
     def load_model(filepath: str = 'models/total_points_predictor.pkl'):
-        """Carga un modelo guardado"""
+        """Carga un modelo guardado (compatible con ambos formatos)"""
         
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Archivo no encontrado: {filepath}")
@@ -1644,15 +1643,26 @@ class NBATotalPointsPredictor:
         # Crear instancia
         predictor = NBATotalPointsPredictor()
         
-        # Restaurar componentes
-        predictor.feature_engineer = model_data['feature_engineer']
-        predictor.feature_columns = model_data['feature_columns']
-        predictor.scaler = model_data['scaler']
-        predictor.optimized_models = model_data['optimized_models']
-        predictor.ensemble_models = model_data['ensemble_models']
-        predictor.training_results = model_data['training_results']
-        predictor.optimization_history = model_data.get('optimization_history', {})
-        
-        logger.info(f"Modelo cargado desde: {filepath}")
+        # Verificar formato
+        if hasattr(model_data, 'predict'):
+            # Formato objeto directo (nuevo)
+            predictor.ensemble_models = {'stacking': model_data}
+            predictor.feature_engineer = None  # Se inicializa en __init__
+            predictor.feature_columns = []
+            predictor.scaler = None
+            predictor.optimized_models = {}
+            predictor.training_results = {}
+            predictor.optimization_history = {}
+            logger.info(f"Modelo Total Points (objeto directo) cargado desde: {filepath}")
+        else:
+            # Formato diccionario (legacy)
+            predictor.feature_engineer = model_data['feature_engineer']
+            predictor.feature_columns = model_data['feature_columns']
+            predictor.scaler = model_data['scaler']
+            predictor.optimized_models = model_data['optimized_models']
+            predictor.ensemble_models = model_data['ensemble_models']
+            predictor.training_results = model_data['training_results']
+            predictor.optimization_history = model_data.get('optimization_history', {})
+            logger.info(f"Modelo Total Points (formato legacy) cargado desde: {filepath}")
         
         return predictor

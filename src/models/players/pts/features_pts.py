@@ -1501,8 +1501,11 @@ class PointsFeatureEngineer:
             logger.info(f"Conjunto óptimo: {len(final_features)} features seleccionadas")
             return final_features
         else:
-            logger.info(f"Conjunto óptimo: {len(all_features)} features seleccionadas")
-            return all_features
+            # PASO 1: Filtrar features ruidosas
+            logger.info("Aplicando filtros de ruido para eliminar features problemáticas...")
+            clean_features = self._apply_noise_filters(df, all_features)
+            logger.info(f"Conjunto óptimo: {len(clean_features)} features seleccionadas")
+            return clean_features
     
     def _create_situational_context_features_optimized(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -2755,3 +2758,191 @@ class PointsFeatureEngineer:
         logger.info("  temporal_ensemble_predictor: Combina múltiples ventanas temporales")
         logger.info("  final_ensemble_predictor: Predictor ensemble definitivo")
         logger.info("  ensemble_confidence_score: Score de confianza del ensemble")
+    
+    def _apply_noise_filters(self, df: pd.DataFrame, features: List[str]) -> List[str]:
+        """
+        Aplica filtros avanzados para eliminar features que solo agregan ruido a los modelos.
+        
+        Args:
+            df: DataFrame con los datos
+            features: Lista de features a filtrar
+            
+        Returns:
+            List[str]: Lista de features filtradas sin ruido
+        """
+        logger.info(f"Iniciando filtrado de ruido en {len(features)} features...")
+        
+        # Copia de features para trabajar
+        clean_features = features.copy()
+        removed_features = []
+        
+        # FILTRO 1: Eliminar features con varianza extremadamente baja (casi constantes)
+        logger.info("Aplicando filtro de varianza...")
+        variance_threshold = 0.001  # Umbral muy bajo para features casi constantes
+        
+        for feature in features:
+            if feature in df.columns:
+                try:
+                    variance = df[feature].var()
+                    if pd.isna(variance) or variance < variance_threshold:
+                        clean_features.remove(feature)
+                        removed_features.append(f"{feature} (varianza: {variance:.6f})")
+                except Exception:
+                    # Si hay error calculando varianza, eliminar la feature
+                    if feature in clean_features:
+                        clean_features.remove(feature)
+                        removed_features.append(f"{feature} (error cálculo)")
+        
+        # FILTRO 2: Eliminar features con demasiados valores NaN o infinitos
+        logger.info("Aplicando filtro de valores faltantes/infinitos...")
+        nan_threshold = 0.7  # Más del 70% de valores faltantes
+        
+        for feature in clean_features.copy():
+            if feature in df.columns:
+                try:
+                    total_values = len(df[feature])
+                    nan_count = df[feature].isna().sum()
+                    inf_count = np.isinf(df[feature].replace([np.inf, -np.inf], np.nan)).sum()
+                    
+                    nan_ratio = (nan_count + inf_count) / total_values
+                    
+                    if nan_ratio > nan_threshold:
+                        clean_features.remove(feature)
+                        removed_features.append(f"{feature} (NaN/Inf: {nan_ratio:.2%})")
+                except Exception:
+                    clean_features.remove(feature)
+                    removed_features.append(f"{feature} (error NaN)")
+        
+        # FILTRO 3: Eliminar features con distribuciones extremadamente sesgadas
+        logger.info("Aplicando filtro de distribuciones sesgadas...")
+        skewness_threshold = 10.0  # Sesgo extremo
+        
+        for feature in clean_features.copy():
+            if feature in df.columns:
+                try:
+                    # Calcular solo con valores válidos
+                    valid_values = df[feature].dropna().replace([np.inf, -np.inf], np.nan).dropna()
+                    
+                    if len(valid_values) > 10:  # Necesitamos suficientes valores
+                        skewness = abs(valid_values.skew())
+                        
+                        if pd.isna(skewness) or skewness > skewness_threshold:
+                            clean_features.remove(feature)
+                            removed_features.append(f"{feature} (sesgo: {skewness:.2f})")
+                except Exception:
+                    clean_features.remove(feature)
+                    removed_features.append(f"{feature} (error sesgo)")
+        
+        # FILTRO 4: Eliminar features con correlación perfecta o casi perfecta con otras
+        logger.info("Aplicando filtro de correlación extrema...")
+        correlation_threshold = 0.99  # Correlación casi perfecta
+        
+        if len(clean_features) > 1:
+            try:
+                # Calcular matriz de correlación solo con features válidas
+                feature_data = df[clean_features].fillna(0).replace([np.inf, -np.inf], 0)
+                corr_matrix = feature_data.corr().abs()
+                
+                # Encontrar pares con correlación extrema
+                for i in range(len(corr_matrix.columns)):
+                    for j in range(i+1, len(corr_matrix.columns)):
+                        corr_value = corr_matrix.iloc[i, j]
+                        
+                        if not pd.isna(corr_value) and corr_value > correlation_threshold:
+                            feature_i = corr_matrix.columns[i]
+                            feature_j = corr_matrix.columns[j]
+                            
+                            # Eliminar la feature con menor varianza
+                            if feature_i in clean_features and feature_j in clean_features:
+                                var_i = df[feature_i].var()
+                                var_j = df[feature_j].var()
+                                
+                                if pd.isna(var_i) or (not pd.isna(var_j) and var_i < var_j):
+                                    clean_features.remove(feature_i)
+                                    removed_features.append(f"{feature_i} (corr con {feature_j}: {corr_value:.3f})")
+                                else:
+                                    clean_features.remove(feature_j)
+                                    removed_features.append(f"{feature_j} (corr con {feature_i}: {corr_value:.3f})")
+            except Exception as e:
+                logger.warning(f"Error en filtro de correlación: {e}")
+        
+        # FILTRO 5: Eliminar features conocidas como problemáticas para puntos
+        logger.info("Aplicando filtro de features problemáticas conocidas...")
+        problematic_patterns = [
+            # Features que tienden a ser ruidosas o poco predictivas
+            '_squared_',  # Features cuadráticas suelen ser ruidosas
+            '_cubed_',    # Features cúbicas suelen ser ruidosas
+            '_interaction_complex_',  # Interacciones complejas suelen ser ruidosas
+            'random_',    # Features aleatorias
+            'noise_',     # Features de ruido
+            '_outlier_',  # Features de outliers suelen ser inestables
+            '_extreme_',  # Features extremas suelen ser inestables
+        ]
+        
+        for feature in clean_features.copy():
+            for pattern in problematic_patterns:
+                if pattern in feature.lower():
+                    clean_features.remove(feature)
+                    removed_features.append(f"{feature} (patrón problemático: {pattern})")
+                    break
+        
+        # FILTRO 6: Validar que las features restantes sean numéricas
+        logger.info("Validando features numéricas...")
+        for feature in clean_features.copy():
+            if feature in df.columns:
+                try:
+                    # Intentar convertir a numérico
+                    numeric_values = pd.to_numeric(df[feature], errors='coerce')
+                    
+                    # Si más del 50% no se puede convertir, eliminar
+                    if numeric_values.isna().sum() / len(numeric_values) > 0.5:
+                        clean_features.remove(feature)
+                        removed_features.append(f"{feature} (no numérica)")
+                except Exception:
+                    clean_features.remove(feature)
+                    removed_features.append(f"{feature} (error numérico)")
+        
+        # FILTRO 7: Eliminar features con nombres sospechosos o mal formados
+        logger.info("Aplicando filtro de nombres sospechosos...")
+        suspicious_patterns = [
+            'unnamed',
+            'index',
+            'level_',
+            '__',  # Doble underscore suele indicar features temporales mal formadas
+            '...',  # Puntos múltiples
+            'tmp_',  # Features temporales
+            'debug_',  # Features de debug
+        ]
+        
+        for feature in clean_features.copy():
+            feature_lower = feature.lower()
+            for pattern in suspicious_patterns:
+                if pattern in feature_lower:
+                    clean_features.remove(feature)
+                    removed_features.append(f"{feature} (nombre sospechoso: {pattern})")
+                    break
+        
+        # Resumen del filtrado
+        features_removed = len(features) - len(clean_features)
+        logger.info(f"Filtrado completado: {features_removed} features eliminadas, {len(clean_features)} restantes")
+        
+        if features_removed > 0:
+            logger.info("Features eliminadas por ruido:")
+            for removed in removed_features[:10]:  # Mostrar solo las primeras 10
+                logger.info(f"  - {removed}")
+            if len(removed_features) > 10:
+                logger.info(f"  ... y {len(removed_features) - 10} más")
+        
+        # Validación final: asegurar que tenemos features válidas
+        if len(clean_features) == 0:
+            logger.warning("ADVERTENCIA: Todos las features fueron eliminadas por filtros de ruido")
+            # Devolver las features más básicas como fallback
+            basic_features = [f for f in features if any(pattern in f for pattern in ['pts_', 'mp_', 'fg_', 'ast_', 'trb_'])]
+            if basic_features:
+                logger.info(f"Usando {len(basic_features)} features básicas como fallback")
+                return basic_features[:20]  # Máximo 20 features básicas
+            else:
+                logger.error("No se encontraron features básicas válidas")
+                return features[:10]  # Devolver las primeras 10 como último recurso
+        
+        return clean_features

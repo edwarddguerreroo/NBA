@@ -432,44 +432,59 @@ class Stacking3PTModel:
             params.update(model_config['fixed_params'])
             
             try:
+                X_train_local = X_train.copy() if hasattr(X_train, 'copy') else X_train
+                X_val_local = X_val.copy() if hasattr(X_val, 'copy') else X_val
+                
                 # Entrenar modelo
                 model = model_config['model_class'](**params)
+                
+                # Validación específica para XGBoost - asegurar consistencia de feature names
+                if model_name == 'xgboost':
+                    # Verificar que X_train y X_val tengan las mismas columnas
+                    if hasattr(X_train_local, 'columns') and hasattr(X_val_local, 'columns'):
+                        if list(X_train_local.columns) != list(X_val_local.columns):
+                            logger.warning(f"Inconsistencia en columnas - Train: {len(X_train_local.columns)}, Val: {len(X_val_local.columns)}")
+                            # Sincronizar columnas
+                            common_cols = list(set(X_train_local.columns) & set(X_val_local.columns))
+                            X_train_local = X_train_local[common_cols]
+                            X_val_local = X_val_local[common_cols]
+                            logger.info(f"Columnas sincronizadas: {len(common_cols)}")
                 
                 # Entrenar modelo con early stopping y sample weights según el tipo
                 if model_name == 'lightgbm':
                     fit_params = {
-                        'eval_set': [(X_val, y_val)],
+                        'eval_set': [(X_val_local, y_val)],
                         'callbacks': [lgb.early_stopping(self.early_stopping_rounds), lgb.log_evaluation(0)]
                     }
                     if sample_weights is not None:
                         fit_params['sample_weight'] = sample_weights
-                    model.fit(X_train, y_train, **fit_params)
+                    model.fit(X_train_local, y_train, **fit_params)
                 elif model_name == 'catboost_ultra':
                     fit_params = {
-                        'eval_set': (X_val, y_val),
+                        'eval_set': (X_val_local, y_val),
                         'verbose': False,
                         'thread_count': 1  # Forzar single thread para evitar problemas
                     }
                     if sample_weights is not None:
                         fit_params['sample_weight'] = sample_weights
-                    model.fit(X_train, y_train, **fit_params)
+                    model.fit(X_train_local, y_train, **fit_params)
                 elif model_name in ['random_forest', 'extra_trees', 'gradient_boosting']:
                     fit_params = {}
                     if sample_weights is not None:
                         fit_params['sample_weight'] = sample_weights
-                    model.fit(X_train, y_train, **fit_params)
+                    model.fit(X_train_local, y_train, **fit_params)
                 elif model_name == 'neural_network':
                     # Redes neuronales no soportan sample_weight directamente en sklearn
-                    model.fit(X_train, y_train)
+                    model.fit(X_train_local, y_train)
                 else:
                     # XGBoost y otros
                     fit_params = {}
                     if sample_weights is not None:
                         fit_params['sample_weight'] = sample_weights
-                    model.fit(X_train, y_train, **fit_params)
+                    model.fit(X_train_local, y_train, **fit_params)
                 
                 # Predecir y evaluar
-                y_pred = model.predict(X_val)
+                y_pred = model.predict(X_val_local)
                 
                 # Clipping para triples (0 a 15 máximo razonable)
                 y_pred = np.clip(y_pred, 0, 15)
@@ -505,6 +520,19 @@ class Stacking3PTModel:
         
         # Entrenar modelo final con sample weights
         best_model = model_config['model_class'](**best_params)
+        
+        # Validación específica para XGBoost - asegurar consistencia de feature names
+        if model_name == 'xgboost':
+            # Verificar que X_train y X_val tengan las mismas columnas
+            if hasattr(X_train, 'columns') and hasattr(X_val, 'columns'):
+                if list(X_train.columns) != list(X_val.columns):
+                    logger.warning(f"Inconsistencia en columnas finales - Train: {len(X_train.columns)}, Val: {len(X_val.columns)}")
+                    # Sincronizar columnas
+                    common_cols = list(set(X_train.columns) & set(X_val.columns))
+                    X_train = X_train[common_cols]
+                    X_val = X_val[common_cols]
+                    logger.info(f"Columnas finales sincronizadas: {len(common_cols)}")
+        
         if model_name == 'lightgbm':
             fit_params = {
                 'eval_set': [(X_val, y_val)],
@@ -744,13 +772,29 @@ class Stacking3PTModel:
         available_features = [f for f in feature_names if f in df_features.columns]
         missing_features = [f for f in feature_names if f not in df_features.columns]
         
-        if missing_features:
-            logger.warning(f"Features faltantes: {len(missing_features)}")
+        # Agregar features faltantes con valores por defecto
+        for missing_feature in missing_features:
+            logger.warning(f"Feature faltante '{missing_feature}' - agregando con valor por defecto")
+            df_features[missing_feature] = 0.0
+            available_features.append(missing_feature)
+        
+        # Asegurar que specialization_progression esté presente (fix específico)
+        if 'specialization_progression' not in df_features.columns:
+            logger.warning("specialization_progression faltante - agregando con valor por defecto")
+            df_features['specialization_progression'] = 0.0
+            if 'specialization_progression' not in available_features:
+                available_features.append('specialization_progression')
         
         logger.info(f"Features disponibles para triples: {len(available_features)}")
         
         # Preparar DataFrame final
         X = df_features[available_features].fillna(0)
+        
+        # Verificación final de consistencia
+        if len(X.columns) != len(available_features):
+            logger.error(f"Inconsistencia: X tiene {len(X.columns)} columnas pero available_features tiene {len(available_features)}")
+            # Sincronizar
+            available_features = list(X.columns)
         
         return X, available_features
     
@@ -878,7 +922,17 @@ class Stacking3PTModel:
         
         # Preparar features
         X_train, feature_names = self._prepare_features(train_df)
-        X_val, _ = self._prepare_features(val_df)
+        X_val, val_feature_names = self._prepare_features(val_df)
+        
+        # Verificar consistencia de features entre train y val
+        if feature_names != val_feature_names:
+            logger.warning(f"Inconsistencia de features - Train: {len(feature_names)}, Val: {len(val_feature_names)}")
+            # Usar solo features comunes
+            common_features = list(set(feature_names) & set(val_feature_names))
+            X_train = X_train[common_features]
+            X_val = X_val[common_features]
+            feature_names = common_features
+            logger.info(f"Usando features comunes: {len(common_features)}")
         
         # Targets
         y_train = train_df['3P'].values
@@ -1022,7 +1076,7 @@ class Stacking3PTModel:
         with joblib.parallel_backend('threading', n_jobs=1):
             joblib.dump(self.stacking_model, filepath, compress=3)
         
-        logger.info(f"Modelo de triples guardado como objeto directo: {filepath}")
+        logger.info(f"Modelo Triples guardado como objeto directo (JOBLIB): {filepath}")
     
     def load_model(self, filepath: str):
         """Carga un modelo previamente entrenado (compatible con ambos formatos)"""

@@ -163,14 +163,18 @@ class ThreePointsFeatureEngineer:
         # Obtener lista de features creadas
         created_features = list(self.feature_registry.keys())
         
+        # PASO 1: Filtrar features ruidosas
+        logger.info("Aplicando filtros de ruido para eliminar features problemáticas...")
+        clean_features = self._apply_noise_filters(df, created_features)
+        
         # Aplicar filtros si es necesario
-        if len(created_features) > self.max_features:
-            created_features = self._apply_feature_selection(df, created_features)
+        if len(clean_features) > self.max_features:
+            clean_features = self._apply_feature_selection(df, clean_features)
         
         # Resumen final
         self._log_feature_summary()
         
-        return created_features
+        return clean_features
     
     def _create_shooting_accuracy_features(self, df: pd.DataFrame) -> None:
         """
@@ -293,20 +297,33 @@ class ThreePointsFeatureEngineer:
             if self._register_feature('specialization_progression', 'shooting_volume'):
                 # Mide si el jugador se especializa más en triples con el tiempo
                 try:
-                    early_ratio = df.groupby('Player').apply(
-                        lambda x: x['3PA'].head(10).sum() / (x['FGA'].head(10).sum() + 0.1)
-                        if len(x) >= 10 else np.nan
-                    ).reset_index(name='early_spec')
+                    # Calcular ratio de especialización temprana de manera más robusta
+                    early_ratios = []
+                    for player in df['Player'].unique():
+                        player_data = df[df['Player'] == player].sort_values('Date')
+                        if len(player_data) >= 10:
+                            early_3pa = player_data['3PA'].head(10).sum()
+                            early_fga = player_data['FGA'].head(10).sum()
+                            early_ratio = early_3pa / (early_fga + 0.1) if early_fga > 0 else 0.35
+                        else:
+                            early_ratio = 0.35  # Liga promedio como fallback
+                        early_ratios.append({'Player': player, 'early_spec': early_ratio})
                     
-                    recent_ratio = self._get_historical_series(df, '3PA', window=10, operation='sum') / (
-                        self._get_historical_series(df, 'FGA', window=10, operation='sum') + 0.1)
+                    early_ratio_df = pd.DataFrame(early_ratios)
                     
-                    # Merge early specialization with current data
-                    df_temp = df.merge(early_ratio[['Player', 'early_spec']], on='Player', how='left')
+                    # Calcular ratio reciente
+                    recent_3pa = self._get_historical_series(df, '3PA', window=10, operation='sum')
+                    recent_fga = self._get_historical_series(df, 'FGA', window=10, operation='sum')
+                    recent_ratio = recent_3pa / (recent_fga + 0.1)
+                    
+                    # Merge y calcular progresión
+                    df_temp = df.merge(early_ratio_df, on='Player', how='left')
                     progression = (recent_ratio - df_temp['early_spec']) / (df_temp['early_spec'] + 0.1)
-                    df['specialization_progression'] = progression.fillna(0)
+                    df['specialization_progression'] = progression.fillna(0.0)
+                    
                 except Exception as e:
-                    # Fallback si hay error
+                    logger.warning(f"Error calculando specialization_progression: {e}")
+                    # Fallback robusto
                     df['specialization_progression'] = 0.0
         
         # FRECUENCIA DE TIRO POR MINUTO
@@ -1047,3 +1064,211 @@ class ThreePointsFeatureEngineer:
         for category in ['shooting_accuracy', 'shooting_volume', 'shooting_mechanics']:
             if self.feature_categories[category]:
                 logger.info(f"  {category}: {self.feature_categories[category][:3]}")
+    
+    def _apply_noise_filters(self, df: pd.DataFrame, features: List[str]) -> List[str]:
+        """
+        Aplica filtros avanzados para eliminar features que solo agregan ruido a los modelos de triples.
+        
+        Args:
+            df: DataFrame con los datos
+            features: Lista de features a filtrar
+            
+        Returns:
+            List[str]: Lista de features filtradas sin ruido
+        """
+        logger.info(f"Iniciando filtrado de ruido en {len(features)} features de triples...")
+        
+        # Copia de features para trabajar
+        clean_features = features.copy()
+        removed_features = []
+        
+        # FILTRO 1: Eliminar features con varianza extremadamente baja (casi constantes)
+        logger.info("Aplicando filtro de varianza...")
+        variance_threshold = 0.001  # Umbral muy bajo para features casi constantes
+        
+        for feature in features:
+            if feature in df.columns:
+                try:
+                    variance = df[feature].var()
+                    if pd.isna(variance) or variance < variance_threshold:
+                        clean_features.remove(feature)
+                        removed_features.append(f"{feature} (varianza: {variance:.6f})")
+                except Exception:
+                    # Si hay error calculando varianza, eliminar la feature
+                    if feature in clean_features:
+                        clean_features.remove(feature)
+                        removed_features.append(f"{feature} (error cálculo)")
+        
+        # FILTRO 2: Eliminar features con demasiados valores NaN o infinitos
+        logger.info("Aplicando filtro de valores faltantes/infinitos...")
+        nan_threshold = 0.7  # Más del 70% de valores faltantes
+        
+        for feature in clean_features.copy():
+            if feature in df.columns:
+                try:
+                    total_values = len(df[feature])
+                    nan_count = df[feature].isna().sum()
+                    inf_count = np.isinf(df[feature].replace([np.inf, -np.inf], np.nan)).sum()
+                    
+                    nan_ratio = (nan_count + inf_count) / total_values
+                    
+                    if nan_ratio > nan_threshold:
+                        clean_features.remove(feature)
+                        removed_features.append(f"{feature} (NaN/Inf: {nan_ratio:.2%})")
+                except Exception:
+                    clean_features.remove(feature)
+                    removed_features.append(f"{feature} (error NaN)")
+        
+        # FILTRO 3: Eliminar features con distribuciones extremadamente sesgadas
+        logger.info("Aplicando filtro de distribuciones sesgadas...")
+        skewness_threshold = 10.0  # Sesgo extremo (más estricto para triples)
+        
+        for feature in clean_features.copy():
+            if feature in df.columns:
+                try:
+                    # Calcular solo con valores válidos
+                    valid_values = df[feature].dropna().replace([np.inf, -np.inf], np.nan).dropna()
+                    
+                    if len(valid_values) > 10:  # Necesitamos suficientes valores
+                        skewness = abs(valid_values.skew())
+                        
+                        if pd.isna(skewness) or skewness > skewness_threshold:
+                            clean_features.remove(feature)
+                            removed_features.append(f"{feature} (sesgo: {skewness:.2f})")
+                except Exception:
+                    clean_features.remove(feature)
+                    removed_features.append(f"{feature} (error sesgo)")
+        
+        # FILTRO 4: Eliminar features con correlación perfecta o casi perfecta con otras
+        logger.info("Aplicando filtro de correlación extrema...")
+        correlation_threshold = 0.99  # Correlación casi perfecta
+        
+        if len(clean_features) > 1:
+            try:
+                # Calcular matriz de correlación solo con features válidas
+                feature_data = df[clean_features].fillna(0).replace([np.inf, -np.inf], 0)
+                corr_matrix = feature_data.corr().abs()
+                
+                # Encontrar pares con correlación extrema
+                for i in range(len(corr_matrix.columns)):
+                    for j in range(i+1, len(corr_matrix.columns)):
+                        corr_value = corr_matrix.iloc[i, j]
+                        
+                        if not pd.isna(corr_value) and corr_value > correlation_threshold:
+                            feature_i = corr_matrix.columns[i]
+                            feature_j = corr_matrix.columns[j]
+                            
+                            # Eliminar la feature con menor varianza
+                            if feature_i in clean_features and feature_j in clean_features:
+                                var_i = df[feature_i].var()
+                                var_j = df[feature_j].var()
+                                
+                                if pd.isna(var_i) or (not pd.isna(var_j) and var_i < var_j):
+                                    clean_features.remove(feature_i)
+                                    removed_features.append(f"{feature_i} (corr con {feature_j}: {corr_value:.3f})")
+                                else:
+                                    clean_features.remove(feature_j)
+                                    removed_features.append(f"{feature_j} (corr con {feature_i}: {corr_value:.3f})")
+            except Exception as e:
+                logger.warning(f"Error en filtro de correlación: {e}")
+        
+        # FILTRO 5: Eliminar features conocidas como problemáticas para triples
+        logger.info("Aplicando filtro de features problemáticas conocidas...")
+        problematic_patterns = [
+            # Features que tienden a ser ruidosas o poco predictivas para triples
+            '_squared_',  # Features cuadráticas suelen ser ruidosas
+            '_cubed_',    # Features cúbicas suelen ser ruidosas
+            '_interaction_complex_',  # Interacciones complejas suelen ser ruidosas
+            'random_',    # Features aleatorias
+            'noise_',     # Features de ruido
+            '_outlier_',  # Features de outliers suelen ser inestables
+            '_extreme_',  # Features extremas suelen ser inestables
+            'cosmic_',    # Features cósmicas experimentales suelen ser ruidosas
+            'quantum_',   # Features cuánticas experimentales suelen ser ruidosas
+            'fractal_',   # Features fractales suelen ser ruidosas
+        ]
+        
+        for feature in clean_features.copy():
+            for pattern in problematic_patterns:
+                if pattern in feature.lower():
+                    clean_features.remove(feature)
+                    removed_features.append(f"{feature} (patrón problemático: {pattern})")
+                    break
+        
+        # FILTRO 6: Validar que las features restantes sean numéricas
+        logger.info("Validando features numéricas...")
+        for feature in clean_features.copy():
+            if feature in df.columns:
+                try:
+                    # Intentar convertir a numérico
+                    numeric_values = pd.to_numeric(df[feature], errors='coerce')
+                    
+                    # Si más del 50% no se puede convertir, eliminar
+                    if numeric_values.isna().sum() / len(numeric_values) > 0.5:
+                        clean_features.remove(feature)
+                        removed_features.append(f"{feature} (no numérica)")
+                except Exception:
+                    clean_features.remove(feature)
+                    removed_features.append(f"{feature} (error numérico)")
+        
+        # FILTRO 7: Eliminar features con nombres sospechosos o mal formados
+        logger.info("Aplicando filtro de nombres sospechosos...")
+        suspicious_patterns = [
+            'unnamed',
+            'index',
+            'level_',
+            '__',  # Doble underscore suele indicar features temporales mal formadas
+            '...',  # Puntos múltiples
+            'tmp_',  # Features temporales
+            'debug_',  # Features de debug
+        ]
+        
+        for feature in clean_features.copy():
+            feature_lower = feature.lower()
+            for pattern in suspicious_patterns:
+                if pattern in feature_lower:
+                    clean_features.remove(feature)
+                    removed_features.append(f"{feature} (nombre sospechoso: {pattern})")
+                    break
+        
+        # FILTRO 8: Filtro específico para triples - eliminar features poco relevantes
+        logger.info("Aplicando filtro específico para triples...")
+        irrelevant_for_triples = [
+            # Features que típicamente no son predictivas para triples
+            '_block_',    # Bloqueos no relacionados con triples
+            '_steal_',    # Robos menos relevantes para triples
+            '_foul_',     # Faltas menos relevantes para triples
+            '_rebound_',  # Rebotes menos relevantes para triples
+        ]
+        
+        for feature in clean_features.copy():
+            for pattern in irrelevant_for_triples:
+                if pattern in feature.lower():
+                    clean_features.remove(feature)
+                    removed_features.append(f"{feature} (poco relevante para triples)")
+                    break
+        
+        # Resumen del filtrado
+        features_removed = len(features) - len(clean_features)
+        logger.info(f"Filtrado completado: {features_removed} features eliminadas, {len(clean_features)} restantes")
+        
+        if features_removed > 0:
+            logger.info("Features eliminadas por ruido:")
+            for removed in removed_features[:10]:  # Mostrar solo las primeras 10
+                logger.info(f"  - {removed}")
+            if len(removed_features) > 10:
+                logger.info(f"  ... y {len(removed_features) - 10} más")
+        
+        # Validación final: asegurar que tenemos features válidas
+        if len(clean_features) == 0:
+            logger.warning("ADVERTENCIA: Todos las features fueron eliminadas por filtros de ruido")
+            # Devolver las features más básicas como fallback
+            basic_features = [f for f in features if any(pattern in f for pattern in ['threept_', '3p_', 'shooting_', 'accuracy_', 'volume_'])]
+            if basic_features:
+                logger.info(f"Usando {len(basic_features)} features básicas como fallback")
+                return basic_features[:20]  # Máximo 20 features básicas
+            else:
+                logger.error("No se encontraron features básicas válidas")
+                return features[:10]  # Devolver las primeras 10 como último recurso
+        
+        return clean_features

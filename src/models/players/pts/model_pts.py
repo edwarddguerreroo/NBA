@@ -1333,7 +1333,7 @@ class StackingPTSModel:
     
     def save_model(self, filepath: str):
         """
-        PARTE 3: Guardar modelo completo de stacking.
+        Guardar modelo entrenado como objeto directo.
         
         Args:
             filepath: Ruta donde guardar el modelo
@@ -1341,41 +1341,19 @@ class StackingPTSModel:
         if not self.is_trained:
             raise ValueError("Modelo no entrenado.")
         
+        if self.stacking_model is None:
+            raise ValueError("Modelo no entrenado. Ejecutar train() primero.")
+        
         # Crear directorio si no existe
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
-        joblib.dump(self.stacking_model, filepath)
-        logger.info(f"Modelo de stacking (solo objeto) guardado en: {filepath}")
-        
-        # Guardar metadata por separado si es necesario para debugging
-        metadata_path = filepath.replace('.pkl', '_metadata.pkl')
-        model_metadata = {
-            'trained_base_models': self.trained_base_models,
-            'best_params_per_model': self.best_params_per_model,
-            'feature_engineer': self.feature_engineer,
-            'scaler': self.scaler,
-            'selected_features': self.selected_features,
-            'feature_importance': self.feature_importance,
-            'training_metrics': self.training_metrics,
-            'validation_metrics': self.validation_metrics,
-            'cv_scores': self.cv_scores,
-            'model_config': {
-                'n_trials': self.n_trials,
-                'cv_folds': self.cv_folds,
-                'early_stopping_rounds': self.early_stopping_rounds,
-                'random_state': self.random_state,
-                'enable_neural_networks': self.enable_neural_networks,
-                'enable_gpu': self.enable_gpu,
-                'enable_svr': self.enable_svr
-            },
-            'is_trained': self.is_trained
-        }
-        joblib.dump(model_metadata, metadata_path)
-        logger.info(f"Metadata guardada en: {metadata_path}")
+        # Guardar SOLO el modelo entrenado como objeto directo usando JOBLIB con compresión
+        joblib.dump(self.stacking_model, filepath, compress=3)
+        logger.info(f"Modelo PTS guardado como objeto directo (JOBLIB): {filepath}")
     
     def load_model(self, filepath: str):
         """
-        PARTE 3: Cargar modelo completo de stacking.
+        Cargar modelo entrenado (compatible con ambos formatos).
         
         Args:
             filepath: Ruta del modelo a cargar
@@ -1383,28 +1361,11 @@ class StackingPTSModel:
         try:
             # Intentar cargar modelo directo (nuevo formato)
             self.stacking_model = joblib.load(filepath)
-            self.is_trained = True
-            logger.info(f"Modelo de stacking (objeto directo) cargado desde: {filepath}")
-            
-            # Intentar cargar metadata si existe
-            metadata_path = filepath.replace('.pkl', '_metadata.pkl')
-            if os.path.exists(metadata_path):
-                metadata = joblib.load(metadata_path)
-                self.trained_base_models = metadata.get('trained_base_models', {})
-                self.best_params_per_model = metadata.get('best_params_per_model', {})
-                self.feature_engineer = metadata.get('feature_engineer', PointsFeatureEngineer())
-                self.scaler = metadata.get('scaler', StandardScaler())
-                self.selected_features = metadata.get('selected_features', [])
-                self.feature_importance = metadata.get('feature_importance', {})
-                self.training_metrics = metadata.get('training_metrics', {})
-                self.validation_metrics = metadata.get('validation_metrics', {})
-                self.cv_scores = metadata.get('cv_scores', {})
-                
-                # Restaurar configuración
-                config = metadata.get('model_config', {})
-                self.n_trials = config.get('n_trials', self.n_trials)
-                self.cv_folds = config.get('cv_folds', self.cv_folds)
-                logger.info(f"Metadata cargada desde: {metadata_path}")
+            if hasattr(self.stacking_model, 'predict'):
+                self.is_trained = True
+                logger.info(f"Modelo de stacking (objeto directo) cargado desde: {filepath}")
+            else:
+                raise ValueError("Objeto cargado no es un modelo válido")
             
         except Exception as e:
             # Fallback: intentar cargar formato antiguo (diccionario)

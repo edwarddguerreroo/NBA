@@ -133,6 +133,16 @@ class TotalPointsFeatureEngine:
         # Limpiar y preparar datos finales
         df = self._clean_features(df)
         
+        # PASO FINAL: Filtrar features ruidosas
+        logger.info("Aplicando filtros de ruido para eliminar features problemáticas...")
+        all_features = [col for col in df.columns if col not in ['Team', 'Date', 'Away', 'Opp', 'Result', 'MP', 'PTS', 'PTS_Opp', 'total_points']]
+        clean_features = self._apply_noise_filters(df, all_features)
+        
+        # Mantener solo las features limpias más las columnas esenciales
+        essential_cols = ['Team', 'Date', 'Away', 'Opp', 'Result', 'MP', 'PTS', 'PTS_Opp', 'total_points']
+        cols_to_keep = essential_cols + clean_features
+        df = df[[col for col in cols_to_keep if col in df.columns]]
+        
         logger.info(f"Features preparadas: {df.shape[1]} características, {df.shape[0]} registros")
         
         return df
@@ -2899,3 +2909,142 @@ class TotalPointsFeatureEngine:
                 )
         
         return df
+    
+    def _apply_noise_filters(self, df: pd.DataFrame, features: List[str]) -> List[str]:
+        """
+        Aplica filtros avanzados para eliminar features que solo agregan ruido a los modelos de puntos totales.
+        
+        Args:
+            df: DataFrame con los datos
+            features: Lista de features a filtrar
+            
+        Returns:
+            List[str]: Lista de features filtradas sin ruido
+        """
+        logger.info(f"Iniciando filtrado de ruido en {len(features)} features de puntos totales...")
+        
+        if not features:
+            return features
+        
+        # FILTRO 1: Varianza mínima
+        clean_features = []
+        for feature in features:
+            if feature in df.columns:
+                variance = df[feature].var()
+                if pd.isna(variance) or variance < 1e-8:
+                    logger.debug(f"Eliminando {feature} por varianza muy baja: {variance}")
+                    continue
+                clean_features.append(feature)
+            else:
+                logger.warning(f"Feature {feature} no encontrada en DataFrame")
+        
+        # FILTRO 2: Valores infinitos o NaN excesivos
+        filtered_features = []
+        for feature in clean_features:
+            if feature in df.columns:
+                nan_pct = df[feature].isna().mean()
+                inf_count = np.isinf(df[feature]).sum()
+                
+                if nan_pct > 0.5:  # Más del 50% NaN
+                    logger.debug(f"Eliminando {feature} por exceso de NaN: {nan_pct:.2%}")
+                    continue
+                if inf_count > 0:  # Cualquier valor infinito
+                    logger.debug(f"Eliminando {feature} por valores infinitos: {inf_count}")
+                    continue
+                filtered_features.append(feature)
+        
+        # FILTRO 3: Correlación extrema con target (posible data leakage)
+        if 'total_points' in df.columns:
+            safe_features = []
+            for feature in filtered_features:
+                if feature in df.columns and feature != 'total_points':
+                    try:
+                        corr = df[feature].corr(df['total_points'])
+                        if pd.isna(corr) or abs(corr) > 0.99:  # Correlación sospechosamente alta
+                            logger.debug(f"Eliminando {feature} por correlación sospechosa con target: {corr:.3f}")
+                            continue
+                        safe_features.append(feature)
+                    except:
+                        safe_features.append(feature)  # Conservar si no se puede calcular correlación
+                else:
+                    safe_features.append(feature)
+        else:
+            safe_features = filtered_features
+        
+        # FILTRO 4: Features que tienden a ser ruidosas o poco predictivas para puntos totales
+        noise_patterns = [
+            '_squared_',  # Features cuadráticas suelen ser ruidosas
+            '_cubed_',    # Features cúbicas suelen ser ruidosas
+            '_interaction_complex_',  # Interacciones complejas suelen ser ruidosas
+            '_polynomial_',  # Features polinomiales suelen ser ruidosas
+            'noise_',     # Features de ruido
+            '_random_',   # Features aleatorias
+            '_test_',     # Features de prueba
+            'cosmic_',    # Features cósmicas experimentales suelen ser ruidosas
+            'quantum_',   # Features cuánticas experimentales suelen ser ruidosas
+            'fractal_',   # Features fractales suelen ser ruidosas
+            '_chaos_',    # Features de caos suelen ser ruidosas
+            '_entropy_extreme_',  # Features de entropía extrema
+            '_experimental_',  # Features experimentales
+        ]
+        
+        final_features = []
+        removed_by_pattern = []
+        
+        for feature in safe_features:
+            is_noisy = False
+            for pattern in noise_patterns:
+                if pattern in feature.lower():
+                    removed_by_pattern.append(feature)
+                    is_noisy = True
+                    break
+            
+            if not is_noisy:
+                final_features.append(feature)
+        
+        # FILTRO 5: Límite de features para evitar overfitting
+        max_features_total = 100  # Límite específico para puntos totales (más alto por complejidad)
+        if len(final_features) > max_features_total:
+            logger.info(f"Aplicando límite de features: {max_features_total}")
+            # Priorizar features más importantes para puntos totales
+            priority_keywords = [
+                'pts_ma_', 'total_pts_ma_', 'pace_ma_', 'efficiency',
+                'momentum', 'volatility', 'opponent_strength', 'matchup',
+                'offensive_composite', 'defensive_composite', 'tempo_factor',
+                'total_fga_ma_', 'shooting_volume', 'market_pattern'
+            ]
+            
+            prioritized_features = []
+            remaining_features = []
+            
+            for feature in final_features:
+                is_priority = any(keyword in feature for keyword in priority_keywords)
+                if is_priority:
+                    prioritized_features.append(feature)
+                else:
+                    remaining_features.append(feature)
+            
+            # Tomar features prioritarias + algunas adicionales hasta el límite
+            final_features = prioritized_features[:max_features_total//2] + remaining_features[:max_features_total//2]
+        
+        # Log de resultados
+        removed_count = len(features) - len(final_features)
+        logger.info(f"Filtrado de ruido completado:")
+        logger.info(f"  Features originales: {len(features)}")
+        logger.info(f"  Features finales: {len(final_features)}")
+        logger.info(f"  Features eliminadas: {removed_count}")
+        
+        if removed_by_pattern:
+            logger.info("Features eliminadas por ruido:")
+            for feature in removed_by_pattern[:5]:  # Mostrar solo las primeras 5
+                logger.info(f"  - {feature}")
+            if len(removed_by_pattern) > 5:
+                logger.info(f"  ... y {len(removed_by_pattern) - 5} más")
+        
+        if not final_features:
+            logger.warning("ADVERTENCIA: Todos las features fueron eliminadas por filtros de ruido")
+            # Devolver al menos algunas features básicas si todo fue eliminado
+            basic_features = [f for f in features if any(keyword in f for keyword in ['pts_ma_', 'pace_', 'efficiency'])]
+            return basic_features[:15] if basic_features else features[:10]
+        
+        return final_features

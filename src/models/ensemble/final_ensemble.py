@@ -17,7 +17,6 @@ Características principales:
 import os
 import sys
 import warnings
-import pickle
 import joblib
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional, Union
@@ -251,41 +250,113 @@ class FinalEnsembleModel:
                     continue
                 
                 # Generar predicciones - manejo robusto para diferentes tipos de modelos
+                predictions = None
                 try:
-                    # Si el modelo tiene método predict
-                    if hasattr(model, 'predict'):
-                        predictions = model.predict(data)
-                    else:
-                        logger.warning(f"Modelo {model_name} no tiene método predict")
+                    # Verificar que el modelo tiene método predict
+                    if not hasattr(model, 'predict'):
+                        logger.error(f"Modelo {model_name} no tiene método predict")
                         continue
+                    
+                    # Si es un ModelWithFeatures wrapper, usar su método predict integrado
+                    if hasattr(model, 'model_name') and hasattr(model, 'feature_engineer'):
+                        # Es un wrapper ModelWithFeatures - maneja automáticamente las features
+                        logger.info(f"Usando ModelWithFeatures wrapper para {model_name}")
+                        predictions = model.predict(data)
+                        
+                    # Si el modelo es de un tipo específico conocido, usar su método predict personalizado
+                    elif hasattr(model, '__class__') and 'StackingPTSModel' in str(model.__class__):
+                        # Es nuestro modelo stacking personalizado
+                        predictions = model.predict(data)
+                        
+                    elif hasattr(model, '__class__') and any(ml_lib in str(model.__class__) for ml_lib in ['xgboost', 'lightgbm', 'catboost', 'sklearn']):
+                        # Es un modelo ML estándar - usar predict directo
+                        # Para estos modelos, necesitamos solo las features, no todo el DataFrame
+                        if hasattr(model, 'feature_names_in_'):
+                            # El modelo tiene información de features específicas
+                            model_features = model.feature_names_in_
+                            common_features = [f for f in model_features if f in data.columns]
+                            if common_features:
+                                predictions = model.predict(data[common_features])
+                            else:
+                                logger.warning(f"No hay features comunes para {model_name} con feature_names_in_")
+                                continue
+                        else:
+                            # Intentar predict directo - puede fallar si hay incompatibilidad de features
+                            predictions = model.predict(data)
+                    else:
+                        # Modelo genérico - intentar predict directo primero
+                        predictions = model.predict(data)
+                        
                 except Exception as pred_error:
-                    logger.warning(f"Error en predict para {model_name}: {pred_error}")
-                    # Intentar con subset de columnas si es error de features
+                    logger.warning(f"Error en predict directo para {model_name}: {pred_error}")
+                    # Estrategias de fallback para diferentes tipos de errores
                     try:
-                        # Obtener features comunes entre modelo y datos
+                        # Estrategia 1: Si es error de features, intentar con subset
                         if hasattr(model, 'feature_names_in_'):
                             model_features = model.feature_names_in_
                             common_features = [f for f in model_features if f in data.columns]
                             if common_features:
                                 predictions = model.predict(data[common_features])
-                                logger.info(f"Predicción exitosa para {model_name} con {len(common_features)} features")
+                                logger.info(f"Predicción exitosa para {model_name} con {len(common_features)} features comunes")
                             else:
                                 logger.error(f"No hay features comunes para {model_name}")
                                 continue
                         else:
-                            logger.error(f"No se puede determinar features para {model_name}")
-                            continue
+                            # Estrategia 2: Intentar con datos numéricos solamente
+                            numeric_data = data.select_dtypes(include=[np.number])
+                            if not numeric_data.empty:
+                                predictions = model.predict(numeric_data)
+                                logger.info(f"Predicción exitosa para {model_name} con datos numéricos")
+                            else:
+                                logger.error(f"No hay datos numéricos para {model_name}")
+                                continue
+                                
                     except Exception as e2:
                         logger.error(f"Error definitivo en predict para {model_name}: {e2}")
                         continue
+                
+                # Verificar que las predicciones son válidas
+                if predictions is None:
+                    logger.error(f"Predicciones None para {model_name}")
+                    continue
+                
+                if len(predictions) == 0:
+                    logger.error(f"Predicciones vacías para {model_name}")
+                    continue
+                
+                if np.isnan(predictions).all():
+                    logger.error(f"Predicciones todas NaN para {model_name}")
+                    continue
                 
                 # Para modelos de clasificación, también obtener probabilidades
                 probabilities = None
                 if model_config.type == 'classification' and hasattr(model, 'predict_proba'):
                     try:
-                        probabilities = model.predict_proba(data)
-                    except:
-                        logger.warning(f"No se pudieron obtener probabilidades para {model_name}")
+                        # Si es un wrapper, usar el modelo interno
+                        if hasattr(model, 'model') and hasattr(model.model, 'predict_proba'):
+                            if hasattr(model.model, 'feature_names_in_'):
+                                model_features = model.model.feature_names_in_
+                                common_features = [f for f in model_features if f in data.columns]
+                                if common_features:
+                                    probabilities = model.model.predict_proba(data[common_features])
+                                else:
+                                    probabilities = None
+                            else:
+                                probabilities = model.model.predict_proba(data)
+                        else:
+                            # Modelo directo
+                            if hasattr(model, 'feature_names_in_'):
+                                model_features = model.feature_names_in_
+                                common_features = [f for f in model_features if f in data.columns]
+                                if common_features:
+                                    probabilities = model.predict_proba(data[common_features])
+                                else:
+                                    probabilities = None
+                            else:
+                                probabilities = model.predict_proba(data)
+                    except Exception as prob_error:
+                        logger.warning(f"No se pudieron obtener probabilidades para {model_name}: {prob_error}")
+                        probabilities = None
                 
                 base_predictions[model_name] = {
                     'predictions': predictions,
@@ -297,9 +368,10 @@ class FinalEnsembleModel:
                 logger.info(f"✓ Predicciones generadas para {model_name}: {len(predictions)} muestras")
                 
             except Exception as e:
-                logger.error(f"Error generando predicciones para {model_name}: {e}")
+                logger.error(f"Error general generando predicciones para {model_name}: {e}")
                 continue
         
+        logger.info(f"Predicciones base generadas para {len(base_predictions)}/{len(self.loaded_models)} modelos")
         return base_predictions
     
     def optimize_meta_learners(self, features_dict: Dict[str, pd.DataFrame],
@@ -622,49 +694,79 @@ class FinalEnsembleModel:
         return predictions
     
     def save_ensemble(self, filepath: str):
-        """Guardar ensemble entrenado como objeto directo"""
+        """Guardar ensemble entrenado como objeto directo usando JOBLIB"""
         if not self.is_trained:
             raise ValueError("El ensemble debe ser entrenado antes de guardarlo")
         
-        # Determinar qué modelo guardar como principal
+        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+        
+        # Determinar cuál ensemble guardar (priorizar regression)
         if self.regression_ensemble is not None:
-            main_model = self.regression_ensemble
-            model_type = "regression"
+            model_to_save = self.regression_ensemble
+            logger.info("Guardando ensemble de regresión como modelo principal")
         elif self.classification_ensemble is not None:
-            main_model = self.classification_ensemble
-            model_type = "classification"
+            model_to_save = self.classification_ensemble
+            logger.info("Guardando ensemble de clasificación como modelo principal")
         else:
             raise ValueError("No hay ensemble entrenado para guardar")
         
-        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-        
-        # Guardar SOLO el modelo ensemble principal como objeto directo
-        with open(filepath, 'wb') as f:
-            pickle.dump(main_model, f)
-        
-        logger.info(f"Ensemble {model_type} guardado como objeto directo: {filepath}")
+        # Guardar SOLO el modelo ensemble principal usando JOBLIB con compresión
+        joblib.dump(model_to_save, filepath, compress=3)
+        logger.info(f"Ensemble guardado como objeto directo (JOBLIB): {filepath}")
     
     @classmethod
     def load_ensemble(cls, filepath: str, models_path: str = "results"):
-        """Cargar ensemble desde archivo"""
-        with open(filepath, 'rb') as f:
-            ensemble_data = pickle.load(f)
-        
-        # Crear nueva instancia
-        ensemble = cls(config=ensemble_data['config'], models_path=models_path)
-        
-        # Restaurar estado
-        ensemble.regression_ensemble = ensemble_data['regression_ensemble']
-        ensemble.classification_ensemble = ensemble_data['classification_ensemble']
-        ensemble.regression_scaler = ensemble_data['regression_scaler']
-        ensemble.classification_scaler = ensemble_data['classification_scaler']
-        ensemble.optimized_meta_learners = ensemble_data['optimized_meta_learners']
-        ensemble.training_history = ensemble_data['training_history']
-        ensemble.is_trained = ensemble_data['is_trained']
-        
-        logger.info(f"Ensemble cargado desde: {filepath}")
-        
-        return ensemble
+        """Cargar ensemble desde archivo con compatibilidad para ambos formatos (JOBLIB prioritario)"""
+        try:
+            # Intentar cargar con JOBLIB primero (formato estándar)
+            try:
+                ensemble_data = joblib.load(filepath)
+                logger.info("Archivo cargado con JOBLIB exitosamente")
+            except Exception as joblib_error:
+                # Fallback a pickle para archivos legacy
+                logger.warning(f"Error con JOBLIB, intentando pickle: {joblib_error}")
+                with open(filepath, 'rb') as f:
+                    ensemble_data = pickle.load(f)
+                logger.info("Archivo cargado con pickle como fallback")
+            
+            # Verificar formato del archivo cargado
+            if isinstance(ensemble_data, dict) and 'config' in ensemble_data:
+                # Formato diccionario completo (legacy)
+                config = ensemble_data.get('config')
+                ensemble = cls(config=config, models_path=models_path)
+                
+                # Restaurar estado completo
+                ensemble.regression_ensemble = ensemble_data.get('regression_ensemble')
+                ensemble.classification_ensemble = ensemble_data.get('classification_ensemble')
+                ensemble.regression_scaler = ensemble_data.get('regression_scaler', StandardScaler())
+                ensemble.classification_scaler = ensemble_data.get('classification_scaler', StandardScaler())
+                ensemble.optimized_meta_learners = ensemble_data.get('optimized_meta_learners', {})
+                ensemble.training_history = ensemble_data.get('training_history', {})
+                ensemble.optimization_results = ensemble_data.get('optimization_results', {})
+                ensemble.validation_scores = ensemble_data.get('validation_scores', {})
+                ensemble.feature_importance = ensemble_data.get('feature_importance', {})
+                ensemble.is_trained = ensemble_data.get('is_trained', True)
+                
+                logger.info(f"Ensemble (formato legacy diccionario) cargado desde: {filepath}")
+                
+            elif hasattr(ensemble_data, 'predict'):
+                # Formato objeto directo (nuevo estándar)
+                ensemble = cls(models_path=models_path)
+                
+                # Asignar como ensemble de regresión por defecto
+                ensemble.regression_ensemble = ensemble_data
+                ensemble.regression_scaler = StandardScaler()  # Inicializar scaler por defecto
+                ensemble.is_trained = True
+                logger.info(f"Ensemble (objeto directo JOBLIB) cargado desde: {filepath}")
+                
+            else:
+                raise ValueError("Formato de archivo no reconocido")
+            
+            return ensemble
+            
+        except Exception as e:
+            logger.error(f"Error cargando ensemble desde {filepath}: {e}")
+            raise ValueError(f"No se pudo cargar el ensemble: {e}")
     
     def get_training_summary(self) -> Dict[str, Any]:
         """Obtener resumen del entrenamiento"""

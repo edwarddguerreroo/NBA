@@ -16,7 +16,6 @@ Modelo híbrido que combina:
 
 # Standard Library
 import os
-import pickle
 import warnings
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -3341,54 +3340,87 @@ class DoubleDoubleAdvancedModel:
         import os
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
-        # Guardar SOLO el modelo entrenado como objeto directo
-        joblib.dump(self.stacking_model, filepath)
-        self.logger.info(f"Modelo Double Double guardado como objeto directo: {filepath}")
+        # Guardar SOLO el modelo entrenado como objeto directo usando JOBLIB con compresión
+        joblib.dump(self.stacking_model, filepath, compress=3)
+        self.logger.info(f"Modelo Double Double guardado como objeto directo (JOBLIB): {filepath}")
         
         # Guardar red neuronal por separado si existe (para preservar funcionalidad específica de PyTorch)
-        if 'neural_network' in self.training_results['individual_models']:
-            nn_model = self.training_results['individual_models']['neural_network'].get('model')
-            if nn_model and hasattr(nn_model, 'model') and nn_model.model is not None:
-                nn_filepath = filepath.replace('.pkl', '_neural_network.pth')
-                torch.save(nn_model.model.state_dict(), nn_filepath)
-                self.logger.info(f"Red neuronal guardada por separado: {nn_filepath}")
+        if hasattr(self, 'training_results') and 'individual_models' in self.training_results:
+            if 'neural_network' in self.training_results['individual_models']:
+                nn_model = self.training_results['individual_models']['neural_network'].get('model')
+                if nn_model and hasattr(nn_model, 'model') and nn_model.model is not None:
+                    nn_filepath = filepath.replace('.pkl', '_neural_network.pth')
+                    torch.save(nn_model.model.state_dict(), nn_filepath)
+                    self.logger.info(f"Red neuronal guardada por separado: {nn_filepath}")
     
     def load_model(self, filepath: str):
-        """Cargar modelo completo"""
-        
-        # Cargar modelos tradicionales
-        model_data = joblib.load(filepath)
-        
-        self.stacking_model = model_data['stacking_model']
-        self.scaler = model_data['scaler']
-        self.feature_importance = model_data['feature_importance']
-        self.cv_scores = model_data['cv_scores']
-        self.training_results = model_data['training_results']
-        self.bayesian_results = model_data.get('bayesian_results', {})
-        self.gpu_config = model_data.get('gpu_config', {})
-        
-        # Recrear modelos individuales
-        for name, model in model_data['models'].items():
-            if name not in self.training_results['individual_models']:
-                self.training_results['individual_models'][name] = {}
-            self.training_results['individual_models'][name]['model'] = model
-        
-        # Cargar red neuronal si existe
-        nn_filepath = filepath.replace('.pkl', '_neural_network.pth')
-        if Path(nn_filepath).exists():
-            # Recrear el clasificador neural
-            nn_classifier = PyTorchDoubleDoubleClassifier(device=str(self.device))
+        """Cargar modelo (compatible con ambos formatos)"""
+        try:
+            # Intentar cargar modelo directo (nuevo formato)
+            self.stacking_model = joblib.load(filepath)
+            if hasattr(self.stacking_model, 'predict'):
+                self.is_fitted = True
+                self.logger.info(f"Modelo Double Double (objeto directo) cargado desde: {filepath}")
+            else:
+                raise ValueError("Objeto cargado no es un modelo válido")
             
-            # Recrear la arquitectura del modelo
-            if 'feature_columns' in self.training_results:
-                input_size = len(self.training_results['feature_columns'])
+        except Exception as e:
+            # Fallback: intentar cargar formato antiguo (diccionario)
+            self.logger.warning(f"Error cargando modelo directo, intentando formato legacy: {e}")
+            try:
+                model_data = joblib.load(filepath)
+                if isinstance(model_data, dict) and 'stacking_model' in model_data:
+                    self.stacking_model = model_data['stacking_model']
+                    self.scaler = model_data.get('scaler', StandardScaler())
+                    self.feature_importance = model_data.get('feature_importance', {})
+                    self.cv_scores = model_data.get('cv_scores', {})
+                    self.training_results = model_data.get('training_results', {})
+                    self.bayesian_results = model_data.get('bayesian_results', {})
+                    self.gpu_config = model_data.get('gpu_config', {})
+                    
+                    # Recrear modelos individuales si existen
+                    if 'models' in model_data and hasattr(self, 'training_results'):
+                        if 'individual_models' not in self.training_results:
+                            self.training_results['individual_models'] = {}
+                        for name, model in model_data['models'].items():
+                            if name not in self.training_results['individual_models']:
+                                self.training_results['individual_models'][name] = {}
+                            self.training_results['individual_models'][name]['model'] = model
+                    
+                    self.is_fitted = True
+                    self.logger.info(f"Modelo Double Double legacy (diccionario) cargado desde: {filepath}")
+                else:
+                    raise ValueError("Formato de archivo no reconocido")
+            except Exception as e2:
+                raise ValueError(f"No se pudo cargar el modelo. Error formato directo: {e}, Error formato legacy: {e2}")
+        
+        # Cargar red neuronal si existe (para ambos formatos)
+        nn_filepath = filepath.replace('.pkl', '_neural_network.pth').replace('.joblib', '_neural_network.pth')
+        if Path(nn_filepath).exists():
+            try:
+                # Recrear el clasificador neural
+                nn_classifier = PyTorchDoubleDoubleClassifier(device=str(self.device))
+                
+                # Recrear la arquitectura del modelo - usar un tamaño por defecto si no está disponible
+                input_size = 30  # Tamaño por defecto
+                if hasattr(self, 'training_results') and 'feature_columns' in self.training_results:
+                    input_size = len(self.training_results['feature_columns'])
+                
                 nn_classifier.model = DoubleDoubleNeuralNetwork(input_size=input_size)
                 nn_classifier.model.load_state_dict(torch.load(nn_filepath, map_location=self.device))
                 nn_classifier.model.to(self.device)
                 
+                if not hasattr(self, 'training_results'):
+                    self.training_results = {}
+                if 'individual_models' not in self.training_results:
+                    self.training_results['individual_models'] = {}
+                
                 self.training_results['individual_models']['neural_network'] = {
                     'model': nn_classifier
                 }
+                self.logger.info(f"Red neuronal cargada desde: {nn_filepath}")
+            except Exception as nn_error:
+                self.logger.warning(f"Error cargando red neuronal: {nn_error}")
         
         self.is_fitted = True
 
