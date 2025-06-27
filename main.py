@@ -36,7 +36,7 @@ from pipelines.players.trainer_pts import XGBoostPTSTrainer
 from pipelines.players.trainer_ast import XGBoostASTTrainer
 from pipelines.players.trainer_trb import XGBoostTRBTrainer
 from pipelines.players.trainer_3pt import XGBoost3PTTrainer
-from pipelines.players.trainer_double_double import DoubleDoubleTrainer
+from pipelines.players.trainer_dd import DoubleDoubleTrainer
 
 # Imports de trainers de equipos
 from pipelines.teams.trainer_total_points import TotalPointsTrainer

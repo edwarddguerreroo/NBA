@@ -745,13 +745,25 @@ THRESHOLD OPTIMIZADO:
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Guardar modelo entrenado
+        # Guardar modelo entrenado con protocolo corregido
         model_path = os.path.join(self.output_dir, "dd_model.joblib")
         try:
-            self.model.save_model(model_path)
-            print(f"Modelo guardado: {model_path}")
+            # CORRECCIÓN: Usar joblib directamente con protocolo ASCII compatible
+            if hasattr(self.model, 'stacking_model') and self.model.stacking_model is not None:
+                # Guardar solo el stacking model con protocolo correcto
+                import joblib
+                joblib.dump(self.model.stacking_model, model_path, compress=3, protocol=2)
+                print(f"Modelo guardado: {model_path}")
+            else:
+                print("Error: Modelo no tiene stacking_model entrenado")
         except Exception as e:
             print(f"Error guardando modelo: {str(e)}")
+            # Fallback: intentar guardar con save_model del objeto
+            try:
+                self.model.save_model(model_path)
+                print(f"Modelo guardado (fallback): {model_path}")
+            except Exception as e2:
+                print(f"Error en fallback: {str(e2)}")
         
         # Guardar métricas principales en JSON (siguiendo patrón de trainer_3pt.py)
         if self.training_results:

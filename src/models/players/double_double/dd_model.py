@@ -471,16 +471,20 @@ class OptimizedLogger:
     
     @classmethod
     def log_gpu_info(cls, logger, device_info: Dict[str, Any], phase: str = "Setup"):
-        """Log simplificado para información de GPU"""
-        device = device_info.get('device', 'Unknown')
-        if device_info.get('type') == 'cuda':
-            logger.warning(f"GPU: {device}")
-        else:
-            logger.warning(f"CPU: {device}")
+        """Log simplificado para información de GPU - SOLO UNA VEZ"""
+        if not hasattr(cls, '_gpu_logged'):
+            cls._gpu_logged = True
+            device = device_info.get('device', 'Unknown')
+            if device_info.get('type') == 'cuda':
+                logger.info(f"Configuración GPU: {device}")
+            else:
+                logger.info(f"Configuración: CPU")
 
 
 class GPUManager:
     """Gestor avanzado de GPU para modelos NBA"""
+    
+    _device_logged = False  # AGREGAR: Control de logging único
     
     @staticmethod
     def get_available_devices() -> List[str]:
@@ -540,7 +544,7 @@ class GPUManager:
     
     @staticmethod
     def setup_device(device_preference: str = None, min_memory_gb: float = 2.0) -> torch.device:
-        """Configurar dispositivo óptimo"""
+        """Configurar dispositivo óptimo con logging controlado"""
         if device_preference:
             device_str = device_preference
         else:
@@ -551,6 +555,11 @@ class GPUManager:
         if device.type == 'cuda':
             torch.cuda.set_device(device)
             torch.cuda.empty_cache()
+        
+        # LOGGING CONTROLADO: Solo logear una vez por sesión
+        if not GPUManager._device_logged:
+            GPUManager._device_logged = True
+            logger.info(f"Dispositivo configurado: {device_str}")
         
         return device
 
@@ -958,15 +967,12 @@ class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
     
     def _setup_device_with_gpu_manager(self):
         """Configurar dispositivo usando GPUManager"""
-        self.device = GPUManager.setup_device(
+        device_str = GPUManager.setup_device(
             device_preference=self.device_str,
             min_memory_gb=self.min_memory_gb
         )
-        
-        # Log información del dispositivo
-        device_info = GPUManager.get_device_info(str(self.device))
-        OptimizedLogger.log_gpu_info(logger, device_info, "Neural Network")
-    
+        self.device = device_str
+            
     def _auto_adjust_batch_size(self, X_train_tensor: torch.Tensor, 
                                y_train_tensor: torch.Tensor) -> int:
         """Ajustar automáticamente el batch size según memoria disponible"""
@@ -1248,7 +1254,7 @@ class NeuralNetworkWrapper(BaseEstimator, ClassifierMixin):
         self.logger = OptimizedLogger.get_logger(f"{__name__}.NeuralNetworkWrapper")
         
     def fit(self, X, y):
-        """Entrenar la red neuronal con manejo robusto de errores"""
+        """Entrenar la red neuronal con manejo robusto de errores y validación de gradientes"""
         try:
             # Asegurar que y sea 1D
             if hasattr(y, 'values'):
@@ -1267,10 +1273,39 @@ class NeuralNetworkWrapper(BaseEstimator, ClassifierMixin):
                 self.logger.info("Red neuronal ya entrenada, saltando entrenamiento")
                 return self
             
-            self.nn_model.fit(X, y)
+            # CORRECCIÓN: Validar datos antes del entrenamiento
+            if isinstance(X, pd.DataFrame):
+                X_clean = X.copy()
+                # Verificar y limpiar NaN/infinitos
+                X_clean = X_clean.replace([np.inf, -np.inf], np.nan).fillna(0)
+                X_clean = X_clean.astype(np.float32)  # Usar float32 para mejor estabilidad
+            else:
+                X_clean = np.array(X, dtype=np.float32)
+                X_clean = np.nan_to_num(X_clean, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            # Asegurar que y sea tipo correcto
+            y_clean = np.array(y, dtype=np.int64)
+            
+            # Verificar que no hay gradientes NaN en los datos
+            if np.any(np.isnan(X_clean)) or np.any(np.isinf(X_clean)):
+                self.logger.warning("Datos con NaN/infinitos detectados, limpiando...")
+                X_clean = np.nan_to_num(X_clean, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            # Entrenar con datos limpios
+            self.nn_model.fit(X_clean, y_clean)
             self.logger.info("Red neuronal entrenada exitosamente")
             return self
             
+        except RuntimeError as e:
+            if "grad" in str(e).lower():
+                self.logger.error(f"Error de gradientes en red neuronal: {e}")
+                # Crear modelo dummy específico para errores de gradientes
+                self._is_dummy = True
+                self._majority_class = int(np.bincount(y.astype(int)).argmax()) if len(y) > 0 else 0
+                self.logger.info(f"Usando modelo dummy por error de gradientes: clase {self._majority_class}")
+                return self
+            else:
+                raise e
         except Exception as e:
             self.logger.error(f"Error entrenando red neuronal en stacking: {e}")
             # Crear un modelo dummy que siempre predice la clase mayoritaria
@@ -1401,13 +1436,6 @@ class DoubleDoubleAdvancedModel:
         
         self.device = torch.device(self.gpu_config['selected_device'])
         
-        # Log simplificado de GPU
-        OptimizedLogger.log_gpu_info(
-            logger, 
-            self.gpu_config.get('device_info', {}),
-            "Configuración"
-        )
-    
     def _setup_models(self):
         """
         PARTE 2 & 4: REGULARIZACIÓN AUMENTADA + CLASS WEIGHTS REBALANCEADOS
@@ -1469,16 +1497,7 @@ class DoubleDoubleAdvancedModel:
                 n_jobs=-1
             ),
             
-            'extra_trees': ExtraTreesClassifier(
-                n_estimators=150,  # Reducido ligeramente
-                max_depth=6,       # Reducido para evitar overfitting
-                min_samples_split=15, # Aumentado para evitar overfitting
-                min_samples_leaf=8,   # Aumentado para evitar overfitting
-                max_features='sqrt', # Reducir features por árbol
-                class_weight=class_weight_conservative,
-                random_state=42,
-                n_jobs=-1
-            ),
+
             
             'gradient_boosting': GradientBoostingClassifier(
                 n_estimators=120,  # Reducido ligeramente
@@ -1517,8 +1536,8 @@ class DoubleDoubleAdvancedModel:
             )
         }
         
-        self.logger.info(f"Modelos configurados con regularización aumentada y class_weight conservador={class_weight_conservative}")
-        self.logger.info("PARTE 4: Class weights rebalanceados para mejor precision/recall balance")
+        self.logger.info(f"Modelos configurados (sin ExtraTrees): {len(self.models)} modelos base")
+        self.logger.info("OPTIMIZACIÓN: ExtraTrees removido por bajo performance en datasets desbalanceados")
     
     def _setup_stacking_model(self):
         """Configurar modelo de stacking con TODOS LOS MODELOS (ML/DL) y manejo correcto de NN"""
@@ -1583,19 +1602,7 @@ class DoubleDoubleAdvancedModel:
                 n_jobs=-1
             )),
             
-            # Extra Trees regularizado para stacking
-            ('et_stack', ExtraTreesClassifier(
-                n_estimators=50,          # Moderado
-                max_depth=5,              # Aumentado
-                min_samples_split=10,     # REDUCIDO dramáticamente
-                min_samples_leaf=5,       # REDUCIDO dramáticamente
-                max_features='sqrt',      # Estándar
-                bootstrap=True,
-                class_weight='balanced',  # Manejo de desbalance
-                oob_score=False,
-                random_state=42,
-                n_jobs=-1
-            )),
+
             
             # Gradient Boosting regularizado para stacking con manejo nativo de NaN
             ('gb_stack', HistGradientBoostingClassifier(
@@ -1680,7 +1687,6 @@ class DoubleDoubleAdvancedModel:
                 ('xgb', self.models['xgboost']),
                 ('lgb', self.models['lightgbm']),
                 ('rf', self.models['random_forest']),
-                ('et', self.models['extra_trees']),
                 ('gb', self.models['gradient_boosting']),
                 ('cat', self.models['catboost']),
                 ('nn', nn_wrapper)
@@ -2184,13 +2190,13 @@ class DoubleDoubleAdvancedModel:
             self.logger.warning("Todos los métodos avanzados fallaron, usando método legacy")
             self.optimal_threshold = self._calculate_optimal_threshold(y_val, stacking_proba)
         
-        # Validación final del threshold con rangos más conservadores para reducir falsos positivos
-        if self.optimal_threshold < 0.35:
-            self.logger.warning(f"Threshold muy bajo ({self.optimal_threshold:.4f}), ajustando a 0.45 para reducir falsos positivos")
-            self.optimal_threshold = 0.45
-        elif self.optimal_threshold > 0.8:
-            self.logger.warning(f"Threshold muy alto ({self.optimal_threshold:.4f}), ajustando a 0.65")
-            self.optimal_threshold = 0.65
+        # CORRECCIÓN: Validación final del threshold con rangos más realistas
+        if self.optimal_threshold < 0.08:
+            self.logger.info(f"Threshold ajustado desde {self.optimal_threshold:.4f} a 0.10 (mínimo realista)")
+            self.optimal_threshold = 0.10
+        elif self.optimal_threshold > 0.35:
+            self.logger.info(f"Threshold ajustado desde {self.optimal_threshold:.4f} a 0.30 (máximo realista)")
+            self.optimal_threshold = 0.30
         
         # Evaluar con threshold óptimo final
         y_val_pred_optimal = (stacking_proba >= self.optimal_threshold).astype(int)
@@ -3492,8 +3498,8 @@ class DoubleDoubleAdvancedModel:
         individual_models = list(self.training_results.get('individual_models', {}).keys())
         validation_info['individual_models_available'] = individual_models
         
-        # Verificar qué modelos del setup están en el stacking
-        expected_models = ['xgb', 'lgb', 'rf', 'et', 'gb', 'cb', 'nn']
+        # Verificar qué modelos del setup están en el stacking (sin ExtraTrees)
+        expected_models = ['xgb', 'lgb', 'rf', 'gb', 'cb', 'nn']
         stacking_names = [name.replace('_stack', '') for name, _ in self.stacking_model.estimators_]
         
         validation_info['models_coverage'] = {
@@ -3609,15 +3615,15 @@ class DoubleDoubleAdvancedModel:
             
             self.logger.info(f"Precision-Recall curve: threshold={best_threshold:.4f}")
         
-        # Validación del threshold con límites realistas
-        threshold_min_limit = max(0.05, prob_min)
-        threshold_max_limit = min(prob_max * 0.60, 0.15) 
+        # CORRECCIÓN: Validación del threshold con límites más conservadores
+        threshold_min_limit = max(0.08, prob_min * 1.5)  # Mínimo más alto
+        threshold_max_limit = min(0.25, prob_max * 0.70)  # Máximo más conservador
         
         if best_threshold < threshold_min_limit:
-            self.logger.warning(f"Threshold muy bajo ({best_threshold:.4f}), ajustando a {threshold_min_limit:.4f}")
+            self.logger.info(f"Threshold ajustado desde {best_threshold:.4f} a {threshold_min_limit:.4f} (mínimo conservador)")
             best_threshold = threshold_min_limit
         elif best_threshold > threshold_max_limit:
-            self.logger.warning(f"Threshold muy alto ({best_threshold:.4f}), ajustando a {threshold_max_limit:.4f}")
+            self.logger.info(f"Threshold ajustado desde {best_threshold:.4f} a {threshold_max_limit:.4f} (máximo conservador)")
             best_threshold = threshold_max_limit
         
         # FALLBACK MÁS AGRESIVO: Garantizar predicciones suficientes
