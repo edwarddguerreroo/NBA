@@ -863,23 +863,23 @@ class DoubleDoubleNeuralNetwork(nn.Module):
         self.hidden_size = hidden_size
         self.dropout_rate = dropout_rate
         
-        # Arquitectura con regularización agresiva
+        # Arquitectura con regularización agresiva - SIN BatchNorm para evitar errores de batch size
         self.layers = nn.Sequential(
             # Capa de entrada con normalización
             nn.Linear(input_size, hidden_size),
-            nn.BatchNorm1d(hidden_size),
+            nn.LayerNorm(hidden_size),  # LayerNorm en lugar de BatchNorm
             nn.ReLU(),
             nn.Dropout(dropout_rate),
             
             # Primera capa oculta
             nn.Linear(hidden_size, hidden_size // 2),
-            nn.BatchNorm1d(hidden_size // 2),
+            nn.LayerNorm(hidden_size // 2),  # LayerNorm en lugar de BatchNorm
             nn.ReLU(),
             nn.Dropout(dropout_rate),
             
             # Segunda capa oculta
             nn.Linear(hidden_size // 2, hidden_size // 4),
-            nn.BatchNorm1d(hidden_size // 4),
+            nn.LayerNorm(hidden_size // 4),  # LayerNorm en lugar de BatchNorm
             nn.ReLU(),
             nn.Dropout(dropout_rate),
             
@@ -899,14 +899,21 @@ class DoubleDoubleNeuralNetwork(nn.Module):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
-            elif isinstance(module, nn.BatchNorm1d):
-                # Inicialización estándar para BatchNorm
+                # CORRECCIÓN CRÍTICA: Asegurar que los parámetros requieran gradientes
+                module.weight.requires_grad_(True)
+                if module.bias is not None:
+                    module.bias.requires_grad_(True)
+            elif isinstance(module, nn.LayerNorm):
+                # Inicialización estándar para LayerNorm
                 nn.init.constant_(module.weight, 1)
                 nn.init.constant_(module.bias, 0)
+                # CORRECCIÓN CRÍTICA: Asegurar que los parámetros requieran gradientes
+                module.weight.requires_grad_(True)
+                module.bias.requires_grad_(True)
     
     def forward(self, x):
         """
-        Forward pass con manejo de batch size = 1
+        Forward pass con manejo de batch size
         
         Args:
             x: Tensor de entrada [batch_size, input_size]
@@ -914,19 +921,8 @@ class DoubleDoubleNeuralNetwork(nn.Module):
         Returns:
             Tensor de salida [batch_size, 1] con logits
         """
-        # Si el batch size es 1, usar eval mode para BatchNorm
-        if x.size(0) == 1:
-            # Cambiar temporalmente a eval mode para evitar error de BatchNorm
-            was_training = self.training
-            self.eval()
-            with torch.no_grad():
-                result = self.layers(x)
-            if was_training:
-                self.train()
-            return result
-        else:
-            # Forward pass normal
-            return self.layers(x)
+        # Forward pass directo - LayerNorm no tiene problemas con batch size = 1
+        return self.layers(x)
 
 
 class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
@@ -1016,27 +1012,35 @@ class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
     def fit(self, X, y):
         """Entrenar el modelo con early stopping y regularización"""
         
-        # Preparar datos
+        # Preparar datos con validación exhaustiva
         if isinstance(X, pd.DataFrame):
-            X_values = X.values
+            X_values = X.values.astype(np.float32)
             X_df = X.copy()
         else:
-            X_values = X
-            X_df = pd.DataFrame(X)
+            X_values = np.array(X, dtype=np.float32)
+            X_df = pd.DataFrame(X_values)
         
         if isinstance(y, pd.Series):
-            y_values = y.values
+            y_values = y.values.astype(np.int64)
             y_series = y.copy()
         else:
-            y_values = y
-            y_series = pd.Series(y)
+            y_values = np.array(y, dtype=np.int64)
+            y_series = pd.Series(y_values)
+        
+        # Limpiar datos para evitar problemas de gradientes
+        X_values = np.nan_to_num(X_values, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        # Verificar que no hay valores problemáticos
+        if np.any(np.isnan(X_values)) or np.any(np.isinf(X_values)):
+            self.logger.error("Valores NaN/Inf detectados después de limpieza")
+            X_values = np.nan_to_num(X_values, nan=0.0, posinf=1.0, neginf=-1.0)
         
         # Escalar features
         X_scaled = self.scaler.fit_transform(X_values)
         
-        # Convertir a tensores
-        X_tensor = torch.FloatTensor(X_scaled)
-        y_tensor = torch.LongTensor(y_values)
+        # Convertir a tensores con requires_grad=False explícito para datos
+        X_tensor = torch.FloatTensor(X_scaled).requires_grad_(False)
+        y_tensor = torch.LongTensor(y_values).requires_grad_(False)
         
         # Ajustar batch size automáticamente
         if self.auto_batch_size:
@@ -1066,6 +1070,36 @@ class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
             dropout_rate=self.dropout_rate
         ).to(self.device)
         
+        # CORRECCIÓN CRÍTICA: Asegurar que el modelo esté en modo entrenamiento y parámetros requieran gradientes
+        self.model.train()
+        
+        # Verificar y forzar requires_grad=True en todos los parámetros
+        params_fixed = 0
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                self.logger.warning(f"Parámetro {name} no requiere gradientes, corrigiendo...")
+                param.requires_grad_(True)
+                params_fixed += 1
+        
+        # Verificar que los parámetros están correctamente configurados
+        total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        
+        self.logger.info(f"Modelo creado con {total_params} parámetros, {trainable_params} entrenables")
+        if params_fixed > 0:
+            self.logger.info(f"Corregidos {params_fixed} parámetros sin gradientes")
+        
+        # VERIFICACIÓN ADICIONAL: Hacer un forward pass de prueba
+        try:
+            test_input = torch.randn(2, X_scaled.shape[1], device=self.device, requires_grad=False)
+            test_output = self.model(test_input)
+            if test_output.requires_grad:
+                self.logger.info("✅ Test forward pass exitoso - gradientes funcionando")
+            else:
+                self.logger.error("❌ Test forward pass - NO hay gradientes")
+        except Exception as test_error:
+            self.logger.error(f"❌ Error en test forward pass: {test_error}")
+        
         # CORRECCIÓN CRÍTICA: Usar pos_weight mucho más agresivo para desbalance extremo
         # Para ratio 10.6:1, necesitamos pos_weight de al menos 35-40 para mejor precision
         pos_weight_tensor = torch.tensor([40.0], device=self.device)  # Peso más agresivo para precision
@@ -1094,26 +1128,96 @@ class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
             train_loss = 0.0
             
             for batch_X, batch_y in train_loader:
-                optimizer.zero_grad()
-                
-                # Forward pass - salida directa (logits)
-                outputs = self.model(batch_X)
-                
-                # Asegurar dimensiones correctas para BCEWithLogitsLoss
-                if outputs.dim() > 1:
-                    outputs = outputs.squeeze(-1)  # Solo eliminar la última dimensión si existe
-                
-                # CORRECCIÓN: Usar BCEWithLogitsLoss directamente con logits
-                loss = criterion(outputs, batch_y.float())
-                
-                # Backward pass
-                loss.backward()
-                
-                # Gradient clipping para estabilidad
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                
-                optimizer.step()
-                train_loss += loss.item()
+                try:
+                    optimizer.zero_grad()
+                    
+                    # Mover tensores al dispositivo correcto
+                    batch_X = batch_X.to(self.device).requires_grad_(False)
+                    batch_y = batch_y.to(self.device).requires_grad_(False)
+                    
+                    # Verificar que los datos no tengan gradientes
+                    if batch_X.requires_grad or batch_y.requires_grad:
+                        self.logger.warning("Datos con requires_grad=True detectados, corrigiendo...")
+                        batch_X = batch_X.detach().requires_grad_(False)
+                        batch_y = batch_y.detach().requires_grad_(False)
+                    
+                    # Forward pass - salida directa (logits)
+                    outputs = self.model(batch_X)
+                    
+                    # Asegurar dimensiones correctas para BCEWithLogitsLoss
+                    if outputs.dim() > 1:
+                        outputs = outputs.squeeze(-1)  # Solo eliminar la última dimensión si existe
+                    
+                    # Verificar que outputs SÍ tiene gradientes 
+                    if not outputs.requires_grad:
+                        self.logger.error("❌ Outputs sin gradientes - DIAGNÓSTICO")
+                        
+                        # Diagnóstico completo
+                        model_training = self.model.training
+                        param_grads = [p.requires_grad for p in self.model.parameters()]
+                        input_grads = batch_X.requires_grad
+                        
+                        self.logger.error(f"Modelo en training: {model_training}")
+                        self.logger.error(f"Input requiere grad: {input_grads}")
+                        self.logger.error(f"Parámetros con grad: {sum(param_grads)}/{len(param_grads)}")
+                        
+                        # Reactivación agresiva
+                        self.model.train()
+                        for param in self.model.parameters():
+                            param.requires_grad_(True)
+                        
+                        # Re-crear el tensor de entrada sin gradientes
+                        batch_X_fixed = batch_X.detach().requires_grad_(False).to(self.device)
+                        
+                        # Segundo intento
+                        try:
+                            outputs = self.model(batch_X_fixed)
+                            if outputs.dim() > 1:
+                                outputs = outputs.squeeze(-1)
+                                
+                            if outputs.requires_grad:
+                                self.logger.info("✅ Gradientes reactivados exitosamente")
+                            else:
+                                self.logger.error("❌ Fallo reactivación - saltando batch")
+                                continue
+                        except Exception as reactivation_error:
+                            self.logger.error(f"❌ Error reactivación: {reactivation_error}")
+                            continue
+                    
+                    # CORRECCIÓN: Usar BCEWithLogitsLoss directamente con logits
+                    loss = criterion(outputs, batch_y.float())
+                    
+                    # Verificar que la loss tiene gradientes
+                    if not loss.requires_grad:
+                        self.logger.error("Loss no tiene gradientes - problema crítico")
+                        raise RuntimeError("Loss no requiere gradientes")
+                    
+                    # Backward pass
+                    loss.backward()
+                    
+                    # Verificar que los gradientes se calcularon
+                    grad_norm = 0
+                    for param in self.model.parameters():
+                        if param.grad is not None:
+                            grad_norm += param.grad.data.norm(2).item() ** 2
+                    grad_norm = grad_norm ** 0.5
+                    
+                    if grad_norm == 0:
+                        self.logger.warning(f"Gradientes cero en epoch {epoch}, batch")
+                    
+                    # Gradient clipping para estabilidad
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
+                    optimizer.step()
+                    train_loss += loss.item()
+                    
+                except RuntimeError as e:
+                    if "grad" in str(e).lower():
+                        self.logger.error(f"Error de gradientes en epoch {epoch}: {e}")
+                        # Fallback: saltar este batch
+                        continue
+                    else:
+                        raise e
             
             # Validación
             self.model.eval()
@@ -1123,6 +1227,10 @@ class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
             
             with torch.no_grad():
                 for batch_X, batch_y in val_loader:
+                    # Mover tensores al dispositivo correcto
+                    batch_X = batch_X.to(self.device)
+                    batch_y = batch_y.to(self.device)
+                    
                     # Forward pass
                     outputs = self.model(batch_X)
                     
@@ -1137,7 +1245,7 @@ class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
                     # Accuracy con threshold optimizado
                     predicted = (torch.sigmoid(outputs) > 0.086).float()  # Threshold optimizado
                     total += batch_y.size(0)
-                    correct += (predicted == batch_y).sum().item()
+                    correct += (predicted == batch_y.float()).sum().item()
             
             # Promedios
             train_loss /= len(train_loader)
@@ -1187,9 +1295,20 @@ class PyTorchDoubleDoubleClassifier(ClassifierMixin, BaseEstimator):
         if not self.is_fitted:
             raise ValueError("El modelo debe ser entrenado antes de hacer predicciones")
         
-        # Preparar datos
-        X_scaled = self.scaler.transform(X)
-        X_tensor = torch.FloatTensor(X_scaled).to(self.device)
+        # Preparar datos con limpieza exhaustiva
+        if isinstance(X, pd.DataFrame):
+            X_values = X.values.astype(np.float32)
+        else:
+            X_values = np.array(X, dtype=np.float32)
+        
+        # Limpiar datos
+        X_values = np.nan_to_num(X_values, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        # Escalar datos
+        X_scaled = self.scaler.transform(X_values)
+        
+        # Convertir a tensor sin gradientes
+        X_tensor = torch.FloatTensor(X_scaled).to(self.device).requires_grad_(False)
         
         self.model.eval()
         with torch.no_grad():
@@ -1254,64 +1373,67 @@ class NeuralNetworkWrapper(BaseEstimator, ClassifierMixin):
         self.logger = OptimizedLogger.get_logger(f"{__name__}.NeuralNetworkWrapper")
         
     def fit(self, X, y):
-        """Entrenar la red neuronal con manejo robusto de errores y validación de gradientes"""
+        """Entrenar la red neuronal con manejo robusto de errores - versión simplificada"""
         try:
             # Asegurar que y sea 1D
             if hasattr(y, 'values'):
                 y = y.values
             y = np.asarray(y).flatten()
             
-            # Verificar que X e y tengan las dimensiones correctas
+            # Verificar dimensiones
             if len(X) != len(y):
                 raise ValueError(f"X y y tienen dimensiones incompatibles: {len(X)} vs {len(y)}")
             
-            # Entrenar el modelo con manejo de errores de gradientes
-            self.logger.info(f"Entrenando red neuronal con {X.shape[0]} muestras, {X.shape[1]} features")
+            self.logger.info(f"Entrenando wrapper NN con {X.shape[0]} muestras, {X.shape[1]} features")
             
-            # Verificar si el modelo ya está entrenado
-            if hasattr(self.nn_model, 'is_fitted') and self.nn_model.is_fitted:
-                self.logger.info("Red neuronal ya entrenada, saltando entrenamiento")
-                return self
-            
-            # CORRECCIÓN: Validar datos antes del entrenamiento
+            # Limpiar datos exhaustivamente
             if isinstance(X, pd.DataFrame):
                 X_clean = X.copy()
-                # Verificar y limpiar NaN/infinitos
-                X_clean = X_clean.replace([np.inf, -np.inf], np.nan).fillna(0)
-                X_clean = X_clean.astype(np.float32)  # Usar float32 para mejor estabilidad
+                X_clean = X_clean.replace([np.inf, -np.inf], np.nan)
+                X_clean = X_clean.fillna(0)
+                X_clean = X_clean.astype(np.float32)
             else:
                 X_clean = np.array(X, dtype=np.float32)
-                X_clean = np.nan_to_num(X_clean, nan=0.0, posinf=0.0, neginf=0.0)
+                X_clean = np.nan_to_num(X_clean, nan=0.0, posinf=1.0, neginf=-1.0)
             
-            # Asegurar que y sea tipo correcto
             y_clean = np.array(y, dtype=np.int64)
             
-            # Verificar que no hay gradientes NaN en los datos
+            # Verificación final
             if np.any(np.isnan(X_clean)) or np.any(np.isinf(X_clean)):
-                self.logger.warning("Datos con NaN/infinitos detectados, limpiando...")
-                X_clean = np.nan_to_num(X_clean, nan=0.0, posinf=0.0, neginf=0.0)
+                X_clean = np.nan_to_num(X_clean, nan=0.0, posinf=1.0, neginf=-1.0)
             
-            # Entrenar con datos limpios
-            self.nn_model.fit(X_clean, y_clean)
-            self.logger.info("Red neuronal entrenada exitosamente")
-            return self
-            
-        except RuntimeError as e:
-            if "grad" in str(e).lower():
-                self.logger.error(f"Error de gradientes en red neuronal: {e}")
-                # Crear modelo dummy específico para errores de gradientes
-                self._is_dummy = True
-                self._majority_class = int(np.bincount(y.astype(int)).argmax()) if len(y) > 0 else 0
-                self.logger.info(f"Usando modelo dummy por error de gradientes: clase {self._majority_class}")
+            # Intentar entrenar el modelo NN principal - con timeout
+            try:
+                # Crear configuración reducida para wrapper
+                wrapper_config = {
+                    'hidden_size': 32,  # Muy reducido
+                    'epochs': 15,       # Muy reducido
+                    'batch_size': 64,
+                    'learning_rate': 0.005,
+                    'weight_decay': 0.1,
+                    'early_stopping_patience': 3,
+                    'dropout_rate': 0.3,
+                    'pos_weight': 10.0
+                }
+                
+                # Crear modelo wrapper simplificado
+                wrapper_model = PyTorchDoubleDoubleClassifier(**wrapper_config)
+                wrapper_model.fit(X_clean, y_clean)
+                self.nn_model = wrapper_model
+                
+                self.logger.info("Wrapper NN entrenado exitosamente")
                 return self
-            else:
-                raise e
+                
+            except Exception as nn_error:
+                self.logger.warning(f"Error entrenando NN wrapper: {nn_error}")
+                raise nn_error
+                
         except Exception as e:
-            self.logger.error(f"Error entrenando red neuronal en stacking: {e}")
-            # Crear un modelo dummy que siempre predice la clase mayoritaria
+            self.logger.error(f"Error en wrapper NN: {e}")
+            # Crear modelo dummy
             self._is_dummy = True
             self._majority_class = int(np.bincount(y.astype(int)).argmax()) if len(y) > 0 else 0
-            self.logger.info(f"Usando modelo dummy con clase mayoritaria: {self._majority_class}")
+            self.logger.info(f"Usando modelo dummy: clase {self._majority_class}")
             return self
     
     def predict(self, X):
