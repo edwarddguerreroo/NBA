@@ -93,14 +93,14 @@ class ModelRegistry:
         
         # Mapeo de archivos específicos por modelo (CORREGIDO basado en archivos reales)
         self.model_files = {
-            'pts_player': 'xgboost_pts_model.pkl',  # Existe en players/pts_model/
-            'trb_player': 'xgboost_trb_model.pkl',  # Existe en players/trb_model/
-            'ast_player': 'xgboost_ast_model.pkl',  # Existe en players/ast_model/
+                    'pts_player': 'xgboost_pts_model.joblib',  # Existe en players/pts_model/
+        'trb_player': 'xgboost_trb_model.joblib',  # Existe en players/trb_model/
+        'ast_player': 'xgboost_ast_model.joblib',  # Existe en players/ast_model/
             'triples_player': '3pt_model.joblib',  # Existe en players/3pt_model/ (CORREGIDO)
             'double_double_player': 'dd_model.joblib',  # Existe en players/double_double_model/ (CORREGIDO)
-            'teams_points': 'teams_points_model.pkl',  # Existe en teams/teams_points_model/
-            'total_points': 'total_points_model.pkl',  # Existe en teams/total_points_model/
-            'is_win': 'is_win_model.pkl'  # Existe en teams/is_win_model/
+                    'teams_points': 'teams_points_model.joblib',  # Existe en teams/teams_points_model/
+        'total_points': 'total_points_model.joblib',  # Existe en teams/total_points_model/
+        'is_win': 'is_win_model.joblib'  # Existe en teams/is_win_model/
         }
         
         # Mapeo de FeatureEngineers por modelo

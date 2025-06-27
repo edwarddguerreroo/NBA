@@ -700,7 +700,7 @@ MODELOS BASE:
         logger.info("Guardando resultados del modelo")
         
         # Guardar modelo completo
-        model_path = os.path.join(self.output_dir, 'total_points_model.pkl')
+        model_path = os.path.join(self.output_dir, 'total_points_model.joblib')
         try:
             self.model.save_model(model_path)
             logger.info(f"Modelo guardado en: {model_path}")

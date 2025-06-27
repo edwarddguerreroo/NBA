@@ -680,7 +680,7 @@ MODELOS BASE:
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Guardar modelo
-        model_path = os.path.normpath(os.path.join(self.output_dir, 'xgboost_ast_model.pkl'))
+        model_path = os.path.normpath(os.path.join(self.output_dir, 'xgboost_ast_model.joblib'))
         self.model.save_model(model_path)
         
         # Guardar reporte completo
@@ -716,7 +716,7 @@ MODELOS BASE:
         
         # Crear resumen de archivos generados
         files_summary = {
-            'model_file': 'xgboost_ast_model.pkl',
+            'model_file': 'xgboost_ast_model.joblib',
             'dashboard_image': 'model_dashboard_complete.png',
             'training_report': 'training_report.json',
             'predictions': 'predictions.csv',

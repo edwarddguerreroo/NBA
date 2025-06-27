@@ -39,7 +39,7 @@ class ThreePointsFeatureEngineer:
     Basado en los principios fundamentales de los mejores tiradores de la NBA
     """
     
-    def __init__(self, correlation_threshold: float = 0.98, max_features: int = 150, teams_df: pd.DataFrame = None):
+    def __init__(self, correlation_threshold: float = 0.98, max_features: int = 200, teams_df: pd.DataFrame = None):
         self.correlation_threshold = correlation_threshold
         self.max_features = max_features
         self.teams_df = teams_df  # Datos de equipos para features avanzadas
@@ -293,38 +293,90 @@ class ThreePointsFeatureEngineer:
                 df['threept_ratio_of_total'] = threept_ratio_total.fillna(0.35)  # Liga promedio
             
             # === NUEVA FEATURE ULTRA-PREDICTIVA ===
-            # 4. ÍNDICE DE ESPECIALIZACIÓN PROGRESIVA
+            # 4. ÍNDICE DE ESPECIALIZACIÓN PROGRESIVA - VERSIÓN ROBUSTA
             if self._register_feature('specialization_progression', 'shooting_volume'):
                 # Mide si el jugador se especializa más en triples con el tiempo
+                # VERSIÓN MEJORADA: Siempre genera la feature de manera consistente
                 try:
-                    # Calcular ratio de especialización temprana de manera más robusta
+                    logger.debug("Generando specialization_progression de manera robusta...")
+                    
+                    # PASO 1: Calcular ratio de especialización temprana más robusta
                     early_ratios = []
-                    for player in df['Player'].unique():
+                    players_list = df['Player'].unique()
+                    
+                    for player in players_list:
                         player_data = df[df['Player'] == player].sort_values('Date')
-                        if len(player_data) >= 10:
-                            early_3pa = player_data['3PA'].head(10).sum()
-                            early_fga = player_data['FGA'].head(10).sum()
+                        
+                        # FLEXIBILIDAD: Usar los primeros N juegos disponibles (mínimo 3, máximo 10)
+                        min_games_early = min(3, len(player_data))
+                        max_games_early = min(10, len(player_data))
+                        games_for_early = max(min_games_early, max_games_early // 2)
+                        
+                        if len(player_data) >= games_for_early:
+                            early_3pa = player_data['3PA'].head(games_for_early).sum()
+                            early_fga = player_data['FGA'].head(games_for_early).sum()
                             early_ratio = early_3pa / (early_fga + 0.1) if early_fga > 0 else 0.35
                         else:
-                            early_ratio = 0.35  # Liga promedio como fallback
+                            # Si no hay suficientes datos, usar promedio del jugador o liga
+                            player_avg_3pa = player_data['3PA'].mean() if len(player_data) > 0 else 5.0
+                            player_avg_fga = player_data['FGA'].mean() if len(player_data) > 0 else 15.0
+                            early_ratio = player_avg_3pa / (player_avg_fga + 0.1)
+                        
+                        # Clamp a valores razonables
+                        early_ratio = max(0.1, min(early_ratio, 0.8))  # Entre 10% y 80%
                         early_ratios.append({'Player': player, 'early_spec': early_ratio})
                     
+                    # PASO 2: Convertir a DataFrame robusto
                     early_ratio_df = pd.DataFrame(early_ratios)
                     
-                    # Calcular ratio reciente
-                    recent_3pa = self._get_historical_series(df, '3PA', window=10, operation='sum')
-                    recent_fga = self._get_historical_series(df, 'FGA', window=10, operation='sum')
+                    # PASO 3: Calcular ratio reciente con window adaptativo
+                    # Ajustar window según disponibilidad de datos
+                    total_games = len(df)
+                    window_size = min(10, max(3, total_games // 20))  # Entre 3 y 10, adaptativo
+                    
+                    recent_3pa = self._get_historical_series(df, '3PA', window=window_size, operation='sum')
+                    recent_fga = self._get_historical_series(df, 'FGA', window=window_size, operation='sum')
                     recent_ratio = recent_3pa / (recent_fga + 0.1)
                     
-                    # Merge y calcular progresión
+                    # PASO 4: Merge robusto y calcular progresión
                     df_temp = df.merge(early_ratio_df, on='Player', how='left')
+                    
+                    # Manejar jugadores sin datos en early_ratio_df
+                    df_temp['early_spec'] = df_temp['early_spec'].fillna(0.35)  # Liga promedio
+                    
+                    # Calcular progresión con normalización robusta
                     progression = (recent_ratio - df_temp['early_spec']) / (df_temp['early_spec'] + 0.1)
+                    
+                    # Clamp progresión a valores razonables
+                    progression = progression.clip(-2.0, 3.0)  # Entre -200% y +300%
+                    
                     df['specialization_progression'] = progression.fillna(0.0)
+                    
+                    # Verificación de consistencia
+                    if df['specialization_progression'].isna().any():
+                        logger.warning("Detectados NaN en specialization_progression, aplicando fallback")
+                        df['specialization_progression'] = df['specialization_progression'].fillna(0.0)
+                    
+                    logger.debug(f"specialization_progression generada: min={df['specialization_progression'].min():.3f}, max={df['specialization_progression'].max():.3f}")
                     
                 except Exception as e:
                     logger.warning(f"Error calculando specialization_progression: {e}")
-                    # Fallback robusto
+                    # FALLBACK ULTRA-ROBUSTO: Siempre crear la feature
+                    logger.info("Aplicando fallback ultra-robusto para specialization_progression")
                     df['specialization_progression'] = 0.0
+                    
+                    # Intentar fallback simple si hay datos básicos
+                    try:
+                        if '3PA' in df.columns and 'FGA' in df.columns:
+                            simple_ratio = df['3PA'] / (df['FGA'] + 0.1)
+                            league_avg = simple_ratio.mean()
+                            df['specialization_progression'] = (simple_ratio - league_avg) / (league_avg + 0.1)
+                            df['specialization_progression'] = df['specialization_progression'].clip(-1.0, 2.0).fillna(0.0)
+                            logger.info("Fallback simple aplicado exitosamente")
+                    except:
+                        # Último recurso: valores por defecto
+                        df['specialization_progression'] = 0.0
+                        logger.info("Fallback final: specialization_progression = 0.0")
         
         # FRECUENCIA DE TIRO POR MINUTO
         if '3PA' in df.columns and 'MP' in df.columns:
@@ -900,127 +952,394 @@ class ThreePointsFeatureEngineer:
     
     def _create_quantum_features(self, df: pd.DataFrame) -> None:
         """
-        Capturan patrones temporales microscópicos y oscilaciones de rendimiento
+        Features cuánticas ultra-avanzadas para triples
+        Basadas en patrones de los mejores tiradores como Curry, Thompson, Allen
         """
         logger.debug("Creando features cuánticas ultra-avanzadas...")
         
-        # 1. OSCILACIÓN TEMPORAL CUÁNTICA (Detecta ciclos de rendimiento) - CORREGIDO
-        if self._register_feature('quantum_oscillation_3pt', 'quantum_features'):
-            if '3P' in df.columns:
-                # CORRECCIÓN: Usar solo datos históricos con shift
-                performance_series = df.groupby('Player')['3P'].shift(1).groupby(df['Player']).rolling(
-                    window=7, min_periods=3).apply(
-                    lambda vals: np.std(vals) * np.mean(vals) / (np.max(vals) + 0.1) if len(vals) > 0 else 0, raw=True
-                )
-                df['quantum_oscillation_3pt'] = performance_series.reset_index(0, drop=True).fillna(0)
-        
-        # 2. ENTROPÍA DE RENDIMIENTO (Mide impredecibilidad del jugador) - CORREGIDO
-        if self._register_feature('performance_entropy', 'quantum_features'):
-            if '3P' in df.columns:
-                # CORRECCIÓN: Usar datos históricos con shift
-                entropy_calc = df.groupby('Player')['3P'].shift(1).groupby(df['Player']).rolling(
-                    window=10, min_periods=5).apply(
-                    lambda vals: -np.sum(
-                        [(v/vals.sum() + 1e-8) * np.log(v/vals.sum() + 1e-8) 
-                         for v in vals if vals.sum() > 0]
-                    ) if vals.sum() > 0 else 0, raw=True
-                )
-                df['performance_entropy'] = entropy_calc.reset_index(0, drop=True).fillna(0)
-        
-        # 3. MOMENTUM CUÁNTICO (Aceleración de la aceleración) - CORREGIDO
-        if self._register_feature('quantum_momentum', 'quantum_features'):
-            if '3P' in df.columns:
-                # CORRECCIÓN: Usar datos históricos con shift
-                historical_3p = df.groupby('Player')['3P'].shift(1)
-                first_derivative = historical_3p.groupby(df['Player']).diff(1)
-                second_derivative = first_derivative.groupby(df['Player']).diff(1)
-                quantum_momentum = second_derivative * first_derivative
-                df['quantum_momentum'] = quantum_momentum.fillna(0)
-        
-        # 4. RESONANCIA CON OPONENTE (Sinergia/antagonismo con defensa rival)
-        if self._register_feature('opponent_resonance', 'quantum_features'):
-            if '3P' in df.columns:
-                player_performance = self._get_historical_series(df, '3P', window=5, operation='mean')
-                # Usar una proxy simple si opponent_3pt_defense no existe
-                if 'opponent_3pt_defense' in df.columns:
-                    opp_defense = df.get('opponent_3pt_defense', 1.0)
-                else:
-                    # Proxy: usar el promedio de triples permitidos por el oponente
-                    opp_defense = 1.0
-                
-                # Resonancia: cuando la defensa fuerte mejora al jugador (desafío) o lo empeora
-                resonance = player_performance * np.cos(opp_defense * np.pi) + 0.5
-                df['opponent_resonance'] = resonance.fillna(0.5)
-            else:
-                df['opponent_resonance'] = 0.5
-        
-        # 5. CAMPO MORFOGÉNICO DE EQUIPO (Influencia colectiva del equipo) 
-        if self._register_feature('team_morphic_field', 'quantum_features'):
-            if '3P' in df.columns:
-                # Calcular promedio histórico del equipo por fecha (sin el jugador actual)
-                team_historical = []
-                for idx, row in df.iterrows():
-                    player = row['Player']
-                    team = row['Team']
-                    date = row['Date']
-                    
-                    # Obtener juegos históricos del equipo (excluyendo jugador actual y juegos futuros)
-                    team_mask = (df['Team'] == team) & (df['Player'] != player) & (df['Date'] < date)
-                    if team_mask.sum() > 0:
-                        team_avg = df.loc[team_mask, '3P'].tail(10).mean()  # Últimos 10 juegos del equipo
+        # 1. SHOOTING RHYTHM RESONANCE - Patrón de ritmo de tiro
+        if '3PA' in df.columns and '3P' in df.columns:
+            if self._register_feature('shooting_rhythm_resonance', 'quantum_features'):
+                rhythm_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 3:
+                        # Calcular consistencia en el ritmo de intentos
+                        attempts_diff = player_data['3PA'].diff().fillna(0)
+                        rhythm_consistency = 1 / (1 + attempts_diff.rolling(3).std().fillna(1))
+                        # Combinar con eficiencia
+                        efficiency = player_data['3P%'].fillna(0.3)
+                        rhythm_resonance = rhythm_consistency * efficiency
+                        rhythm_scores.extend(rhythm_resonance.shift(1).fillna(rhythm_resonance.mean()).tolist())
                     else:
-                        team_avg = 1.2  # Media liga por defecto
-                    
-                    # Promedio histórico del jugador
-                    player_mask = (df['Player'] == player) & (df['Date'] < date)
-                    if player_mask.sum() > 0:
-                        player_avg = df.loc[player_mask, '3P'].tail(5).mean()  # Últimos 5 juegos del jugador
+                        rhythm_scores.extend([0.3] * len(player_data))
+                df['shooting_rhythm_resonance'] = rhythm_scores[:len(df)]
+        
+        # 2. CURRY EFFICIENCY FACTOR - Basado en el patrón de Stephen Curry
+        if '3PA' in df.columns and '3P%' in df.columns:
+            if self._register_feature('curry_efficiency_factor', 'quantum_features'):
+                curry_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 5:
+                        # Factor Curry: Alto volumen + Alta eficiencia + Consistencia
+                        volume_factor = np.log1p(player_data['3PA'].rolling(5).mean().fillna(1))
+                        efficiency_factor = player_data['3P%'].rolling(5).mean().fillna(0.3)
+                        consistency_factor = 1 / (1 + player_data['3P%'].rolling(5).std().fillna(0.2))
+                        curry_factor = (volume_factor * efficiency_factor * consistency_factor).shift(1)
+                        curry_scores.extend(curry_factor.fillna(curry_factor.mean()).tolist())
                     else:
-                        player_avg = 1.2
-                    
-                    # Campo morfogénico: diferencia histórica con decay temporal
-                    days_since_last = 1  # Simplificado
-                    morphic_value = (player_avg - team_avg) * np.exp(-0.1 * days_since_last)
-                    team_historical.append(morphic_value)
-                
-                df['team_morphic_field'] = team_historical
+                        curry_scores.extend([0.5] * len(player_data))
+                df['curry_efficiency_factor'] = curry_scores[:len(df)]
         
-        # 6. FRACTALES DE RENDIMIENTO (Patrones autosimilares en diferentes escalas)
-        if self._register_feature('performance_fractal', 'quantum_features'):
-            if '3P' in df.columns:
-                # Correlación entre ventanas de diferentes tamaños
-                short_pattern = self._get_historical_series(df, '3P', window=3, operation='std')
-                medium_pattern = self._get_historical_series(df, '3P', window=7, operation='std') 
-                long_pattern = self._get_historical_series(df, '3P', window=15, operation='std')
-                
-                # Fractal: correlación cruzada entre escalas
-                fractal_dimension = (short_pattern * medium_pattern * long_pattern) ** (1/3)
-                df['performance_fractal'] = fractal_dimension.fillna(0)
+        # 3. CLUTCH SHOOTING DNA - Rendimiento en momentos clave
+        if 'Min' in df.columns and '3P' in df.columns:
+            if self._register_feature('clutch_shooting_dna', 'quantum_features'):
+                clutch_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 3:
+                        # Identificar juegos de alta presión (más minutos)
+                        high_pressure = player_data['Min'] > player_data['Min'].rolling(10).mean().fillna(player_data['Min'].mean())
+                        clutch_performance = player_data['3P'].where(high_pressure, 0).rolling(5).mean().fillna(0)
+                        clutch_scores.extend(clutch_performance.shift(1).fillna(clutch_performance.mean()).tolist())
+                    else:
+                        clutch_scores.extend([0.0] * len(player_data))
+                df['clutch_shooting_dna'] = clutch_scores[:len(df)]
         
-        # 7. SINCRONÍA CÓSMICA (Alineación con patrones universales)
-        if self._register_feature('cosmic_sync', 'quantum_features'):
-            if 'Date' in df.columns:
-                # Patrones basados en día de la semana y fase lunar aproximada
-                dates = pd.to_datetime(df['Date'])
-                day_of_week = dates.dt.dayofweek
-                day_of_year = dates.dt.dayofyear
-                
-                # Función sinusoidal combinada para capturar ritmos naturales
-                cosmic_rhythm = (np.sin(2 * np.pi * day_of_week / 7) * 
-                                np.cos(2 * np.pi * day_of_year / 365.25) + 1) / 2
-                df['cosmic_sync'] = cosmic_rhythm
+        # 4. THOMPSON CONSISTENCY INDEX - Basado en Klay Thompson
+        if '3P' in df.columns:
+            if self._register_feature('thompson_consistency_index', 'quantum_features'):
+                thompson_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 10:
+                        # Índice Thompson: Mínima variabilidad + Rendimiento sostenido
+                        rolling_mean = player_data['3P'].rolling(10).mean()
+                        rolling_std = player_data['3P'].rolling(10).std().fillna(1)
+                        consistency_index = rolling_mean / (rolling_std + 0.1)  # Evitar división por 0
+                        thompson_scores.extend(consistency_index.shift(1).fillna(consistency_index.mean()).tolist())
+                    else:
+                        thompson_scores.extend([1.0] * len(player_data))
+                df['thompson_consistency_index'] = thompson_scores[:len(df)]
         
-        # 8. POTENCIAL EXPLOSIVO LATENTE (Energía acumulada lista para liberarse)
-        if self._register_feature('latent_explosive_potential', 'quantum_features'):
-            if '3P' in df.columns and '3PA' in df.columns:
-                # Energía acumulada: diferencia entre capacidad y rendimiento reciente
-                season_max = df.groupby('Player')['3P'].expanding().max().shift(1).reset_index(0, drop=True)
-                recent_avg = self._get_historical_series(df, '3P', window=5, operation='mean')
-                attempts_trend = self._get_historical_series(df, '3PA', window=3, operation='mean')
-                
-                # Potencial latente: capacidad no realizada × momentum de intentos
-                latent_potential = (season_max - recent_avg) * (attempts_trend / 5.0)
-                df['latent_explosive_potential'] = latent_potential.fillna(0).clip(0, 10)
+        # 5. DEEP RANGE SPECIALIST - Para tiradores de rango extremo
+        if '3PA' in df.columns and 'FGA' in df.columns:
+            if self._register_feature('deep_range_specialist', 'quantum_features'):
+                # Ratio de intentos de 3 vs tiros totales
+                three_pt_ratio = df['3PA'] / (df['FGA'] + 1)  # +1 para evitar división por 0
+                specialist_score = self._get_historical_series(df, '3PA', window=7, operation='mean') / \
+                                self._get_historical_series(df, 'FGA', window=7, operation='mean').replace(0, 1)
+                df['deep_range_specialist'] = specialist_score.fillna(0.3)
+        
+        # 6. EXPLOSIVE SHOOTING POTENTIAL - Potencial de juegos explosivos
+        if '3P' in df.columns:
+            if self._register_feature('explosive_shooting_potential', 'quantum_features'):
+                explosive_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 5:
+                        # Detectar juegos con 5+ triples (explosivos)
+                        explosive_games = (player_data['3P'] >= 5).rolling(20).sum().fillna(0)
+                        recent_form = player_data['3P'].rolling(3).mean().fillna(0)
+                        explosive_potential = (explosive_games / 20) * recent_form
+                        explosive_scores.extend(explosive_potential.shift(1).fillna(explosive_potential.mean()).tolist())
+                    else:
+                        explosive_scores.extend([0.0] * len(player_data))
+                df['explosive_shooting_potential'] = explosive_scores[:len(df)]
+        
+        # 7. ZONE ENTRY FREQUENCY - Frecuencia de entrar en "la zona"
+        if '3P' in df.columns and '3PA' in df.columns:
+            if self._register_feature('zone_entry_frequency', 'quantum_features'):
+                zone_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 5:
+                        # "Zona" = Alta eficiencia + Múltiples intentos
+                        zone_games = ((player_data['3P'] >= 3) & (player_data['3PA'] >= 5)).rolling(15).sum().fillna(0)
+                        zone_frequency = zone_games / 15
+                        zone_scores.extend(zone_frequency.shift(1).fillna(zone_frequency.mean()).tolist())
+                    else:
+                        zone_scores.extend([0.0] * len(player_data))
+                df['zone_entry_frequency'] = zone_scores[:len(df)]
+        
+        # 8. MOMENTUM AMPLIFIER - Amplificador de momentum positivo
+        if '3P' in df.columns:
+            if self._register_feature('momentum_amplifier', 'quantum_features'):
+                momentum_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 3:
+                        # Momentum basado en juegos recientes exitosos
+                        success_streak = (player_data['3P'] >= 2).astype(int).rolling(3).sum()
+                        recent_performance = player_data['3P'].rolling(3).mean().fillna(0)
+                        momentum = success_streak * recent_performance / 3
+                        momentum_scores.extend(momentum.shift(1).fillna(momentum.mean()).tolist())
+                    else:
+                        momentum_scores.extend([0.0] * len(player_data))
+                df['momentum_amplifier'] = momentum_scores[:len(df)]
+        
+        # 9. SITUATIONAL ADAPTABILITY - Adaptabilidad situacional
+        if 'Team' in df.columns and '3P' in df.columns:
+            if self._register_feature('situational_adaptability', 'quantum_features'):
+                adaptability_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 10:
+                        # Variabilidad controlada en diferentes situaciones
+                        home_performance = player_data['3P'].rolling(5).mean().fillna(0)
+                        overall_performance = player_data['3P'].rolling(10).mean().fillna(0)
+                        adaptability = np.minimum(home_performance / (overall_performance + 0.1), 2.0)
+                        adaptability_scores.extend(adaptability.shift(1).fillna(1.0).tolist())
+                    else:
+                        adaptability_scores.extend([1.0] * len(player_data))
+                df['situational_adaptability'] = adaptability_scores[:len(df)]
+        
+        # 10. PRESSURE RESPONSE FACTOR - Respuesta bajo presión
+        if '3P' in df.columns and 'TOV' in df.columns:
+            if self._register_feature('pressure_response_factor', 'quantum_features'):
+                pressure_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 5:
+                        # Juegos con más pérdidas = más presión
+                        high_pressure = player_data['TOV'] > player_data['TOV'].rolling(10).mean().fillna(player_data['TOV'].mean())
+                        pressure_performance = player_data['3P'].where(high_pressure, np.nan).rolling(5).mean().fillna(0)
+                        normal_performance = player_data['3P'].rolling(5).mean().fillna(0)
+                        pressure_factor = pressure_performance / (normal_performance + 0.1)
+                        pressure_scores.extend(pressure_factor.shift(1).fillna(1.0).tolist())
+                    else:
+                        pressure_scores.extend([1.0] * len(player_data))
+                df['pressure_response_factor'] = pressure_scores[:len(df)]
+        
+        # 11. SHOOTER CONFIDENCE INDEX - Índice de confianza del tirador
+        if '3P' in df.columns and '3PA' in df.columns:
+            if self._register_feature('shooter_confidence_index', 'quantum_features'):
+                confidence_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 5:
+                        # Confianza = Intentos recientes + Eficiencia reciente
+                        recent_attempts = player_data['3PA'].rolling(3).mean().fillna(0)
+                        recent_makes = player_data['3P'].rolling(3).mean().fillna(0)
+                        confidence = (recent_attempts * 0.3) + (recent_makes * 0.7)
+                        confidence_scores.extend(confidence.shift(1).fillna(confidence.mean()).tolist())
+                    else:
+                        confidence_scores.extend([1.0] * len(player_data))
+                df['shooter_confidence_index'] = confidence_scores[:len(df)]
+        
+        # 12. VOLUME PROGRESSION FACTOR - Progresión en volumen de tiro
+        if '3PA' in df.columns:
+            if self._register_feature('volume_progression_factor', 'quantum_features'):
+                progression_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 10:
+                        # Tendencia en intentos de 3PT
+                        early_season = player_data['3PA'].iloc[:len(player_data)//2].mean()
+                        recent_season = player_data['3PA'].rolling(5).mean().fillna(early_season)
+                        progression = recent_season / (early_season + 0.5)
+                        progression_scores.extend(progression.shift(1).fillna(1.0).tolist())
+                    else:
+                        progression_scores.extend([1.0] * len(player_data))
+                df['volume_progression_factor'] = progression_scores[:len(df)]
+        
+        # 13. ELITE SHOOTER RESONANCE - Resonancia con patrones de tiradores élite
+        if '3P' in df.columns and '3PA' in df.columns and 'Min' in df.columns:
+            if self._register_feature('elite_shooter_resonance', 'quantum_features'):
+                elite_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 10:
+                        # Patrón élite: 2+ triples con 5+ intentos regularmente
+                        elite_games = ((player_data['3P'] >= 2) & (player_data['3PA'] >= 5) & (player_data['Min'] >= 20))
+                        elite_frequency = elite_games.rolling(15).sum().fillna(0) / 15
+                        elite_scores.extend(elite_frequency.shift(1).fillna(elite_frequency.mean()).tolist())
+                    else:
+                        elite_scores.extend([0.1] * len(player_data))
+                df['elite_shooter_resonance'] = elite_scores[:len(df)]
+        
+        # 14. SHOOTING VARIANCE CONTROL - Control de varianza en el tiro
+        if '3P' in df.columns:
+            if self._register_feature('shooting_variance_control', 'quantum_features'):
+                variance_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 8:
+                        # Menor varianza = mejor control
+                        rolling_variance = player_data['3P'].rolling(8).var().fillna(1)
+                        variance_control = 1 / (1 + rolling_variance)
+                        variance_scores.extend(variance_control.shift(1).fillna(variance_control.mean()).tolist())
+                    else:
+                        variance_scores.extend([0.5] * len(player_data))
+                df['shooting_variance_control'] = variance_scores[:len(df)]
+        
+        # 15. HOT STREAK PROBABILITY - Probabilidad de racha caliente
+        if '3P' in df.columns:
+            if self._register_feature('hot_streak_probability', 'quantum_features'):
+                hot_prob_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 5:
+                        # Probabilidad basada en rachas anteriores
+                        hot_games = (player_data['3P'] >= 4).astype(int)
+                        hot_probability = hot_games.rolling(20).mean().fillna(0)
+                        hot_prob_scores.extend(hot_probability.shift(1).fillna(hot_probability.mean()).tolist())
+                    else:
+                        hot_prob_scores.extend([0.1] * len(player_data))
+                df['hot_streak_probability'] = hot_prob_scores[:len(df)]
+        
+        # 16. RANGE EXTENSION FACTOR - Factor de extensión de rango
+        if '3PA' in df.columns and 'FGA' in df.columns:
+            if self._register_feature('range_extension_factor', 'quantum_features'):
+                # Tendencia a extender el rango (más 3PT vs 2PT)
+                three_ratio = df['3PA'] / (df['FGA'] - df['3PA'] + 1)
+                range_factor = self._get_historical_series(df, '3PA', window=5, operation='mean') / \
+                              (self._get_historical_series(df, 'FGA', window=5, operation='mean') - 
+                               self._get_historical_series(df, '3PA', window=5, operation='mean') + 1)
+                df['range_extension_factor'] = range_factor.fillna(0.3)
+        
+        # 17. GAME IMPACT MULTIPLIER - Multiplicador de impacto en el juego
+        if '3P' in df.columns and '+/-' in df.columns:
+            if self._register_feature('game_impact_multiplier', 'quantum_features'):
+                impact_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 5:
+                        # Correlación entre triples y +/-
+                        three_pt_impact = player_data['3P'] * player_data['+/-'].fillna(0)
+                        impact_multiplier = three_pt_impact.rolling(5).mean().fillna(0)
+                        impact_scores.extend(impact_multiplier.shift(1).fillna(impact_multiplier.mean()).tolist())
+                    else:
+                        impact_scores.extend([0.0] * len(player_data))
+                df['game_impact_multiplier'] = impact_scores[:len(df)]
+        
+        # 18. MINUTES EFFICIENCY RATIO - Ratio de eficiencia por minuto
+        if '3P' in df.columns and 'Min' in df.columns:
+            if self._register_feature('minutes_efficiency_ratio', 'quantum_features'):
+                # Triples por minuto jugado
+                efficiency_ratio = df['3P'] / (df['Min'] + 1)  # +1 para evitar división por 0
+                minutes_efficiency = self._get_historical_series(df, '3P', window=5, operation='mean') / \
+                                   (self._get_historical_series(df, 'Min', window=5, operation='mean') + 1)
+                df['minutes_efficiency_ratio'] = minutes_efficiency.fillna(0.1)
+        
+        # 19. OPPONENT WEAKNESS EXPLOIT - Explotación de debilidades del oponente
+        if 'Opp' in df.columns and '3P' in df.columns:
+            if self._register_feature('opponent_weakness_exploit', 'quantum_features'):
+                exploit_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    exploit_values = []
+                    for idx, row in player_data.iterrows():
+                        opponent = row.get('Opp', 'UNKNOWN')
+                        # Rendimiento histórico vs este oponente
+                        vs_opponent = player_data[player_data['Opp'] == opponent]['3P']
+                        if len(vs_opponent) > 1:
+                            exploit_value = vs_opponent.iloc[:-1].mean()  # Excluir juego actual
+                        else:
+                            exploit_value = player_data['3P'].iloc[:idx].mean() if idx > 0 else 1.0
+                        exploit_values.append(exploit_value if not pd.isna(exploit_value) else 1.0)
+                    exploit_scores.extend(exploit_values)
+                df['opponent_weakness_exploit'] = exploit_scores[:len(df)]
+        
+        # 20. CLUTCH TIME SPECIALIZATION - Especialización en momentos decisivos
+        if '3P' in df.columns and 'Min' in df.columns:
+            if self._register_feature('clutch_time_specialization', 'quantum_features'):
+                clutch_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 5:
+                        # Minutos altos + buenos triples = clutch
+                        high_minutes = player_data['Min'] > 30
+                        clutch_performance = player_data['3P'].where(high_minutes, 0).rolling(8).mean().fillna(0)
+                        clutch_scores.extend(clutch_performance.shift(1).fillna(clutch_performance.mean()).tolist())
+                    else:
+                        clutch_scores.extend([0.5] * len(player_data))
+                df['clutch_time_specialization'] = clutch_scores[:len(df)]
+        
+        # 21. EXPLOSIVE GAME PREDICTOR ADVANCED - Predictor avanzado de juegos explosivos
+        if '3P' in df.columns and '3PA' in df.columns:
+            if self._register_feature('explosive_game_predictor_advanced', 'quantum_features'):
+                explosive_advanced = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 10:
+                        # Predictor basado en múltiples factores
+                        high_attempts = player_data['3PA'] >= player_data['3PA'].rolling(10).quantile(0.75).fillna(3)
+                        good_form = player_data['3P'].rolling(3).mean() >= 2
+                        explosive_potential = (high_attempts & good_form).rolling(5).sum().fillna(0) / 5
+                        explosive_advanced.extend(explosive_potential.shift(1).fillna(explosive_potential.mean()).tolist())
+                    else:
+                        explosive_advanced.extend([0.2] * len(player_data))
+                df['explosive_game_predictor_advanced'] = explosive_advanced[:len(df)]
+        
+        # 22. TEAM SYNERGY FACTOR - Factor de sinergia con el equipo
+        if 'Team' in df.columns and '3P' in df.columns and 'AST' in df.columns:
+            if self._register_feature('team_synergy_factor', 'quantum_features'):
+                synergy_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 5:
+                        # Correlación entre asistencias del equipo y triples
+                        team_assists = player_data['AST'].rolling(5).mean().fillna(0)
+                        player_threes = player_data['3P'].rolling(5).mean().fillna(0)
+                        synergy = (team_assists * player_threes).fillna(0)
+                        synergy_scores.extend(synergy.shift(1).fillna(synergy.mean()).tolist())
+                    else:
+                        synergy_scores.extend([1.0] * len(player_data))
+                df['team_synergy_factor'] = synergy_scores[:len(df)]
+        
+        # 23. DEFENDER MISMATCH DETECTOR - Detector de ventajas contra defensores
+        if 'Opp' in df.columns and '3P' in df.columns and '3PA' in df.columns:
+            if self._register_feature('defender_mismatch_detector', 'quantum_features'):
+                mismatch_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    mismatch_values = []
+                    for idx, row in player_data.iterrows():
+                        opponent = row.get('Opp', 'UNKNOWN')
+                        # Eficiencia histórica vs este oponente
+                        vs_opp = player_data[player_data['Opp'] == opponent]
+                        if len(vs_opp) > 1:
+                            opp_efficiency = (vs_opp['3P'].iloc[:-1].sum() / (vs_opp['3PA'].iloc[:-1].sum() + 1))
+                        else:
+                            overall_eff = player_data['3P'].iloc[:idx].sum() / (player_data['3PA'].iloc[:idx].sum() + 1) if idx > 0 else 0.35
+                            opp_efficiency = overall_eff
+                        mismatch_values.append(opp_efficiency if not pd.isna(opp_efficiency) else 0.35)
+                    mismatch_scores.extend(mismatch_values)
+                df['defender_mismatch_detector'] = mismatch_scores[:len(df)]
+        
+        # 24. FLOW STATE INDICATOR - Indicador de estado de flujo
+        if '3P' in df.columns and 'FG%' in df.columns:
+            if self._register_feature('flow_state_indicator', 'quantum_features'):
+                flow_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 5:
+                        # Estado de flujo = Alta eficiencia general + Buenos triples
+                        overall_shooting = player_data['FG%'].rolling(3).mean().fillna(0.4)
+                        three_shooting = player_data['3P'].rolling(3).mean().fillna(0)
+                        flow_state = overall_shooting * three_shooting
+                        flow_scores.extend(flow_state.shift(1).fillna(flow_state.mean()).tolist())
+                    else:
+                        flow_scores.extend([0.5] * len(player_data))
+                df['flow_state_indicator'] = flow_scores[:len(df)]
+        
+        # 25. MOMENTUM ACCELERATION - Aceleración del momentum
+        if '3P' in df.columns:
+            if self._register_feature('momentum_acceleration', 'quantum_features'):
+                acceleration_scores = []
+                for player in df['Player'].unique():
+                    player_data = df[df['Player'] == player].copy()
+                    if len(player_data) >= 5:
+                        # Aceleración = Cambio en el momentum
+                        momentum_current = player_data['3P'].rolling(3).mean()
+                        momentum_previous = player_data['3P'].rolling(3).mean().shift(2)
+                        acceleration = momentum_current - momentum_previous
+                        acceleration_scores.extend(acceleration.shift(1).fillna(0).tolist())
+                    else:
+                        acceleration_scores.extend([0.0] * len(player_data))
+                df['momentum_acceleration'] = acceleration_scores[:len(df)]
     
     def _apply_feature_selection(self, df: pd.DataFrame, features: List[str]) -> List[str]:
         """Aplica selección de features si hay demasiadas"""

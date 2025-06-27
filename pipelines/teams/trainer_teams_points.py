@@ -628,7 +628,7 @@ MODELOS BASE:
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Guardar modelo
-        model_path = os.path.normpath(os.path.join(self.output_dir, 'teams_points_model.pkl'))
+        model_path = os.path.normpath(os.path.join(self.output_dir, 'teams_points_model.joblib'))
         if hasattr(self.model, 'save_model'):
             self.model.save_model(model_path)
         else:
@@ -673,7 +673,7 @@ MODELOS BASE:
         
         # Crear resumen de archivos generados
         files_summary = {
-            'model_file': 'teams_points_model.pkl',
+            'model_file': 'teams_points_model.joblib',
             'dashboard_image': 'model_dashboard_complete.png',
             'training_report': 'training_report.json',
             'predictions': 'predictions.csv',

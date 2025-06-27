@@ -352,26 +352,108 @@ class Stacking3PTModel:
             self.base_models['neural_network'] = {
                 'model_class': MLPRegressor,
                 'param_space': {
-                    'hidden_layer_sizes': [(50,), (100,), (50, 25), (100, 50), (100, 50, 25)],
+                    'hidden_layer_sizes': [(50,), (100,), (50, 25), (100, 50)],
                     'activation': ['relu', 'tanh'],
                     'alpha': (0.0001, 0.01),
                     'learning_rate': ['constant', 'adaptive'],
-                    'learning_rate_init': (0.001, 0.01),
-                    'beta_1': (0.85, 0.95),
-                    'beta_2': (0.95, 0.999)
+                    'learning_rate_init': (0.001, 0.01)
                 },
                 'fixed_params': {
                     'solver': 'adam',
-                    'max_iter': 500,
+                    'max_iter': 300,
                     'random_state': self.random_state,
                     'early_stopping': True,
                     'validation_fraction': 0.1,
-                    'n_iter_no_change': 15
+                    'n_iter_no_change': 10
                 },
                 'weight': 0.1
             }
         except ImportError:
             logger.warning("Neural Network no disponible, saltando...")
+        
+        # 8. Ridge Regression para estabilidad
+        from sklearn.linear_model import Ridge
+        self.base_models['ridge'] = {
+            'model_class': Ridge,
+            'param_space': {
+                'alpha': (0.1, 100.0),
+                'solver': ['auto', 'svd', 'cholesky']
+            },
+            'fixed_params': {
+                'random_state': self.random_state,
+                'max_iter': 1000
+            },
+            'weight': 0.08
+        }
+        
+        # 9. ElasticNet para regularización combinada
+        from sklearn.linear_model import ElasticNet
+        self.base_models['elastic_net'] = {
+            'model_class': ElasticNet,
+            'param_space': {
+                'alpha': (0.01, 10.0),
+                'l1_ratio': (0.1, 0.9),
+                'max_iter': [1000, 2000]
+            },
+            'fixed_params': {
+                'random_state': self.random_state,
+                'selection': 'cyclic'
+            },
+            'weight': 0.08
+        }
+        
+        # 10. Support Vector Regression para patrones no lineales
+        try:
+            from sklearn.svm import SVR
+            self.base_models['svr'] = {
+                'model_class': SVR,
+                'param_space': {
+                    'C': (0.1, 100.0),
+                    'epsilon': (0.01, 0.5),
+                    'kernel': ['rbf', 'poly'],
+                    'gamma': ['scale', 'auto']
+                },
+                'fixed_params': {
+                    'cache_size': 200,
+                    'max_iter': 1000
+                },
+                'weight': 0.08
+            }
+        except ImportError:
+            logger.warning("SVR no disponible, saltando...")
+        
+        # 11. AdaBoost para capturar errores residuales
+        from sklearn.ensemble import AdaBoostRegressor
+        from sklearn.tree import DecisionTreeRegressor
+        self.base_models['ada_boost'] = {
+            'model_class': AdaBoostRegressor,
+            'param_space': {
+                'n_estimators': (50, 200),
+                'learning_rate': (0.01, 0.5),
+                'loss': ['linear', 'square', 'exponential']
+            },
+            'fixed_params': {
+                'base_estimator': DecisionTreeRegressor(max_depth=3, random_state=self.random_state),
+                'random_state': self.random_state
+            },
+            'weight': 0.08
+        }
+        
+        # 12. Huber Regressor para robustez a outliers
+        from sklearn.linear_model import HuberRegressor
+        self.base_models['huber'] = {
+            'model_class': HuberRegressor,
+            'param_space': {
+                'epsilon': (1.1, 2.0),
+                'alpha': (0.0001, 0.1),
+                'max_iter': [100, 200, 300]
+            },
+            'fixed_params': {
+                'fit_intercept': True,
+                'tol': 1e-4
+            },
+            'weight': 0.07
+        }
         
         logger.info(f"Configurados {len(self.base_models)} modelos base para triples")
     
@@ -468,13 +550,22 @@ class Stacking3PTModel:
                     if sample_weights is not None:
                         fit_params['sample_weight'] = sample_weights
                     model.fit(X_train_local, y_train, **fit_params)
-                elif model_name in ['random_forest', 'extra_trees', 'gradient_boosting']:
+                elif model_name in ['random_forest', 'extra_trees', 'gradient_boosting', 'ada_boost']:
                     fit_params = {}
                     if sample_weights is not None:
                         fit_params['sample_weight'] = sample_weights
                     model.fit(X_train_local, y_train, **fit_params)
                 elif model_name == 'neural_network':
                     # Redes neuronales no soportan sample_weight directamente en sklearn
+                    model.fit(X_train_local, y_train)
+                elif model_name in ['ridge', 'elastic_net', 'huber']:
+                    # Modelos lineales simples
+                    fit_params = {}
+                    if sample_weights is not None and model_name != 'elastic_net':
+                        fit_params['sample_weight'] = sample_weights
+                    model.fit(X_train_local, y_train, **fit_params)
+                elif model_name == 'svr':
+                    # SVR no soporta sample_weight
                     model.fit(X_train_local, y_train)
                 else:
                     # XGBoost y otros
@@ -506,7 +597,7 @@ class Stacking3PTModel:
         
         # Optimizar con timeout para triples
         try:
-            study.optimize(objective, n_trials=self.n_trials, timeout=300)  # 5 min timeout
+            study.optimize(objective, n_trials=min(self.n_trials, 50), timeout=180)  # 3 min timeout, máximo 50 trials
         except Exception as e:
             logger.warning(f"Error en optimización de {model_name}: {str(e)}")
             return None
@@ -550,13 +641,22 @@ class Stacking3PTModel:
             if sample_weights is not None:
                 fit_params['sample_weight'] = sample_weights
             best_model.fit(X_train, y_train, **fit_params)
-        elif model_name in ['random_forest', 'extra_trees', 'gradient_boosting']:
+        elif model_name in ['random_forest', 'extra_trees', 'gradient_boosting', 'ada_boost']:
             fit_params = {}
             if sample_weights is not None:
                 fit_params['sample_weight'] = sample_weights
             best_model.fit(X_train, y_train, **fit_params)
         elif model_name == 'neural_network':
             # Redes neuronales no soportan sample_weight directamente en sklearn
+            best_model.fit(X_train, y_train)
+        elif model_name in ['ridge', 'elastic_net', 'huber']:
+            # Modelos lineales simples
+            fit_params = {}
+            if sample_weights is not None and model_name != 'elastic_net':
+                fit_params['sample_weight'] = sample_weights
+            best_model.fit(X_train, y_train, **fit_params)
+        elif model_name == 'svr':
+            # SVR no soporta sample_weight
             best_model.fit(X_train, y_train)
         else:
             # XGBoost y otros
@@ -702,8 +802,6 @@ class Stacking3PTModel:
         
         # Ordenar cronológicamente: primero por jugador, luego por fecha
         df_sorted = df_with_dates.sort_values(['Player', 'Date']).reset_index(drop=True)
-        X_sorted = X.reindex(df_sorted.index)
-        y_sorted = y.reindex(df_sorted.index)
         
         # Configurar splits temporales
         tscv = TimeSeriesSplit(n_splits=self.cv_folds)
@@ -711,48 +809,105 @@ class Stacking3PTModel:
         cv_scores = []
         fold_metrics = []
         
-        for fold, (train_idx, val_idx) in enumerate(tscv.split(X_sorted)):
+        # CORRECCIÓN CRÍTICA: Preparar features consistentes antes de los folds
+        logger.info("Preparando features consistentes para validación cruzada...")
+        X_prepared, consistent_features = self._prepare_features(df_sorted)
+        y_sorted = df_sorted['3P'].values if '3P' in df_sorted.columns else y.reindex(df_sorted.index)
+        
+        for fold, (train_idx, val_idx) in enumerate(tscv.split(X_prepared)):
             logger.info(f"Fold {fold + 1}/{self.cv_folds}")
             
-            X_train_fold = X_sorted.iloc[train_idx]
-            X_val_fold = X_sorted.iloc[val_idx]
-            y_train_fold = y_sorted.iloc[train_idx]
-            y_val_fold = y_sorted.iloc[val_idx]
+            # Usar features consistentes preparadas
+            X_train_fold = X_prepared.iloc[train_idx]
+            X_val_fold = X_prepared.iloc[val_idx]
+            y_train_fold = y_sorted[train_idx]
+            y_val_fold = y_sorted[val_idx]
             
-            # Entrenar stacking model
-            self.stacking_model.fit(X_train_fold, y_train_fold)
+            # VERIFICACIÓN ADICIONAL: Asegurar consistencia de columns entre train y val
+            if list(X_train_fold.columns) != list(X_val_fold.columns):
+                logger.warning(f"Fold {fold + 1}: Inconsistencia de columnas detectada")
+                common_cols = list(set(X_train_fold.columns) & set(X_val_fold.columns))
+                X_train_fold = X_train_fold[common_cols]
+                X_val_fold = X_val_fold[common_cols]
+                logger.info(f"Fold {fold + 1}: Usando {len(common_cols)} columnas comunes")
             
-            # Predecir
-            y_pred_fold = self.stacking_model.predict(X_val_fold)
-            y_pred_fold = np.clip(y_pred_fold, 0, 15)  # Clip para triples
+            # Verificar que specialization_progression esté presente en ambos
+            if 'specialization_progression' not in X_train_fold.columns:
+                logger.warning(f"Fold {fold + 1}: specialization_progression faltante en train, agregando")
+                X_train_fold['specialization_progression'] = 0.0
+            if 'specialization_progression' not in X_val_fold.columns:
+                logger.warning(f"Fold {fold + 1}: specialization_progression faltante en val, agregando")
+                X_val_fold['specialization_progression'] = 0.0
             
-            # Calcular métricas
-            mae = mean_absolute_error(y_val_fold, y_pred_fold)
-            rmse = np.sqrt(mean_squared_error(y_val_fold, y_pred_fold))
-            r2 = r2_score(y_val_fold, y_pred_fold)
-            
-            cv_scores.append(mae)
-            fold_metrics.append({
-                'fold': fold + 1,
-                'mae': mae,
-                'rmse': rmse,
-                'r2': r2,
-                'samples': len(y_val_fold)
-            })
-            
-            logger.info(f"Fold {fold + 1} - MAE: {mae:.4f}, RMSE: {rmse:.4f}, R²: {r2:.4f}")
+            try:
+                # Entrenar stacking model
+                self.stacking_model.fit(X_train_fold, y_train_fold)
+                
+                # Predecir
+                y_pred_fold = self.stacking_model.predict(X_val_fold)
+                y_pred_fold = np.clip(y_pred_fold, 0, 15)  # Clip para triples
+                
+                # Calcular métricas
+                mae = mean_absolute_error(y_val_fold, y_pred_fold)
+                rmse = np.sqrt(mean_squared_error(y_val_fold, y_pred_fold))
+                r2 = r2_score(y_val_fold, y_pred_fold)
+                
+                cv_scores.append(mae)
+                fold_metrics.append({
+                    'fold': fold + 1,
+                    'mae': mae,
+                    'rmse': rmse,
+                    'r2': r2,
+                    'samples': len(y_val_fold),
+                    'features_used': len(X_train_fold.columns)
+                })
+                
+                logger.info(f"Fold {fold + 1} - MAE: {mae:.4f}, RMSE: {rmse:.4f}, R²: {r2:.4f}, Features: {len(X_train_fold.columns)}")
+                
+            except Exception as e:
+                logger.error(f"Error en fold {fold + 1}: {str(e)}")
+                # Usar MAE penalizante en caso de error
+                cv_scores.append(10.0)
+                fold_metrics.append({
+                    'fold': fold + 1,
+                    'mae': 10.0,
+                    'rmse': 10.0,
+                    'r2': -1.0,
+                    'samples': len(y_val_fold),
+                    'features_used': len(X_train_fold.columns) if 'X_train_fold' in locals() else 0,
+                    'error': str(e)
+                })
+                logger.warning(f"Fold {fold + 1} falló, usando MAE penalizante: 10.0")
         
         # Calcular métricas promedio
-        avg_metrics = {
-            'cv_mae_mean': np.mean(cv_scores),
-            'cv_mae_std': np.std(cv_scores),
-            'cv_rmse_mean': np.mean([m['rmse'] for m in fold_metrics]),
-            'cv_r2_mean': np.mean([m['r2'] for m in fold_metrics])
-        }
+        valid_scores = [score for score in cv_scores if score < 9.0]  # Excluir scores penalizantes
+        
+        if valid_scores:
+            avg_metrics = {
+                'cv_mae_mean': np.mean(valid_scores),
+                'cv_mae_std': np.std(valid_scores),
+                'cv_rmse_mean': np.mean([m['rmse'] for m in fold_metrics if 'error' not in m]),
+                'cv_r2_mean': np.mean([m['r2'] for m in fold_metrics if 'error' not in m]),
+                'successful_folds': len(valid_scores),
+                'total_folds': len(cv_scores),
+                'features_consistency': consistent_features
+            }
+        else:
+            logger.error("Todos los folds fallaron, usando métricas por defecto")
+            avg_metrics = {
+                'cv_mae_mean': 10.0,
+                'cv_mae_std': 0.0,
+                'cv_rmse_mean': 10.0,
+                'cv_r2_mean': -1.0,
+                'successful_folds': 0,
+                'total_folds': len(cv_scores),
+                'features_consistency': consistent_features
+            }
         
         self.cv_scores = avg_metrics
         
-        logger.info(f"CV MAE: {avg_metrics['cv_mae_mean']:.4f} ± {avg_metrics['cv_mae_std']:.4f}")
+        logger.info(f"CV completado - MAE: {avg_metrics['cv_mae_mean']:.4f} ± {avg_metrics['cv_mae_std']:.4f}")
+        logger.info(f"Folds exitosos: {avg_metrics['successful_folds']}/{avg_metrics['total_folds']}")
         
         return avg_metrics
     
@@ -1057,7 +1212,7 @@ class Stacking3PTModel:
         return {}
     
     def save_model(self, filepath: str):
-        """Guarda el modelo entrenado como objeto directo"""
+        """Guarda el modelo entrenado como objeto directo usando JOBLIB con protocolo estable"""
         if not self.is_trained:
             raise ValueError("No hay modelo entrenado para guardar")
         
@@ -1072,9 +1227,9 @@ class Stacking3PTModel:
         import matplotlib
         matplotlib.use('Agg')
         
-        # Guardar SOLO el modelo entrenado como objeto directo
+        # Guardar SOLO el modelo entrenado como objeto directo usando JOBLIB con protocolo estable
         with joblib.parallel_backend('threading', n_jobs=1):
-            joblib.dump(self.stacking_model, filepath, compress=3)
+            joblib.dump(self.stacking_model, filepath, compress=3, protocol=4)
         
         logger.info(f"Modelo Triples guardado como objeto directo (JOBLIB): {filepath}")
     

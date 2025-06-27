@@ -1627,7 +1627,7 @@ class NBATotalPointsPredictor:
         
         # Guardar SOLO el modelo ensemble principal como objeto directo usando JOBLIB con compresión
         model_to_save = self.ensemble_models['stacking']
-        joblib.dump(model_to_save, filepath, compress=3)
+        joblib.dump(model_to_save, filepath, compress=3, protocol=4)
         logger.info(f"Modelo Total Points guardado como objeto directo (JOBLIB): {filepath}")
     
     @staticmethod

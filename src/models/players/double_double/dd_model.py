@@ -3340,8 +3340,8 @@ class DoubleDoubleAdvancedModel:
         import os
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
-        # Guardar SOLO el modelo entrenado como objeto directo usando JOBLIB con compresión
-        joblib.dump(self.stacking_model, filepath, compress=3)
+        # Guardar SOLO el modelo entrenado como objeto directo usando JOBLIB con compresión y protocolo estable
+        joblib.dump(self.stacking_model, filepath, compress=3, protocol=4)
         self.logger.info(f"Modelo Double Double guardado como objeto directo (JOBLIB): {filepath}")
         
         # Guardar red neuronal por separado si existe (para preservar funcionalidad específica de PyTorch)

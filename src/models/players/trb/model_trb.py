@@ -750,7 +750,7 @@ class StackingTRBModel:
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
         # Guardar SOLO el modelo entrenado como objeto directo usando JOBLIB con compresión
-        joblib.dump(self.stacking_model, filepath, compress=3)
+        joblib.dump(self.stacking_model, filepath, compress=3, protocol=4)
         logger.info(f"Modelo TRB guardado como objeto directo (JOBLIB): {filepath}")
     
     def load_model(self, filepath: str):

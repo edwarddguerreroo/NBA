@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional, Union
 from datetime import datetime, timedelta
 import json
+import pickle
 
 # Core libraries
 import numpy as np
@@ -711,7 +712,7 @@ class FinalEnsembleModel:
             raise ValueError("No hay ensemble entrenado para guardar")
         
         # Guardar SOLO el modelo ensemble principal usando JOBLIB con compresión
-        joblib.dump(model_to_save, filepath, compress=3)
+        joblib.dump(model_to_save, filepath, compress=3, protocol=4)
         logger.info(f"Ensemble guardado como objeto directo (JOBLIB): {filepath}")
     
     @classmethod

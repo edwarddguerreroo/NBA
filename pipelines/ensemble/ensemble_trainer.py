@@ -847,7 +847,7 @@ class AdvancedEnsembleTrainer:
         Path(filepath).parent.mkdir(parents=True, exist_ok=True)
         
         # Guardar SOLO el modelo ensemble como objeto directo usando JOBLIB con compresión
-        joblib.dump(ensemble_to_save, filepath, compress=3)
+        joblib.dump(ensemble_to_save, filepath, compress=3, protocol=4)
         
         logger.info(f"Ensemble guardado como objeto directo (JOBLIB): {filepath}")
     
@@ -1058,7 +1058,7 @@ class UnifiedEnsemblePipeline:
     def _save_pipeline_results(self):
         """Guardar resultados completos del pipeline"""
         
-        ensemble_path = "results/ensemble/final_ensemble_advanced.pkl"
+        ensemble_path = "results/ensemble/final_ensemble_advanced.joblib"
         self.trainer.save_ensemble(ensemble_path)
         
         pipeline_path = "results/ensemble/pipeline_results_complete.json"

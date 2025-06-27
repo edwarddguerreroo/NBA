@@ -2521,7 +2521,7 @@ class IsWinModel:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         
         # Guardar SOLO el modelo entrenado como objeto directo usando JOBLIB con compresión
-        joblib.dump(self.stacking_model, save_path, compress=3)
+        joblib.dump(self.stacking_model, save_path, compress=3, protocol=4)
         
         # Log información del modelo guardado
         model_size_mb = os.path.getsize(save_path) / (1024 * 1024)
