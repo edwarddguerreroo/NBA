@@ -930,18 +930,14 @@ class TotalPointsFeatureEngine:
             df['cumulative_minutes'] = df.groupby('Team')['MP'].transform('cumsum')
             df['fatigue_index'] = df['games_last_7_days'] * df['cumulative_minutes'] / 1000
 
-        # Patrones semanales
+        # Patrones semanales - SIMPLIFICADO (solo weekend vs weekday)
         if 'day_of_week' in df.columns:
-            # Crear dummies sin concatenación
-            dow_dummies = pd.get_dummies(df['day_of_week'], prefix='dow')
-            for col in dow_dummies.columns:
-                df[col] = dow_dummies[col]
+            # Solo crear una feature binaria: fin de semana vs día de semana
+            df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
+            # No crear dummies individuales por día - generan ruido
 
-        # Tendencias mensuales
-        if 'month' in df.columns:
-            # Usar vectorización en lugar de .isin()
-            df['high_intensity_month'] = ((df['month'] >= 3) & (df['month'] <= 5)).astype(int)
-            df['season_start'] = ((df['month'] == 10) | (df['month'] == 11)).astype(int)
+        # ELIMINADO: Tendencias mensuales específicas
+        # Estas features (high_intensity_month, season_start) generan ruido según análisis
 
         logger.info(f"Features temporales creadas: {len([col for col in df.columns if any(x in col for x in ['phase_', 'dow_', 'season', 'fatigue'])])}")
 
@@ -1210,7 +1206,28 @@ class TotalPointsFeatureEngine:
             'team_rebounds', 'team_assists', 'team_steals', 'team_blocks',
             'team_turnovers', 'team_fouls', 'pts_distribution', 'minutes_distribution',
             'avg_minutes', 'cumulative_minutes', 'bench_contribution', 'team_depth_factor',
-            'num_starters'
+            'num_starters',
+
+            # FEATURES DE RUIDO - IMPORTANCIA MUY BAJA (< 0.01)
+            'dow_0', 'dow_1', 'dow_2', 'dow_3', 'dow_4', 'dow_5', 'dow_6',
+            'market_dow_0_bias', 'market_dow_1_bias', 'market_dow_2_bias', 
+            'market_dow_3_bias', 'market_dow_4_bias', 'market_dow_5_bias', 'market_dow_6_bias',
+            'is_weekend', 'season_start', 'high_intensity_month',
+            'opp_is_win_mean', 'matchup_dominance',
+
+            # FEATURES TEMPORALES IRRELEVANTES
+            'days_to_allstar', 'days_to_playoffs',
+
+            # FEATURES MARGINALES QUE GENERAN RUIDO (0.01-0.015)
+            'overtime_prob_ma5', 'season_phase_numeric', 'schedule_density',
+            'fatigue_factor', 'market_zigzag', 'overtime_pts_interaction',
+
+            # FEATURES REDUNDANTES DE THREE_POINT_RATIO (mantener solo las más importantes)
+            'three_point_ratio_ma_3', 'three_point_ratio_ma_5', 'three_point_ratio_ma_10',
+            'three_point_ratio_opp_ma_3', 'three_point_ratio_opp_ma_5', 'three_point_ratio_opp_ma_10',
+
+            # FEATURES DE INTERACCIÓN FG3 REDUNDANTES (mantener solo la más importante)
+            'fg3_pct_volume_interaction_3', 'fg3_pct_volume_interaction_5'
         ]
 
         # Patrones adicionales para identificar columnas de data leakage
@@ -1252,6 +1269,12 @@ class TotalPointsFeatureEngine:
         if leakage_cols:
             logger.warning(f"Eliminando {len(leakage_cols)} columnas con posible data leakage")
             X = X.drop(columns=leakage_cols, errors='ignore')
+
+        # NUEVO: Filtro automático de features de ruido por baja varianza
+        low_variance_cols = self._detect_low_variance_features(X, threshold=0.001)
+        if low_variance_cols:
+            logger.warning(f"Eliminando {len(low_variance_cols)} columnas con baja varianza (ruido)")
+            X = X.drop(columns=low_variance_cols, errors='ignore')
 
         # Verificación adicional para asegurar que no haya columnas de porcentajes sin shift
         # Esto es especialmente importante para las nuevas características
@@ -1591,26 +1614,15 @@ class TotalPointsFeatureEngine:
                 labels=[1, 2, 3, 4, 5]
             ).astype(float)
 
-            # Distancia al All-Star Game (típicamente a mitad de temporada)
-            df['days_to_allstar'] = abs(df['day_of_season'] - 180)
-
-            # Distancia a playoffs (final de temporada)
-            df['days_to_playoffs'] = np.maximum(0, 270 - df['day_of_season'])
+            # ELIMINADO: Distancias específicas de calendario
+            # days_to_allstar y days_to_playoffs generan ruido según análisis
 
             # Interacciones con fase de temporada
             if 'total_pts_ma_5' in df.columns:
                 df['season_phase_total_pts'] = df['season_phase_numeric'] * df['total_pts_ma_5'] / 1000
 
-        # 7. Análisis de tendencias de overtime
-        if 'has_overtime' in df.columns:
-            # Probabilidad de overtime basada en historial reciente
-            df['overtime_prob_ma5'] = df.groupby('Team')['has_overtime'].transform(
-                lambda x: x.rolling(window=10, min_periods=1).mean().shift(1)
-            )
-
-            # Interacción entre probabilidad de overtime y puntos totales
-            if 'total_pts_ma_5' in df.columns:
-                df['overtime_pts_interaction'] = df['overtime_prob_ma5'] * df['total_pts_ma_5']
+        # ELIMINADO: Análisis de tendencias de overtime
+        # overtime_prob_ma5 y overtime_pts_interaction generan ruido según análisis
 
         # 8. Características de oponente avanzadas
         if 'Opp' in df.columns:
@@ -1634,25 +1646,16 @@ class TotalPointsFeatureEngine:
         return df
 
     def _create_dummy_variables(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Crea variables dummy para características categóricas"""
+        """Crea variables dummy para características categóricas - SIMPLIFICADO"""
 
         if df.empty:
             return df
 
-        # Día de la semana
-        if 'day_of_week' in df.columns:
-            # Crear dummies para día de la semana
-            for day in range(7):
-                df[f'dow_{day}'] = (df['day_of_week'] == day).astype(int)
-
-        # Mes de alta intensidad (playoffs, finales de temporada)
-        if 'month' in df.columns:
-            high_intensity_months = [4, 5, 6]  # Abril, Mayo, Junio
-            df['high_intensity_month'] = df['month'].isin(high_intensity_months).astype(int)
-
-        # Inicio de temporada
-        if 'day_of_season' in df.columns:
-            df['season_start'] = (df['day_of_season'] < 30).astype(int)
+        # ELIMINADO: Creación de dummies individuales por día de semana
+        # ELIMINADO: high_intensity_month y season_start (generan ruido)
+        
+        # Solo mantener las transformaciones ya creadas en otros métodos
+        logger.info("Variables dummy simplificadas - eliminadas features de ruido")
 
         return df
 
@@ -1816,6 +1819,45 @@ class TotalPointsFeatureEngine:
                 logger.warning(f"  - ... y {len(leakage_cols) - 10} más")
 
         return leakage_cols
+
+    def _detect_low_variance_features(self, df: pd.DataFrame, threshold: float = 0.001) -> List[str]:
+        """
+        Detecta features con muy baja varianza que solo generan ruido.
+        
+        Args:
+            df: DataFrame con features
+            threshold: Umbral de varianza mínima
+            
+        Returns:
+            Lista de columnas con baja varianza
+        """
+        low_variance_cols = []
+        
+        # Solo analizar columnas numéricas
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        
+        for col in numeric_cols:
+            if df[col].var() < threshold:
+                low_variance_cols.append(col)
+        
+        # También detectar columnas con valores únicos muy limitados
+        for col in numeric_cols:
+            unique_ratio = df[col].nunique() / len(df)
+            if unique_ratio < 0.01 and col not in low_variance_cols:  # Menos del 1% de valores únicos
+                low_variance_cols.append(col)
+        
+        # Detectar columnas que son prácticamente constantes
+        for col in numeric_cols:
+            if df[col].nunique() <= 2 and col not in low_variance_cols:
+                # Verificar si una de las categorías domina (>95%)
+                value_counts = df[col].value_counts(normalize=True)
+                if value_counts.iloc[0] > 0.95:
+                    low_variance_cols.append(col)
+        
+        if low_variance_cols:
+            logger.info(f"Features de baja varianza detectadas: {low_variance_cols[:10]}...")
+        
+        return low_variance_cols
 
     def _create_shooting_percentage_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -2053,13 +2095,8 @@ class TotalPointsFeatureEngine:
                 lambda g: g['market_line_sim'].rolling(window, min_periods=3).corr(g['total_points']).shift(1)
             ).reset_index(level=0, drop=True)
             
-            # Sesgo sistemático del mercado por día de la semana
-            if 'day_of_week' in df.columns:
-                for day in range(7):
-                    day_mask = df['day_of_week'] == day
-                    if day_mask.sum() > 10:  # Solo si tenemos suficientes datos
-                        day_bias = df.loc[day_mask, 'market_error'].mean()
-                        df[f'market_dow_{day}_bias'] = (df['day_of_week'] == day).astype(float) * day_bias
+            # ELIMINADO: Sesgo sistemático del mercado por día de la semana
+            # Estas features generan ruido según análisis de importancia
             
             # Características de momentum de mercado
             df['market_momentum'] = df.groupby('Team')['market_line_sim'].transform(
