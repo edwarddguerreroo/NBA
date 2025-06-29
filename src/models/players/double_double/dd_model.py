@@ -3477,7 +3477,7 @@ class DoubleDoubleAdvancedModel:
             if 'neural_network' in self.training_results['individual_models']:
                 nn_model = self.training_results['individual_models']['neural_network'].get('model')
                 if nn_model and hasattr(nn_model, 'model') and nn_model.model is not None:
-                    nn_filepath = filepath.replace('.pkl', '_neural_network.pth')
+                    nn_filepath = filepath.replace('.pkl', '_neural_network.pth').replace('.joblib', '_neural_network.pth')
                     torch.save(nn_model.model.state_dict(), nn_filepath)
                     self.logger.info(f"Red neuronal guardada por separado: {nn_filepath}")
     

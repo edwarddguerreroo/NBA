@@ -17,6 +17,7 @@ Objetivo: 97%+ de precisión en predicción de puntos totales
 
 # Standard Library
 import os
+import pickle
 import warnings
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -109,7 +110,7 @@ logger.setLevel(logging.INFO)
 
 class GPUManager:
     """Gestión inteligente de recursos GPU para entrenamiento eficiente"""
-    
+
     @staticmethod
     def get_optimal_device(prefer_gpu: bool = True, 
                           memory_threshold_gb: float = 2.0) -> torch.device:
@@ -125,21 +126,21 @@ class GPUManager:
         """
         if not prefer_gpu:
             return torch.device('cpu')
-        
+
         if not torch.cuda.is_available():
             logger.info("CUDA no disponible, usando CPU")
             return torch.device('cpu')
-        
+
         # Buscar GPU con suficiente memoria
         for i in range(torch.cuda.device_count()):
             device = torch.device(f'cuda:{i}')
             props = torch.cuda.get_device_properties(i)
             total_memory_gb = props.total_memory / (1024**3)
-            
+
             if total_memory_gb >= memory_threshold_gb:
                 logger.info(f"Usando GPU {i}: {props.name} ({total_memory_gb:.1f}GB)")
                 return device
-        
+
         logger.info("GPUs sin memoria suficiente, usando CPU")
         return torch.device('cpu')
 
@@ -154,20 +155,20 @@ class TotalPointsNeuralNet(nn.Module):
     - Skip connections para mejor flujo de gradientes
     - Activaciones mixtas para no-linealidad
     """
-    
+
     def __init__(self, input_size: int, hidden_sizes: List[int] = None,
                  dropout_rates: List[float] = None):
         super(TotalPointsNeuralNet, self).__init__()
-        
+
         if hidden_sizes is None:
             hidden_sizes = [256, 128, 64, 32]
         if dropout_rates is None:
             dropout_rates = [0.3, 0.4, 0.3, 0.2]
-        
+
         self.layers = nn.ModuleList()
         self.batch_norms = nn.ModuleList()
         self.dropouts = nn.ModuleList()
-        
+
         # Construir capas
         prev_size = input_size
         for i, (hidden_size, dropout_rate) in enumerate(zip(hidden_sizes, dropout_rates)):
@@ -175,17 +176,18 @@ class TotalPointsNeuralNet(nn.Module):
             self.batch_norms.append(nn.BatchNorm1d(hidden_size))
             self.dropouts.append(nn.Dropout(dropout_rate))
             prev_size = hidden_size
-        
-        # Skip connection simple para arquitectura [64, 32]
-        if len(hidden_sizes) >= 2:
-            self.skip1 = nn.Linear(input_size, hidden_sizes[-1])  # input_size -> 32 (directo al final)
-        
+
+        # Skip connection opcional solo si es beneficioso
+        self.use_skip = len(hidden_sizes) >= 2 and hidden_sizes[-1] <= 64
+        if self.use_skip:
+            self.skip1 = nn.Linear(input_size, hidden_sizes[-1])
+
         # Capa de salida
         self.output = nn.Linear(hidden_sizes[-1], 1)
-        
+
         # Inicialización optimizada
         self._initialize_weights()
-    
+
     def _initialize_weights(self):
         """Inicialización de pesos optimizada para regresión de totales"""
         for m in self.modules():
@@ -197,38 +199,37 @@ class TotalPointsNeuralNet(nn.Module):
             elif isinstance(m, nn.BatchNorm1d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-    
+
     def forward(self, x):
-        """Forward pass con manejo robusto de BatchNorm"""
+        """Forward pass con arquitectura mejorada"""
         # Guardar entrada original para skip connection
         input_original = x
-        
-        # Primera capa: input_size -> 64
-        x = self.layers[0](x)
-        
-        # BatchNorm solo si batch_size > 1
-        if x.size(0) > 1:
-            x = self.batch_norms[0](x)
+
+        # Pasar por todas las capas secuencialmente
+        for i, (layer, batch_norm, dropout) in enumerate(zip(self.layers, self.batch_norms, self.dropouts)):
+            x = layer(x)
+            
+            # BatchNorm solo si batch_size > 1
+            if x.size(0) > 1:
+                x = batch_norm(x)
+            
             x = F.relu(x)
-        x = self.dropouts[0](x)
-        
-        # Segunda capa: 64 -> 32
-        x = self.layers[1](x)
-        
-        # BatchNorm solo si batch_size > 1
-        if x.size(0) > 1:
-            x = self.batch_norms[1](x)
-        x = F.relu(x)
-        x = self.dropouts[1](x)
-        
-        # Skip connection: input directo a la última capa
-        if hasattr(self, 'skip1'):
-            skip_out = self.skip1(input_original)
-            x = x + skip_out
-        
+            x = dropout(x)
+
+        # Skip connection: input directo a la última capa (solo si está habilitado)
+        if self.use_skip and hasattr(self, 'skip1'):
+            try:
+                skip_out = self.skip1(input_original)
+                # Verificar que las dimensiones coinciden antes de sumar
+                if x.shape == skip_out.shape:
+                    x = x + skip_out
+            except RuntimeError:
+                # Si hay error de dimensiones, ignorar skip connection
+                pass
+
         # Salida
         x = self.output(x)
-        
+
         return x
 
 
@@ -239,13 +240,13 @@ class PyTorchTotalPointsRegressor(BaseEstimator, RegressorMixin):
     Implementa una red neuronal profunda optimizada específicamente
     para predicción de puntos totales con regularización avanzada.
     """
-    
+
     def __init__(self, hidden_sizes: List[int] = None, dropout_rates: List[float] = None,
                  epochs: int = 200, batch_size: int = 64, learning_rate: float = 0.001,
                  weight_decay: float = 0.01, early_stopping_patience: int = 20,
                  lr_scheduler: str = 'cosine', gradient_clip: float = 1.0,
                  device: str = 'auto', random_state: int = 42):
-        
+
         self.hidden_sizes = hidden_sizes or [256, 128, 64, 32]
         self.dropout_rates = dropout_rates or [0.3, 0.4, 0.3, 0.2]
         self.epochs = epochs
@@ -257,28 +258,28 @@ class PyTorchTotalPointsRegressor(BaseEstimator, RegressorMixin):
         self.gradient_clip = gradient_clip
         self.device = device
         self.random_state = random_state
-        
+
         # Componentes del modelo
         self.model = None
         self.scaler = StandardScaler()
         self._device = None
         self.training_history = []
-        
+
         # Para early stopping
         self.best_loss = float('inf')
         self.patience_counter = 0
         self.best_model_state = None
-        
+
         # Configurar semillas para reproducibilidad
         self._set_random_seeds()
-    
+
     def _set_random_seeds(self):
         """Configura semillas para reproducibilidad"""
         np.random.seed(self.random_state)
         torch.manual_seed(self.random_state)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.random_state)
-    
+
     def fit(self, X, y):
         """Entrena el modelo con validación y early stopping"""
         # Preparar dispositivo
@@ -286,45 +287,45 @@ class PyTorchTotalPointsRegressor(BaseEstimator, RegressorMixin):
             self._device = GPUManager.get_optimal_device()
         else:
             self._device = torch.device(self.device)
-        
+
         # Preparar datos
         X = self._validate_input(X)
         y = self._validate_target(y)
-        
+
         # Escalar características
         X_scaled = self.scaler.fit_transform(X)
-        
+
         # División train/validation
         val_size = 0.15
         n_val = int(len(X) * val_size)
         indices = np.random.permutation(len(X))
-        
+
         train_idx, val_idx = indices[n_val:], indices[:n_val]
-        
+
         X_train = X_scaled[train_idx]
         y_train = y[train_idx]
         X_val = X_scaled[val_idx]
         y_val = y[val_idx]
-        
+
         # Convertir a tensores
         X_train_tensor = torch.FloatTensor(X_train).to(self._device)
         y_train_tensor = torch.FloatTensor(y_train.reshape(-1, 1)).to(self._device)
         X_val_tensor = torch.FloatTensor(X_val).to(self._device)
         y_val_tensor = torch.FloatTensor(y_val.reshape(-1, 1)).to(self._device)
-        
+
         # Crear modelo
         input_size = X.shape[1]
         self.model = TotalPointsNeuralNet(
             input_size, self.hidden_sizes, self.dropout_rates
         ).to(self._device)
-        
+
         # Configurar optimizador y scheduler
         optimizer = optim.AdamW(
             self.model.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay
         )
-        
+
         if self.lr_scheduler == 'cosine':
             scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, T_max=self.epochs
@@ -335,10 +336,10 @@ class PyTorchTotalPointsRegressor(BaseEstimator, RegressorMixin):
             )
         else:
             scheduler = None
-        
+
         # Loss function
         criterion = nn.MSELoss()
-        
+
         # Crear DataLoader con drop_last para evitar batches de tamaño 1
         train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
         train_loader = DataLoader(
@@ -347,40 +348,40 @@ class PyTorchTotalPointsRegressor(BaseEstimator, RegressorMixin):
             shuffle=True,
             drop_last=True 
         )
-        
+
         # Entrenamiento
         self.training_history = []
-        
+
         for epoch in range(self.epochs):
             # Training
             self.model.train()
             train_loss = 0.0
-            
+
             for batch_X, batch_y in train_loader:
                 optimizer.zero_grad()
-                
+
                 outputs = self.model(batch_X)
                 loss = criterion(outputs, batch_y)
-                
+
                 loss.backward()
-                
+
                 # Gradient clipping
                 if self.gradient_clip > 0:
                     torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(), self.gradient_clip
                     )
-                
+
                 optimizer.step()
                 train_loss += loss.item() * batch_X.size(0)
-            
+
             train_loss /= len(X_train)
-            
+
             # Validation
             self.model.eval()
             with torch.no_grad():
                 val_outputs = self.model(X_val_tensor)
                 val_loss = criterion(val_outputs, y_val_tensor).item()
-            
+
             # Guardar historial
             self.training_history.append({
                 'epoch': epoch,
@@ -388,14 +389,14 @@ class PyTorchTotalPointsRegressor(BaseEstimator, RegressorMixin):
                 'val_loss': val_loss,
                 'lr': optimizer.param_groups[0]['lr']
             })
-            
+
             # Learning rate scheduling
             if scheduler:
                 if self.lr_scheduler == 'reduce':
                     scheduler.step(val_loss)
                 else:
                     scheduler.step()
-            
+
             # Early stopping
             if val_loss < self.best_loss:
                 self.best_loss = val_loss
@@ -403,58 +404,58 @@ class PyTorchTotalPointsRegressor(BaseEstimator, RegressorMixin):
                 self.best_model_state = copy.deepcopy(self.model.state_dict())
             else:
                 self.patience_counter += 1
-                
+
             if self.patience_counter >= self.early_stopping_patience:
                 logger.info(f"Early stopping en época {epoch}")
                 break
-            
+
             # Log progreso
             if epoch % 10 == 0:
                 logger.info(
                     f"Época {epoch}/{self.epochs} - "
                     f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
                 )
-        
+
         # Restaurar mejor modelo
         if self.best_model_state is not None:
             self.model.load_state_dict(self.best_model_state)
-        
+
         return self
-    
+
     def predict(self, X):
         """Realiza predicciones"""
         if self.model is None:
             raise ValueError("El modelo debe ser entrenado primero")
-        
+
         X = self._validate_input(X)
         X_scaled = self.scaler.transform(X)
         X_tensor = torch.FloatTensor(X_scaled).to(self._device)
-        
+
         self.model.eval()
         with torch.no_grad():
             predictions = self.model(X_tensor).cpu().numpy().flatten()
-        
+
         return predictions
-    
+
     def _validate_input(self, X):
         """Valida y convierte entrada a numpy array"""
         if isinstance(X, pd.DataFrame):
             X = X.values
         elif not isinstance(X, np.ndarray):
             X = np.array(X)
-        
+
         if X.ndim == 1:
             X = X.reshape(-1, 1)
-        
+
         return X
-    
+
     def _validate_target(self, y):
         """Valida y convierte target a numpy array"""
         if isinstance(y, pd.Series):
             y = y.values
         elif not isinstance(y, np.ndarray):
             y = np.array(y)
-        
+
         return y.flatten()
 
 class NBATotalPointsPredictor:
@@ -464,7 +465,7 @@ class NBATotalPointsPredictor:
     Combina múltiples modelos base usando una estrategia de ponderación optimizada
     que puede adaptarse a diferentes conjuntos de datos y escenarios.
     """
-    
+
     def __init__(self, base_models=None, weights=None, weight_optimization='auto', 
                  meta_model=None, cv=5, random_state=None):
         """
@@ -484,13 +485,13 @@ class NBATotalPointsPredictor:
         self.meta_model = meta_model
         self.cv = cv
         self.random_state = random_state
-        
+
         # Atributos internos
         self._fitted_models = None
         self._optimized_weights = None
         self._meta_model_fitted = None
         self._model_names = None
-        
+
     def fit(self, X, y):
         """
         Entrena el modelo de blending completo.
@@ -504,13 +505,13 @@ class NBATotalPointsPredictor:
         """
         if len(self.base_models) == 0:
             raise ValueError("Se requiere al menos un modelo base")
-        
+
         # Guardar nombres de modelos para logging
         self._model_names = [
             type(model).__name__ if hasattr(model, '__class__') else str(model)
             for model in self.base_models
         ]
-        
+
         # Entrenar modelos base
         self._fitted_models = []
         for i, model in enumerate(self.base_models):
@@ -525,12 +526,12 @@ class NBATotalPointsPredictor:
                 fallback = Ridge(alpha=1.0, random_state=self.random_state)
                 fallback.fit(X, y)
                 self._fitted_models.append(fallback)
-        
+
         # Generar predicciones de modelos base
         base_predictions = np.column_stack([
             model.predict(X) for model in self._fitted_models
         ])
-        
+
         # Optimizar pesos si es necesario
         if self.weights is None or self.weight_optimization:
             self._optimize_weights(X, y, base_predictions)
@@ -539,14 +540,14 @@ class NBATotalPointsPredictor:
             if len(self.weights) != len(self._fitted_models):
                 raise ValueError(f"Número de pesos ({len(self.weights)}) no coincide con número de modelos ({len(self._fitted_models)})")
             self._optimized_weights = np.array(self.weights) / np.sum(self.weights)  # Normalizar
-        
+
         # Entrenar meta-modelo si se proporciona
         if self.meta_model is not None:
             self._meta_model_fitted = clone(self.meta_model)
             self._meta_model_fitted.fit(base_predictions, y)
-        
+
         return self
-    
+
     def _optimize_weights(self, X, y, base_predictions):
         """
         Optimiza los pesos para cada modelo base.
@@ -557,7 +558,7 @@ class NBATotalPointsPredictor:
             base_predictions: Predicciones de modelos base
         """
         n_models = len(self._fitted_models)
-        
+
         if self.weight_optimization == 'grid' or (self.weight_optimization == 'auto' and n_models <= 3):
             # Optimización por grid search para pocos modelos
             self._grid_search_weights(base_predictions, y)
@@ -567,66 +568,66 @@ class NBATotalPointsPredictor:
         else:
             # Pesos basados en rendimiento individual (fallback)
             self._performance_based_weights(X, y)
-    
+
     def _grid_search_weights(self, base_predictions, y):
         """Optimiza pesos mediante búsqueda en cuadrícula"""
         n_models = base_predictions.shape[1]
-        
+
         # Para 2 modelos, podemos hacer una búsqueda lineal simple
         if n_models == 2:
             best_mae = float('inf')
             best_weight = 0.5
-            
+
             for w1 in np.linspace(0, 1, 101):  # 0.00, 0.01, ..., 1.00
                 w2 = 1 - w1
                 pred = w1 * base_predictions[:, 0] + w2 * base_predictions[:, 1]
                 mae = mean_absolute_error(y, pred)
-                
+
                 if mae < best_mae:
                     best_mae = mae
                     best_weight = w1
-            
+
             self._optimized_weights = np.array([best_weight, 1 - best_weight])
             logger.info(f"Pesos optimizados por grid search: {self._optimized_weights}")
-            
+
         # Para 3 modelos, usamos una cuadrícula 2D
         elif n_models == 3:
             best_mae = float('inf')
             best_weights = np.ones(3) / 3
-            
+
             for w1 in np.linspace(0, 1, 11):  # 0.0, 0.1, ..., 1.0
                 for w2 in np.linspace(0, 1 - w1, int(11 * (1 - w1)) + 1):
                     w3 = 1 - w1 - w2
                     if w3 < 0:
                         continue
-                    
+
                     weights = np.array([w1, w2, w3])
                     pred = base_predictions.dot(weights)
                     mae = mean_absolute_error(y, pred)
-                    
+
                     if mae < best_mae:
                         best_mae = mae
                         best_weights = weights
-            
+
             self._optimized_weights = best_weights
             logger.info(f"Pesos optimizados por grid search: {self._optimized_weights}")
-            
+
         else:
             # Para más de 3 modelos, usamos optimización convexa
             from scipy.optimize import minimize
-            
+
             def objective(weights):
                 # Normalizar pesos para que sumen 1
                 weights = weights / np.sum(weights)
                 pred = base_predictions.dot(weights)
                 return mean_absolute_error(y, pred)
-            
+
             # Inicializar con pesos iguales
             initial_weights = np.ones(n_models) / n_models
-            
+
             # Restricciones: pesos no negativos que suman 1
             bounds = [(0, 1) for _ in range(n_models)]
-            
+
             # Optimizar
             result = minimize(
                 objective,
@@ -635,29 +636,29 @@ class NBATotalPointsPredictor:
                 method='SLSQP',
                 options={'disp': False}
             )
-            
+
             # Normalizar y guardar pesos optimizados
             self._optimized_weights = result.x / np.sum(result.x)
             logger.info(f"Pesos optimizados por optimización convexa: {self._optimized_weights}")
-    
+
     def _bayesian_optimize_weights(self, base_predictions, y):
         """Optimiza pesos mediante optimización bayesiana"""
         try:
             from skopt import gp_minimize
             from skopt.space import Real
-            
+
             n_models = base_predictions.shape[1]
-            
+
             # Definir espacio de búsqueda
             space = [Real(0.0, 1.0, name=f'w{i}') for i in range(n_models)]
-            
+
             # Función objetivo
             def objective(weights):
                 # Normalizar pesos para que sumen 1
                 weights = np.array(weights) / np.sum(weights)
                 pred = base_predictions.dot(weights)
                 return mean_absolute_error(y, pred)
-            
+
             # Optimizar
             res = gp_minimize(
                 objective,
@@ -666,51 +667,51 @@ class NBATotalPointsPredictor:
                 random_state=self.random_state,
                 verbose=False
             )
-            
+
             # Normalizar y guardar pesos optimizados
             self._optimized_weights = np.array(res.x) / np.sum(res.x)
             logger.info(f"Pesos optimizados por optimización bayesiana: {self._optimized_weights}")
-            
+
         except ImportError:
             logger.warning("scikit-optimize no disponible, usando pesos basados en rendimiento")
             self._performance_based_weights(None, y)
-    
+
     def _performance_based_weights(self, X, y):
         """Asigna pesos basados en el rendimiento individual de cada modelo"""
         n_models = len(self._fitted_models)
-        
+
         if X is not None and y is not None:
             # Usar validación cruzada para evaluar modelos
             from sklearn.model_selection import KFold
-            
+
             kf = KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
             mae_scores = np.zeros(n_models)
-            
+
             for model_idx, model in enumerate(self._fitted_models):
                 cv_maes = []
-                
+
                 for train_idx, val_idx in kf.split(X):
                     X_train, X_val = X[train_idx], X[val_idx]
                     y_train, y_val = y[train_idx], y[val_idx]
-                    
+
                     model_clone = clone(model)
                     model_clone.fit(X_train, y_train)
                     pred = model_clone.predict(X_val)
                     cv_maes.append(mean_absolute_error(y_val, pred))
-                
+
                 mae_scores[model_idx] = np.mean(cv_maes)
-            
+
             # Convertir MAE a pesos (menor MAE = mayor peso)
             # Usar transformación inversa y softmax
             weights = 1.0 / (mae_scores + 1e-10)
             self._optimized_weights = weights / np.sum(weights)
-            
+
         else:
             # Fallback a pesos iguales
             self._optimized_weights = np.ones(n_models) / n_models
-        
+
         logger.info(f"Pesos basados en rendimiento: {self._optimized_weights}")
-    
+
     def predict(self, X):
         """
         Genera predicciones combinando modelos base con pesos optimizados.
@@ -723,24 +724,24 @@ class NBATotalPointsPredictor:
         """
         if self._fitted_models is None:
             raise ValueError("El modelo no ha sido entrenado. Llamar a fit() primero.")
-        
+
         # Generar predicciones de modelos base
         base_predictions = np.column_stack([
             model.predict(X) for model in self._fitted_models
         ])
-        
+
         # Si hay un meta-modelo, usarlo
         if self._meta_model_fitted is not None:
             return self._meta_model_fitted.predict(base_predictions)
-        
+
         # De lo contrario, usar combinación ponderada
         return base_predictions.dot(self._optimized_weights)
-    
+
     def get_model_weights(self):
         """Retorna los pesos optimizados y nombres de modelos"""
         if self._optimized_weights is None:
             return None
-        
+
         return dict(zip(self._model_names, self._optimized_weights))
 
 
@@ -751,7 +752,7 @@ class NBATotalPointsPredictor:
     Combina múltiples algoritmos de ML con stacking avanzado,
     optimización Bayesiana y validación temporal rigurosa.
     """
-    
+
     def __init__(self, optimize_hyperparams: bool = True,
                  optimization_method: str = 'bayesian',
                  n_optimization_trials: int = 50,
@@ -775,7 +776,7 @@ class NBATotalPointsPredictor:
         self.use_neural_network = use_neural_network
         self.device = device
         self.random_state = random_state
-        
+
         # Componentes del modelo
         self.feature_engineer = TotalPointsFeatureEngine()
         self.models = {}
@@ -783,124 +784,102 @@ class NBATotalPointsPredictor:
         self.ensemble_models = {}
         self.feature_columns = None
         self.scaler = StandardScaler()
-        
+
         # Resultados de entrenamiento
         self.training_results = {}
         self.feature_importance = {}
         self.optimization_history = {}
-        
+
         # Configurar modelos
         self._setup_models()
-    
+
     def _setup_models(self):
         """Configura los modelos base y ensemble"""
         self.models = {}
         self.optimized_models = {}
         self.ensemble_models = {}
-        
+
         # Configurar semilla aleatoria
         np.random.seed(self.random_state)
-        
-        # Modelos base - Regresores lineales
-        self.models['ridge'] = Ridge(alpha=1.0, random_state=self.random_state)
-        self.models['lasso'] = Lasso(alpha=0.01, random_state=self.random_state)
-        self.models['elastic_net'] = ElasticNet(alpha=0.01, l1_ratio=0.5, random_state=self.random_state)
-        self.models['bayesian_ridge'] = BayesianRidge()
-        self.models['huber'] = HuberRegressor(epsilon=1.35)
-        
-        # Modelos base - Árboles y boosting
+
+        # Modelos base - Regresores lineales optimizados
+        self.models['ridge'] = Ridge(alpha=0.1, random_state=self.random_state)
+        self.models['lasso'] = Lasso(alpha=0.001, max_iter=5000, random_state=self.random_state)
+        self.models['elastic_net'] = ElasticNet(alpha=0.001, l1_ratio=0.7, max_iter=5000, random_state=self.random_state)
+        self.models['bayesian_ridge'] = BayesianRidge(alpha_1=1e-6, alpha_2=1e-6, lambda_1=1e-6, lambda_2=1e-6)
+        self.models['huber'] = HuberRegressor(epsilon=1.35, max_iter=1000, alpha=0.0001)
+
+        # Modelos base - Árboles optimizados
         self.models['random_forest'] = RandomForestRegressor(
-            n_estimators=200, max_depth=15, random_state=self.random_state, n_jobs=-1
-        )
-        self.models['extra_trees'] = ExtraTreesRegressor(
-            n_estimators=200, max_depth=15, random_state=self.random_state, n_jobs=-1
-        )
-        
-        # Modelos avanzados con hiperparámetros mejorados
-        self.models['xgboost'] = xgb.XGBRegressor(
             n_estimators=300, 
-            max_depth=8,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_alpha=0.5,
-            reg_lambda=1.0,
-            random_state=self.random_state,
+            max_depth=12, 
+            min_samples_split=5,
+            min_samples_leaf=2,
+            max_features='sqrt',
+            random_state=self.random_state, 
             n_jobs=-1
         )
-        
-        self.models['lightgbm'] = lgb.LGBMRegressor(
-            n_estimators=300,
-            num_leaves=50,
-            learning_rate=0.05,
-            feature_fraction=0.8,
-            bagging_fraction=0.8,
-            min_child_samples=20,
-            random_state=self.random_state,
-            n_jobs=-1,
-            verbose=-1
+        self.models['extra_trees'] = ExtraTreesRegressor(
+            n_estimators=300, 
+            max_depth=15, 
+            min_samples_split=3,
+            min_samples_leaf=1,
+            max_features='sqrt',
+            random_state=self.random_state, 
+            n_jobs=-1
         )
-        
+
+        # ELIMINADOS: XGBoost y LightGBM por bajo rendimiento (MAE > 5.5)
+        # Mantenemos solo los modelos con mejor rendimiento (MAE < 4.5)
+
         if CATBOOST_AVAILABLE:
             self.models['catboost'] = cat.CatBoostRegressor(
-                iterations=300,
-                depth=8,
-                learning_rate=0.05,
-                l2_leaf_reg=3,
+                iterations=500,
+                depth=6,
+                learning_rate=0.03,
+                l2_leaf_reg=5,
+                border_count=128,
+                random_strength=0.1,
+                bagging_temperature=0.2,
                 random_state=self.random_state,
                 verbose=False
             )
-        
-        # Red neuronal
+
+        # Red neuronal optimizada para alta precisión
         if self.use_neural_network:
             self.models['neural_network'] = PyTorchTotalPointsRegressor(
-                hidden_sizes=[64, 32],  # Red minimalista: solo 2 capas ocultas
-                dropout_rates=[0.2, 0.1],  # Dropout mínimo
-                epochs=100,  # Menos épocas
-                batch_size=32,  # Batch pequeño para mejor generalización
-                learning_rate=0.003,  # Learning rate mayor para convergencia rápida
-                weight_decay=0.005,  # Weight decay mínimo
-                early_stopping_patience=8,  # Patience muy corto
+                hidden_sizes=[256, 128, 64, 32],  # Arquitectura más profunda
+                dropout_rates=[0.3, 0.4, 0.3, 0.2],  # Dropout optimizado
+                epochs=200,  # Más épocas para mejor entrenamiento
+                batch_size=32,  # Batch óptimo
+                learning_rate=0.001,  # Learning rate balanceado
+                weight_decay=0.01,  # Weight decay para regularización
+                early_stopping_patience=25,  # Patience mayor para convergencia
                 lr_scheduler='cosine',
-                gradient_clip=0.5,  # Gradient clip más suave
+                gradient_clip=1.0,  # Gradient clip estándar
                 device=self.device,
                 random_state=self.random_state
             )
+
+        # ELIMINADO: Voting Ensemble por bajo rendimiento (MAE 5.73)
+        # Solo mantenemos Stacking con modelos de alto rendimiento
         
-        # Modelos ensemble
-        self.ensemble_models['voting'] = VotingRegressor(
-            estimators=[
-                ('xgboost', self.models.get('xgboost')),
-                ('lightgbm', self.models.get('lightgbm')),
-                ('random_forest', self.models.get('random_forest')),
-                ('ridge', self.models.get('ridge'))
-            ]
-        )
-        
-        # Stacking con meta-regressor optimizado
+        # Stacking optimizado solo con mejores modelos individuales
         self.ensemble_models['stacking'] = StackingRegressor(
             estimators=[
-                ('xgboost', self.models.get('xgboost')),
-                ('lightgbm', self.models.get('lightgbm')),
-                ('catboost', self.models.get('catboost')) if 'catboost' in self.models else 
-                            ('extra_trees', self.models.get('extra_trees')),
+                ('elastic_net', self.models.get('elastic_net')),
+                ('huber', self.models.get('huber')),
+                ('bayesian_ridge', self.models.get('bayesian_ridge')),
+                ('ridge', self.models.get('ridge')),
                 ('random_forest', self.models.get('random_forest')),
                 ('neural_network', self.models.get('neural_network')) if 'neural_network' in self.models else 
-                                ('huber', self.models.get('huber')),
-                ('ridge', self.models.get('ridge'))
+                                ('extra_trees', self.models.get('extra_trees'))
             ],
-            final_estimator=xgb.XGBRegressor(
-                n_estimators=200,
-                max_depth=5,
-                learning_rate=0.03,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=self.random_state
-            ),
+            final_estimator=Ridge(alpha=0.1, random_state=self.random_state),  # Meta-regressor simple
             cv=5,
             n_jobs=-1
         )
-    
+
     def train(self, df_teams: pd.DataFrame, df_players: pd.DataFrame = None,
               validation_split: float = 0.2) -> Dict[str, Any]:
         """
@@ -917,49 +896,49 @@ class NBATotalPointsPredictor:
         logger.info("="*80)
         logger.info("INICIANDO ENTRENAMIENTO DE MODELO DE PUNTOS TOTALES")
         logger.info("="*80)
-        
+
         # Crear features
         logger.info("\n[1/6] Generando features...")
         df_features = self.feature_engineer.create_features(df_teams, df_players)
-        
+
         # Preparar datos
         logger.info("\n[2/6] Preparando datos para entrenamiento...")
         X, y = self.feature_engineer.prepare_features(df_features, target_col='total_points')
         self.feature_columns = list(X.columns)
-        
+
         # División temporal
         split_idx = int(len(X) * (1 - validation_split))
         X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
         y_train, y_val = y.iloc[:split_idx], y.iloc[split_idx:]
-        
+
         logger.info(f"Datos de entrenamiento: {X_train.shape}")
         logger.info(f"Datos de validación: {X_val.shape}")
-        
+
         # Escalar datos
         X_train_scaled = self.scaler.fit_transform(X_train)
         X_val_scaled = self.scaler.transform(X_val)
-        
+
         # Entrenar modelos individuales
         logger.info("\n[3/6] Entrenando modelos individuales...")
         individual_results = self._train_individual_models(
             X_train_scaled, y_train, X_val_scaled, y_val
         )
-        
+
         # Optimización de hiperparámetros
         if self.optimize_hyperparams:
             logger.info("\n[4/6] Optimizando hiperparámetros...")
             self._optimize_hyperparameters(X_train_scaled, y_train)
-        
+
         # Entrenar modelos ensemble
         logger.info("\n[5/6] Entrenando modelos ensemble...")
         ensemble_results = self._train_ensemble_models(
             X_train_scaled, y_train, X_val_scaled, y_val
         )
-        
+
         # Validación cruzada temporal
         logger.info("\n[6/6] Realizando validación cruzada temporal...")
         cv_results = self._perform_temporal_cross_validation(X, y)
-        
+
         # Compilar resultados
         self.training_results = {
             'individual_models': individual_results,
@@ -968,16 +947,16 @@ class NBATotalPointsPredictor:
             'feature_importance': self._calculate_feature_importance(),
             'training_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
-        
+
         # Generar reporte
         self._generate_training_report()
-        
+
         return self.training_results
-    
+
     def _train_individual_models(self, X_train, y_train, X_val, y_val) -> Dict:
         """Entrena todos los modelos individuales"""
         results = {}
-        
+
         for name, model in tqdm(self.models.items(), desc="Entrenando modelos"):
             try:
                 # Entrenar modelo
@@ -987,11 +966,11 @@ class NBATotalPointsPredictor:
                 else:
                     # Para LightGBM, no pasamos feature_name para evitar advertencias
                     model.fit(X_train, y_train)
-                
+
                 # Predicciones
                 train_pred = model.predict(X_train)
                 val_pred = model.predict(X_val)
-                
+
                 # Métricas
                 results[name] = {
                     'train_mae': mean_absolute_error(y_train, train_pred),
@@ -1002,28 +981,29 @@ class NBATotalPointsPredictor:
                     'val_r2': r2_score(y_val, val_pred),
                     'predictions': val_pred
                 }
-                
+
                 # Guardar modelo optimizado
                 self.optimized_models[name] = model
-                
+
             except Exception as e:
                 logger.error(f"Error entrenando {name}: {str(e)}")
                 results[name] = {'error': str(e)}
-        
+
         return results
-    
+
     def _optimize_hyperparameters(self, X_train, y_train):
         """Optimiza hiperparámetros de los mejores modelos"""
-        
-        # Seleccionar mejores modelos para optimizar
-        best_models = ['xgboost', 'lightgbm', 'catboost', 'random_forest']
-        
+
+        # Seleccionar solo modelos de alto rendimiento para optimizar
+        # ELIMINADOS: xgboost, lightgbm por bajo rendimiento (MAE > 5.5)
+        best_models = ['catboost', 'random_forest']
+
         for model_name in best_models:
             if model_name not in self.models:
                 continue
-            
+
             logger.info(f"Optimizando {model_name}...")
-            
+
             if self.optimization_method == 'bayesian' and BAYESIAN_AVAILABLE:
                 optimized = self._bayesian_optimization(
                     model_name, X_train, y_train
@@ -1036,13 +1016,13 @@ class NBATotalPointsPredictor:
                 optimized = self._random_search_optimization(
                     model_name, X_train, y_train
                 )
-            
+
             if optimized is not None:
                 self.optimized_models[model_name] = optimized
-    
+
     def _bayesian_optimization(self, model_name: str, X_train, y_train):
         """Optimización Bayesiana de hiperparámetros"""
-        
+
         # Definir espacio de búsqueda
         if model_name == 'xgboost':
             space = [
@@ -1080,7 +1060,7 @@ class NBATotalPointsPredictor:
             ]
         else:
             return None
-        
+
         # Función objetivo
         @use_named_args(space)
         def objective(**params):
@@ -1097,14 +1077,14 @@ class NBATotalPointsPredictor:
                     X_train_df = pd.DataFrame(X_train, columns=self.feature_columns)
                 else:
                     X_train_df = X_train
-                
+
                 model = lgb.LGBMRegressor(
                     **params,
                     random_state=self.random_state,
                     n_jobs=-1,
                     verbose=-1
                 )
-                
+
                 # Validación cruzada para evitar overfitting
                 cv = KFold(n_splits=3, shuffle=True, random_state=self.random_state)
                 cv_scores = cross_val_score(
@@ -1112,10 +1092,10 @@ class NBATotalPointsPredictor:
                     cv=cv, scoring='neg_mean_absolute_error', 
                     n_jobs=-1
                 )
-                
+
                 # Retornar el MAE negativo promedio (para minimizar)
                 return -cv_scores.mean()
-                
+
             elif model_name == 'catboost':
                 model = cat.CatBoostRegressor(
                     **params,
@@ -1130,7 +1110,7 @@ class NBATotalPointsPredictor:
                 )
             else:
                 return float('inf')
-            
+
             # Validación cruzada para evitar overfitting
             if model_name != 'lightgbm':  # Ya manejado para LightGBM
                 cv = KFold(n_splits=3, shuffle=True, random_state=self.random_state)
@@ -1139,14 +1119,14 @@ class NBATotalPointsPredictor:
                     cv=cv, scoring='neg_mean_absolute_error', 
                     n_jobs=-1
                 )
-                
+
                 # Retornar el MAE negativo promedio (para minimizar)
                 return -cv_scores.mean()
-        
+
         # Ejecutar optimización
         try:
             logger.info(f"Iniciando optimización bayesiana para {model_name}...")
-            
+
             result = gp_minimize(
                 objective,
                 space,
@@ -1154,11 +1134,11 @@ class NBATotalPointsPredictor:
                 random_state=self.random_state,
                 verbose=False
             )
-            
+
             # Extraer mejores parámetros
             best_params = dict(zip([dim.name for dim in space], result.x))
             logger.info(f"Mejores parámetros para {model_name}: {best_params}")
-            
+
             # Crear modelo optimizado
             if model_name == 'xgboost':
                 optimized_model = xgb.XGBRegressor(
@@ -1187,7 +1167,7 @@ class NBATotalPointsPredictor:
                 )
             else:
                 return None
-            
+
             # Entrenar modelo con todos los datos
             if model_name == 'lightgbm':
                 # Para LightGBM, convertir X_train a DataFrame para mantener nombres de características
@@ -1195,11 +1175,11 @@ class NBATotalPointsPredictor:
                     X_train_df = pd.DataFrame(X_train, columns=self.feature_columns)
                 else:
                     X_train_df = X_train
-                
+
                 optimized_model.fit(X_train_df, y_train)
             else:
                 optimized_model.fit(X_train, y_train)
-            
+
             # Guardar historial de optimización
             self.optimization_history[model_name] = {
                 'best_params': best_params,
@@ -1207,16 +1187,16 @@ class NBATotalPointsPredictor:
                 'all_scores': [-y for y in result.func_vals],
                 'n_trials': self.n_optimization_trials
             }
-            
+
             return optimized_model
-            
+
         except Exception as e:
             logger.error(f"Error en optimización bayesiana para {model_name}: {str(e)}")
             return None
-    
+
     def _optuna_optimization(self, model_name: str, X_train, y_train):
         """Optimización con Optuna (más moderno que scikit-optimize)"""
-        
+
         def objective(trial):
             if model_name == 'xgboost':
                 params = {
@@ -1229,7 +1209,7 @@ class NBATotalPointsPredictor:
                     'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 10.0)
                 }
                 model = xgb.XGBRegressor(**params, random_state=self.random_state, n_jobs=-1)
-            
+
             elif model_name == 'lightgbm':
                 params = {
                     'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3),
@@ -1240,10 +1220,10 @@ class NBATotalPointsPredictor:
                     'min_child_samples': trial.suggest_int('min_child_samples', 5, 30)
                 }
                 model = lgb.LGBMRegressor(**params, random_state=self.random_state, n_jobs=-1, verbose=-1, feature_name='auto')
-            
+
             else:
                 return None
-            
+
             # Validación cruzada
             cv_scores = cross_val_score(
                 model, X_train, y_train,
@@ -1251,25 +1231,25 @@ class NBATotalPointsPredictor:
                 scoring='neg_mean_absolute_error',
                 n_jobs=-1
             )
-            
+
             return -cv_scores.mean()
-        
+
         # Crear estudio
         study = optuna.create_study(
             direction='minimize',
             sampler=TPESampler(seed=self.random_state)
         )
-        
+
         # Optimizar
         study.optimize(
             objective,
             n_trials=self.n_optimization_trials,
             show_progress_bar=True
         )
-        
+
         # Crear modelo con mejores parámetros
         best_params = study.best_params
-        
+
         if model_name == 'xgboost':
             optimized_model = xgb.XGBRegressor(
                 **best_params,
@@ -1284,22 +1264,22 @@ class NBATotalPointsPredictor:
                 verbose=-1,
                 feature_name='auto'  # Usar nombres automáticos para evitar advertencias
             )
-        
+
         # Entrenar
         optimized_model.fit(X_train, y_train)
-        
+
         # Guardar historial
         self.optimization_history[model_name] = {
             'best_params': best_params,
             'best_score': -study.best_value,
             'n_trials': len(study.trials)
         }
-        
+
         return optimized_model
-    
+
     def _random_search_optimization(self, model_name: str, X_train, y_train):
         """Optimización con búsqueda aleatoria como fallback"""
-        
+
         # Definir distribuciones de parámetros
         if model_name == 'xgboost':
             param_dist = {
@@ -1319,13 +1299,13 @@ class NBATotalPointsPredictor:
             }
         else:
             return None
-        
+
         # Crear modelo base
         if model_name == 'xgboost':
             base_model = xgb.XGBRegressor(random_state=self.random_state, n_jobs=-1)
         elif model_name == 'lightgbm':
             base_model = lgb.LGBMRegressor(random_state=self.random_state, n_jobs=-1, verbose=-1, feature_name='auto')
-        
+
         # Búsqueda aleatoria
         random_search = RandomizedSearchCV(
             base_model,
@@ -1336,35 +1316,35 @@ class NBATotalPointsPredictor:
             n_jobs=-1,
             random_state=self.random_state
         )
-        
+
         random_search.fit(X_train, y_train)
-        
+
         # Guardar historial
         self.optimization_history[model_name] = {
             'best_params': random_search.best_params_,
             'best_score': -random_search.best_score_
         }
-        
+
         return random_search.best_estimator_
-    
+
     def _train_ensemble_models(self, X_train, y_train, X_val, y_val) -> Dict:
         """Entrena modelos ensemble avanzados"""
         results = {}
-        
+
         # Seleccionar mejores modelos para ensemble
         best_models = []
         for name in ['xgboost', 'lightgbm', 'catboost', 'random_forest', 'extra_trees']:
             if name in self.optimized_models:
                 best_models.append((name, self.optimized_models[name]))
-        
+
         # Voting Regressor
         logger.info("Entrenando Voting Regressor...")
         voting_regressor = VotingRegressor(estimators=best_models)
         voting_regressor.fit(X_train, y_train)
-        
+
         voting_pred_train = voting_regressor.predict(X_train)
         voting_pred_val = voting_regressor.predict(X_val)
-        
+
         results['voting'] = {
             'train_mae': mean_absolute_error(y_train, voting_pred_train),
             'val_mae': mean_absolute_error(y_val, voting_pred_val),
@@ -1373,12 +1353,12 @@ class NBATotalPointsPredictor:
             'train_r2': r2_score(y_train, voting_pred_train),
             'val_r2': r2_score(y_val, voting_pred_val)
         }
-        
+
         self.ensemble_models['voting'] = voting_regressor
-        
+
         # Stacking Regressor
         logger.info("Entrenando Stacking Regressor...")
-        
+
         # Meta-learner
         meta_learner = xgb.XGBRegressor(
             n_estimators=100,
@@ -1386,18 +1366,18 @@ class NBATotalPointsPredictor:
             max_depth=3,
             random_state=self.random_state
         )
-        
+
         stacking_regressor = StackingRegressor(
             estimators=best_models,
             final_estimator=meta_learner,
             cv=3  # Para generar predicciones out-of-fold
         )
-        
+
         stacking_regressor.fit(X_train, y_train)
-        
+
         stacking_pred_train = stacking_regressor.predict(X_train)
         stacking_pred_val = stacking_regressor.predict(X_val)
-        
+
         results['stacking'] = {
             'train_mae': mean_absolute_error(y_train, stacking_pred_train),
             'val_mae': mean_absolute_error(y_val, stacking_pred_val),
@@ -1406,35 +1386,35 @@ class NBATotalPointsPredictor:
             'train_r2': r2_score(y_train, stacking_pred_train),
             'val_r2': r2_score(y_val, stacking_pred_val)
         }
-        
+
         self.ensemble_models['stacking'] = stacking_regressor
-        
+
         # Blending eliminado - no aportaba valor y tenía mal rendimiento
-        
+
         return results
-    
+
     def _perform_temporal_cross_validation(self, X, y) -> Dict:
         """Realiza validación cruzada temporal"""
-        
+
         cv_results = {}
-        
+
         # Modelos a evaluar
         models_to_evaluate = {
             'xgboost': self.optimized_models.get('xgboost', self.models.get('xgboost')),
             'lightgbm': self.optimized_models.get('lightgbm', self.models.get('lightgbm')),
             'stacking': self.ensemble_models.get('stacking')
         }
-        
+
         # Filtrar modelos None
         models_to_evaluate = {name: model for name, model in models_to_evaluate.items() 
                              if model is not None}
-        
+
         # Configurar validación cruzada temporal
         tscv = TimeSeriesSplit(n_splits=5)
-        
+
         for name, model in models_to_evaluate.items():
             logger.info(f"Validación cruzada temporal para {name}...")
-            
+
             try:
                 # Definir métricas a evaluar
                 scoring = {
@@ -1442,7 +1422,7 @@ class NBATotalPointsPredictor:
                     'neg_root_mean_squared_error': 'neg_root_mean_squared_error',
                     'r2': 'r2'
                 }
-                
+
                 # Preparar datos para LightGBM si es necesario
                 if name == 'lightgbm' and not isinstance(X, pd.DataFrame):
                     X_df = pd.DataFrame(X, columns=self.feature_columns)
@@ -1456,7 +1436,7 @@ class NBATotalPointsPredictor:
                         model, X, y, cv=tscv, scoring=scoring, 
                         return_train_score=True, n_jobs=-1
                     )
-                
+
                 # Guardar resultados
                 cv_results[name] = {
                     'train_mae': -cv_scores['train_neg_mean_absolute_error'].mean(),
@@ -1472,53 +1452,70 @@ class NBATotalPointsPredictor:
             except Exception as e:
                 logger.error(f"Error en validación cruzada para {name}: {str(e)}")
                 cv_results[name] = {'error': str(e)}
-        
+
         return cv_results
-    
+
     def _calculate_feature_importance(self) -> Dict:
         """Calcula importancia de características"""
         importance_dict = {}
-        
+
+        # Verificar que tenemos feature_columns
+        if not self.feature_columns:
+            logger.warning("feature_columns no disponible para calcular importancia")
+            return importance_dict
+
         # Modelos basados en árboles
         tree_models = ['xgboost', 'lightgbm', 'catboost', 'random_forest', 'extra_trees']
-        
+
         for name in tree_models:
             if name in self.optimized_models:
                 model = self.optimized_models[name]
-                
+
                 if hasattr(model, 'feature_importances_'):
-                    importance_dict[name] = pd.DataFrame({
-                        'feature': self.feature_columns,
-                        'importance': model.feature_importances_
-                    }).sort_values('importance', ascending=False)
-        
-        # Importancia promedio
+                    # Verificar que el número de importancias coincide con el número de features
+                    if len(model.feature_importances_) == len(self.feature_columns):
+                        importance_dict[name] = pd.DataFrame({
+                            'feature': self.feature_columns,
+                            'importance': model.feature_importances_
+                        }).sort_values('importance', ascending=False)
+                    else:
+                        logger.warning(f"Mismatch en número de features para {name}: "
+                                     f"importances={len(model.feature_importances_)}, "
+                                     f"columns={len(self.feature_columns)}")
+
+        # Importancia promedio normalizada
         if importance_dict:
             avg_importance = pd.DataFrame({'feature': self.feature_columns})
             avg_importance['importance'] = 0
-            
+
+            # Normalizar importancias de cada modelo antes de promediar
             for name, df in importance_dict.items():
                 feature_imp = df.set_index('feature')['importance']
-                avg_importance['importance'] += feature_imp.reindex(avg_importance['feature']).fillna(0)
-            
+                # Normalizar a escala 0-1
+                feature_imp_normalized = feature_imp / (feature_imp.max() + 1e-8)
+                reindexed_values = feature_imp_normalized.reindex(avg_importance['feature']).fillna(0).values
+                avg_importance['importance'] += reindexed_values
+
             avg_importance['importance'] /= len(importance_dict)
             avg_importance = avg_importance.sort_values('importance', ascending=False)
-            
+
             importance_dict['average'] = avg_importance
-        
+        else:
+            logger.warning("No se pudieron calcular importancias de features")
+
         return importance_dict
-    
+
     def _generate_training_report(self):
         """Genera reporte detallado de entrenamiento"""
-        
+
         logger.info("\n" + "="*80)
         logger.info("REPORTE DE ENTRENAMIENTO - MODELO DE PUNTOS TOTALES")
         logger.info("="*80)
-        
+
         # Mejores modelos individuales
         if 'individual_models' in self.training_results:
             logger.info("\nMEJORES MODELOS INDIVIDUALES:")
-            
+
             model_performance = []
             for name, metrics in self.training_results['individual_models'].items():
                 if 'val_mae' in metrics:
@@ -1528,9 +1525,9 @@ class NBATotalPointsPredictor:
                         'val_rmse': metrics['val_rmse'],
                         'val_r2': metrics['val_r2']
                     })
-            
+
             model_performance.sort(key=lambda x: x['val_mae'])
-            
+
             for i, perf in enumerate(model_performance[:5]):
                 logger.info(
                     f"{i+1}. {perf['model']:15s} - "
@@ -1538,11 +1535,11 @@ class NBATotalPointsPredictor:
                     f"RMSE: {perf['val_rmse']:.2f}, "
                     f"R²: {perf['val_r2']:.3f}"
                 )
-        
+
         # Modelos ensemble
         if 'ensemble_models' in self.training_results:
             logger.info("\nMODELOS ENSEMBLE:")
-            
+
             for name, metrics in self.training_results['ensemble_models'].items():
                 if 'val_mae' in metrics:
                     logger.info(
@@ -1551,29 +1548,29 @@ class NBATotalPointsPredictor:
                         f"RMSE: {metrics['val_rmse']:.2f}, "
                         f"R²: {metrics['val_r2']:.3f}"
                     )
-        
+
         # Validación cruzada
         if 'cross_validation' in self.training_results:
             logger.info("\nVALIDACIÓN CRUZADA TEMPORAL:")
-            
+
             for name, metrics in self.training_results['cross_validation'].items():
                 logger.info(
                     f"{name:15s} - "
                     f"MAE: {metrics['val_mae']:.2f} (±{metrics['mae_std']:.2f}), "
                     f"R²: {metrics['val_r2']:.3f} (±{metrics['r2_std']:.3f})"
                 )
-        
+
         # Top features
         if 'feature_importance' in self.training_results:
             if 'average' in self.training_results['feature_importance']:
                 logger.info("\nTOP 10 CARACTERÍSTICAS MÁS IMPORTANTES:")
-                
+
                 top_features = self.training_results['feature_importance']['average'].head(10)
                 for idx, row in top_features.iterrows():
                     logger.info(f"{row['feature']:40s} - {row['importance']:.4f}")
-        
+
         logger.info("="*80 + "\n")
-    
+
     def predict(self, df_teams: pd.DataFrame, df_players: pd.DataFrame = None,
                 model_name: str = 'stacking') -> np.ndarray:
         """
@@ -1589,14 +1586,14 @@ class NBATotalPointsPredictor:
         """
         # Generar features
         df_features = self.feature_engineer.create_features(df_teams, df_players)
-        
+
         # Preparar datos
         X = df_features[self.feature_columns] if self.feature_columns else df_features
         X_scaled = self.scaler.transform(X)
-        
+
         # Convertir a DataFrame para mantener nombres de características
         X_scaled_df = pd.DataFrame(X_scaled, columns=self.feature_columns)
-        
+
         # Seleccionar modelo
         if model_name in self.ensemble_models:
             model = self.ensemble_models[model_name]
@@ -1606,63 +1603,63 @@ class NBATotalPointsPredictor:
             model = self.models[model_name]
         else:
             raise ValueError(f"Modelo '{model_name}' no encontrado")
-        
+
         # Realizar predicción
         if model_name == 'lightgbm':
             predictions = model.predict(X_scaled_df)
         else:
             predictions = model.predict(X_scaled_df)  # Usar DataFrame para todos para consistencia
-        
+
         return predictions
-    
+
     def save_model(self, filepath: str = 'models/total_points_predictor.pkl'):
-        """Guarda el modelo entrenado como objeto directo"""
-        
-        # Verificar que hay un modelo ensemble entrenado para guardar
-        if not self.ensemble_models or 'stacking' not in self.ensemble_models:
-            raise ValueError("Modelo no entrenado. Ejecutar train() primero.")
-        
+        """Guarda el modelo completo"""
+
         # Crear directorio si no existe
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        
-        # Guardar SOLO el modelo ensemble principal como objeto directo usando JOBLIB con compresión
-        model_to_save = self.ensemble_models['stacking']
-        joblib.dump(model_to_save, filepath, compress=3, protocol=4)
-        logger.info(f"Modelo Total Points guardado como objeto directo (JOBLIB): {filepath}")
-    
+
+        # Preparar objeto para guardar
+        model_data = {
+            'feature_engineer': self.feature_engineer,
+            'feature_columns': self.feature_columns,
+            'scaler': self.scaler,
+            'optimized_models': self.optimized_models,
+            'ensemble_models': self.ensemble_models,
+            'training_results': self.training_results,
+            'optimization_history': self.optimization_history,
+            'metadata': {
+                'version': '1.0',
+                'training_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'n_features': len(self.feature_columns) if self.feature_columns else 0
+            }
+        }
+
+        # Guardar
+        joblib.dump(model_data, filepath)
+        logger.info(f"Modelo guardado en: {filepath}")
+
     @staticmethod
     def load_model(filepath: str = 'models/total_points_predictor.pkl'):
-        """Carga un modelo guardado (compatible con ambos formatos)"""
-        
+        """Carga un modelo guardado"""
+
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Archivo no encontrado: {filepath}")
-        
+
         # Cargar datos
         model_data = joblib.load(filepath)
-        
+
         # Crear instancia
         predictor = NBATotalPointsPredictor()
-        
-        # Verificar formato
-        if hasattr(model_data, 'predict'):
-            # Formato objeto directo (nuevo)
-            predictor.ensemble_models = {'stacking': model_data}
-            predictor.feature_engineer = None  # Se inicializa en __init__
-            predictor.feature_columns = []
-            predictor.scaler = None
-            predictor.optimized_models = {}
-            predictor.training_results = {}
-            predictor.optimization_history = {}
-            logger.info(f"Modelo Total Points (objeto directo) cargado desde: {filepath}")
-        else:
-            # Formato diccionario (legacy)
-            predictor.feature_engineer = model_data['feature_engineer']
-            predictor.feature_columns = model_data['feature_columns']
-            predictor.scaler = model_data['scaler']
-            predictor.optimized_models = model_data['optimized_models']
-            predictor.ensemble_models = model_data['ensemble_models']
-            predictor.training_results = model_data['training_results']
-            predictor.optimization_history = model_data.get('optimization_history', {})
-            logger.info(f"Modelo Total Points (formato legacy) cargado desde: {filepath}")
+
+        # Restaurar componentes
+        predictor.feature_engineer = model_data['feature_engineer']
+        predictor.feature_columns = model_data['feature_columns']
+        predictor.scaler = model_data['scaler']
+        predictor.optimized_models = model_data['optimized_models']
+        predictor.ensemble_models = model_data['ensemble_models']
+        predictor.training_results = model_data['training_results']
+        predictor.optimization_history = model_data.get('optimization_history', {})
+
+        logger.info(f"Modelo cargado desde: {filepath}")
         
         return predictor

@@ -101,44 +101,32 @@ class FinalEnsembleModel:
     
     def load_individual_models(self) -> Dict[str, Any]:
         """
-        Cargar todos los modelos individuales disponibles
+        Cargar todos los modelos individuales con sus FeatureEngineers
         
         Returns:
             Dict con modelos cargados exitosamente
         """
-        logger.info("Cargando modelos individuales...")
+        logger.info("Cargando modelos individuales con FeatureEngineers...")
         
-        # Descubrir modelos disponibles
-        available_models = self.model_registry.discover_available_models()
+        # Usar el nuevo registry para cargar modelos con feature engineers
+        self.loaded_models = self.model_registry.load_all_models()
         
-        # Cargar modelos habilitados
-        enabled_models = self.config.get_enabled_models()
-        loaded_count = 0
+        loaded_count = len(self.loaded_models)
+        total_configured = len(self.model_registry.model_configs)
         
-        for model_name, model_config in enabled_models.items():
-            if model_name in available_models and available_models[model_name]['status'] == 'available':
-                model = self.model_registry.load_model(model_name)
-                if model:
-                    self.loaded_models[model_name] = {
-                        'model': model,
-                        'config': model_config,
-                        'type': model_config.type
-                    }
-                    loaded_count += 1
-                    logger.info(f"✓ {model_name} cargado ({model_config.type})")
-                else:
-                    logger.warning(f"✗ Error cargando {model_name}")
-            else:
-                logger.warning(f"✗ {model_name} no disponible")
+        logger.info(f"Modelos cargados: {loaded_count}/{total_configured}")
         
-        logger.info(f"Modelos cargados: {loaded_count}/{len(enabled_models)}")
+        # Log detallado de modelos cargados
+        for model_name, model_data in self.loaded_models.items():
+            config = model_data['config']
+            logger.info(f"✓ {model_name}: {config['type']} → {config['target']}")
         
         return self.loaded_models
     
     def prepare_ensemble_data(self, df_players: pd.DataFrame, 
                             df_teams: pd.DataFrame) -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.Series]]:
         """
-        Preparar datos para ensemble separando por tipo de modelo
+        Preparar datos para ensemble usando predicciones de modelos individuales
         
         Args:
             df_players: DataFrame con datos de jugadores
@@ -147,74 +135,107 @@ class FinalEnsembleModel:
         Returns:
             Tuple con (features_dict, targets_dict) por tipo de modelo
         """
-        logger.info("Preparando datos para ensemble...")
+        logger.info("Preparando datos para ensemble usando predicciones de modelos individuales...")
         
         features_dict = {'regression': pd.DataFrame(), 'classification': pd.DataFrame()}
         targets_dict = {'regression': pd.Series(), 'classification': pd.Series()}
         
-        # Generar predicciones de modelos base
-        base_predictions = self._generate_base_predictions(df_players, df_teams)
+        # Generar predicciones de modelos base usando el nuevo registry
+        base_predictions = self.model_registry.get_predictions(df_players, df_teams)
         
-        # Organizar por tipo de modelo
-        regression_models = self.config.get_models_by_type('regression')
-        classification_models = self.config.get_models_by_type('classification')
+        if not base_predictions:
+            logger.error("No se pudieron generar predicciones de modelos base")
+            return features_dict, targets_dict
+        
+        # Separar modelos por tipo usando el nuevo ModelRegistry
+        regression_models = self.model_registry.get_models_by_type('regression')
+        classification_models = self.model_registry.get_models_by_type('classification')
         
         # Preparar features de regresión
         if regression_models and base_predictions:
             reg_features = []
             reg_targets = None
             feature_names = []
+            reference_target = None
             
-            for model_name, model_config in regression_models.items():
+            for model_name in regression_models.keys():
                 if model_name in base_predictions:
                     pred_data = base_predictions[model_name]
-                    reg_features.append(pred_data['predictions'])
-                    feature_names.append(model_name)
                     
-                    if reg_targets is None:
-                        reg_targets = pred_data['targets']
+                    # Verificar que las predicciones tienen el tamaño correcto
+                    if pred_data['n_samples'] > 0:
+                        reg_features.append(pred_data['predictions'])
+                        feature_names.append(f"pred_{model_name}")
+                        
+                        # Usar targets del primer modelo como referencia
+                        if reg_targets is None and pred_data['targets'] is not None:
+                            reg_targets = pred_data['targets']
+                            reference_target = pred_data['target_name']
+                            logger.info(f"Usando {model_name} como referencia para targets de regresión ({reference_target})")
             
             if reg_features:
-                features_dict['regression'] = pd.DataFrame(
-                    np.column_stack(reg_features),
-                    columns=feature_names
-                )
-                targets_dict['regression'] = pd.Series(reg_targets)
+                # Verificar que todas las features tienen el mismo tamaño
+                feature_sizes = [len(f) for f in reg_features]
+                if len(set(feature_sizes)) == 1:  # Todos del mismo tamaño
+                    features_dict['regression'] = pd.DataFrame(
+                        np.column_stack(reg_features),
+                        columns=feature_names
+                    )
+                    if reg_targets is not None:
+                        targets_dict['regression'] = pd.Series(reg_targets)
+                    logger.info(f"Features de regresión preparadas: {len(feature_names)} modelos, {len(reg_features[0])} muestras")
+                    logger.info(f"Modelos de regresión: {feature_names}")
+                else:
+                    logger.error(f"Tamaños de features de regresión incompatibles: {feature_sizes}")
         
         # Preparar features de clasificación
         if classification_models and base_predictions:
             clf_features = []
             clf_targets = None
             feature_names = []
+            reference_target = None
             
-            for model_name, model_config in classification_models.items():
+            for model_name in classification_models.keys():
                 if model_name in base_predictions:
                     pred_data = base_predictions[model_name]
                     
-                    # Para clasificación, usar probabilidades si están disponibles
-                    if 'probabilities' in pred_data and pred_data['probabilities'] is not None:
-                        clf_features.append(pred_data['probabilities'][:, 1])  # Clase positiva
-                    else:
+                    # Verificar que las predicciones tienen el tamaño correcto
+                    if pred_data['n_samples'] > 0:
                         clf_features.append(pred_data['predictions'])
-                    
-                    feature_names.append(model_name)
-                    
-                    if clf_targets is None:
-                        clf_targets = pred_data['targets']
+                        feature_names.append(f"pred_{model_name}")
+                        
+                        # Usar targets del primer modelo como referencia
+                        if clf_targets is None and pred_data['targets'] is not None:
+                            clf_targets = pred_data['targets']
+                            reference_target = pred_data['target_name']
+                            logger.info(f"Usando {model_name} como referencia para targets de clasificación ({reference_target})")
             
             if clf_features:
-                features_dict['classification'] = pd.DataFrame(
-                    np.column_stack(clf_features),
-                    columns=feature_names
-                )
-                targets_dict['classification'] = pd.Series(clf_targets)
+                # Verificar que todas las features tienen el mismo tamaño
+                feature_sizes = [len(f) for f in clf_features]
+                if len(set(feature_sizes)) == 1:  # Todos del mismo tamaño
+                    features_dict['classification'] = pd.DataFrame(
+                        np.column_stack(clf_features),
+                        columns=feature_names
+                    )
+                    if clf_targets is not None:
+                        targets_dict['classification'] = pd.Series(clf_targets)
+                    logger.info(f"Features de clasificación preparadas: {len(feature_names)} modelos, {len(clf_features[0])} muestras")
+                    logger.info(f"Modelos de clasificación: {feature_names}")
+                else:
+                    logger.error(f"Tamaños de features de clasificación incompatibles: {feature_sizes}")
         
-        logger.info(f"Datos preparados - Regresión: {len(features_dict['regression'])}, "
-                   f"Clasificación: {len(features_dict['classification'])}")
+        logger.info(f"RESUMEN: Datos preparados - Regresión: {len(features_dict['regression'])} features, "
+                   f"Clasificación: {len(features_dict['classification'])} features")
+        
+        # Log de modelos disponibles
+        logger.info(f"Predicciones generadas por: {list(base_predictions.keys())}")
+        logger.info(f"Modelos de regresión disponibles: {list(regression_models.keys())}")
+        logger.info(f"Modelos de clasificación disponibles: {list(classification_models.keys())}")
         
         return features_dict, targets_dict
     
-    def _generate_base_predictions(self, df_players: pd.DataFrame, 
+    def _generate_base_predictions_legacy(self, df_players: pd.DataFrame, 
                                  df_teams: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
         """
         Generar predicciones base de todos los modelos individuales
