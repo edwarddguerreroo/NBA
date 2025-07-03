@@ -104,6 +104,11 @@ class NBADataLoader:
         # Ordenar por equipo y fecha
         df = df.sort_values(['Team', 'Date'])
         
+        # Crear columna total_points (PTS + PTS_Opp) si no existe
+        if 'total_points' not in df.columns and 'PTS' in df.columns and 'PTS_Opp' in df.columns:
+            df['total_points'] = df['PTS'] + df['PTS_Opp']
+            logger.info("Columna total_points creada: PTS + PTS_Opp")
+        
         return df
     
     def _validate_game_data(self, df):
@@ -170,6 +175,11 @@ class NBADataLoader:
         
         # Calcular doble-dobles y triple-dobles
         df = calculate_double_triple_doubles(df)
+        
+        # Crear alias has_double_double para compatibilidad
+        if 'double_double' in df.columns and 'has_double_double' not in df.columns:
+            df['has_double_double'] = df['double_double']
+            logger.info("Alias has_double_double creado desde double_double")
         
         return df
     

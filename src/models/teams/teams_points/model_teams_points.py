@@ -1725,7 +1725,7 @@ class TeamPointsModel(BaseNBATeamModel):
         # Configurar ruta de guardado
         if save_path is None:
             os.makedirs("trained_models", exist_ok=True)
-            save_path = "trained_models/teams_points.joblib"
+            save_path = "trained_models/teams_points_backup.joblib"  # Cambiado para evitar duplicación
         
         # Preparar objeto del modelo para producción
         production_model = {
@@ -1785,7 +1785,7 @@ class TeamPointsModel(BaseNBATeamModel):
         logger.info(f"   • Dispositivo: {metadata['device_used']}")
     
     @staticmethod
-    def load_production_model(model_path: str = "trained_models/teams_points.joblib"):
+    def load_production_model(model_path: str = "trained_models/teams_points_backup.joblib"):
         """
         Carga un modelo de producción guardado.
         

@@ -102,7 +102,10 @@ class ASTDeepLearningPipeline:
         trainer = DLTrainer(config, model_type)
         
         start_time = time.time()
-        results = trainer.train(df, save_path=str(self.results_dir / save_filename))
+        # Guardar modelo en trained_models/
+        os.makedirs('trained_models', exist_ok=True)
+        model_save_path = os.path.join('trained_models', save_filename)
+        results = trainer.train(df, save_path=model_save_path)
         training_time = time.time() - start_time
         
         formatted_results = self._format_training_results(results, training_time)

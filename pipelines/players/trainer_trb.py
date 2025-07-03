@@ -678,8 +678,9 @@ MODELOS BASE:
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Guardar modelo
-        model_path = os.path.normpath(os.path.join(self.output_dir, 'xgboost_trb_model.joblib'))
+        # Guardar modelo en trained_models/
+        model_path = os.path.normpath(os.path.join('trained_models', 'xgboost_trb_model.joblib'))
+        os.makedirs('trained_models', exist_ok=True)
         self.model.save_model(model_path)
         
         # Guardar reporte completo
@@ -715,7 +716,7 @@ MODELOS BASE:
         
         # Crear resumen de archivos generados
         files_summary = {
-            'model_file': 'xgboost_trb_model.joblib',
+            'model_file': 'trained_models/xgboost_trb_model.joblib',
             'dashboard_image': 'model_dashboard_complete.png',
             'training_report': 'training_report.json',
             'predictions': 'predictions.csv',

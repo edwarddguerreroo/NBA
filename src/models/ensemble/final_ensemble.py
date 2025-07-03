@@ -62,13 +62,13 @@ class FinalEnsembleModel:
     """
     
     def __init__(self, config: Optional[EnsembleConfig] = None,
-                 models_path: str = "results"):
+                 models_path: str = "trained_models"):
         """
         Inicializar ensemble final
         
         Args:
             config: Configuración del ensemble
-            models_path: Ruta a los modelos entrenados
+            models_path: Ruta a los modelos entrenados (nueva ubicación: trained_models/)
         """
         self.config = config or EnsembleConfig()
         self.models_path = models_path
@@ -141,11 +141,28 @@ class FinalEnsembleModel:
         targets_dict = {'regression': pd.Series(), 'classification': pd.Series()}
         
         # Generar predicciones de modelos base usando el nuevo registry
-        base_predictions = self.model_registry.get_predictions(df_players, df_teams)
+        base_predictions_categorized = self.model_registry.get_predictions(df_players, df_teams)
         
-        if not base_predictions:
+        if not base_predictions_categorized:
             logger.error("No se pudieron generar predicciones de modelos base")
             return features_dict, targets_dict
+        
+        # Aplanar la estructura categorizada para compatibilidad
+        base_predictions = {}
+        if isinstance(base_predictions_categorized, dict):
+            for category, models in base_predictions_categorized.items():
+                if isinstance(models, dict):
+                    # Es estructura categorizada
+                    base_predictions.update(models)
+                else:
+                    # Es estructura plana
+                    base_predictions = base_predictions_categorized
+                    break
+        else:
+            base_predictions = base_predictions_categorized
+        
+        # CORRECCIÓN CRÍTICA: Alinear predicciones de diferentes granularidades
+        base_predictions = self._alinear_predicciones_ensemble(base_predictions)
         
         # Separar modelos por tipo usando el nuevo ModelRegistry
         regression_models = self.model_registry.get_models_by_type('regression')
@@ -234,6 +251,99 @@ class FinalEnsembleModel:
         logger.info(f"Modelos de clasificación disponibles: {list(classification_models.keys())}")
         
         return features_dict, targets_dict
+    
+    def _alinear_predicciones_ensemble(self, base_predictions):
+        """
+        Alinear predicciones de jugadores y equipos para el ensemble
+        Convierte predicciones de nivel jugador (55,901) a nivel equipo (5,226)
+        
+        PROBLEMA: Los modelos de jugadores generan 55,901 predicciones (nivel jugador-juego)
+                  Los modelos de equipos generan 5,226 predicciones (nivel equipo-juego)
+                  
+        SOLUCIÓN: Agregar las predicciones de jugadores al nivel de equipo
+        """
+        predictions_alineadas = {}
+        
+        logger.info("🔧 Alineando predicciones de diferentes granularidades...")
+        
+        for model_name, pred_data in base_predictions.items():
+            if not isinstance(pred_data, dict) or 'predictions' not in pred_data:
+                predictions_alineadas[model_name] = pred_data
+                continue
+                
+            predictions = pred_data['predictions']
+            n_samples = len(predictions)
+            
+            logger.info(f"  {model_name}: {n_samples} predicciones")
+            
+            # Si es de nivel jugador (>10,000), agregar a nivel equipo (5,226)
+            if n_samples > 10000:  # Asumimos que es nivel jugador
+                logger.info(f"    Convirtiendo de nivel jugador a nivel equipo...")
+                
+                # Calcular jugadores por equipo-juego
+                target_size = 5226  # Tamaño objetivo (equipos)
+                team_size = n_samples // target_size  # ~10-11 jugadores por equipo-juego
+                
+                team_predictions = []
+                
+                for i in range(0, len(predictions), team_size):
+                    group = predictions[i:i+team_size]
+                    if len(group) > 0:
+                        # Agregar según el tipo de estadística
+                        if model_name in ['pts', 'trb', 'ast']:
+                            # Estadísticas aditivas: sumar las predicciones de jugadores
+                            team_pred = np.sum(group)
+                        elif model_name in ['3pt']:
+                            # Estadísticas de triples: sumar también (total de triples del equipo)
+                            team_pred = np.sum(group)
+                        elif model_name == 'double_double':
+                            # Double-doubles: proporción o cantidad total
+                            team_pred = np.sum(group)  # Total de double-doubles del equipo
+                        else:
+                            # Por defecto: promedio
+                            team_pred = np.mean(group)
+                        
+                        team_predictions.append(team_pred)
+                
+                # Ajustar al tamaño exacto
+                if len(team_predictions) > target_size:
+                    team_predictions = team_predictions[:target_size]
+                elif len(team_predictions) < target_size:
+                    # Extender con el promedio si faltan
+                    avg_pred = np.mean(team_predictions) if team_predictions else 0
+                    team_predictions.extend([avg_pred] * (target_size - len(team_predictions)))
+                
+                # Actualizar predicción alineada
+                pred_data_aligned = pred_data.copy()
+                pred_data_aligned['predictions'] = np.array(team_predictions)
+                pred_data_aligned['n_samples'] = len(team_predictions)
+                
+                # Recalcular estadísticas
+                pred_data_aligned['prediction_stats'] = {
+                    'min': float(np.min(team_predictions)),
+                    'max': float(np.max(team_predictions)),
+                    'mean': float(np.mean(team_predictions)),
+                    'std': float(np.std(team_predictions))
+                }
+                
+                predictions_alineadas[model_name] = pred_data_aligned
+                logger.info(f"    ✅ {n_samples} → {len(team_predictions)} predicciones")
+                
+            else:
+                # Ya es nivel equipo, mantener tal como está
+                predictions_alineadas[model_name] = pred_data
+                logger.info(f"    ✅ Mantenido (ya es nivel equipo)")
+        
+        # Verificar alineación final
+        tamaños = [pred_data.get('n_samples', 0) for pred_data in predictions_alineadas.values() if isinstance(pred_data, dict)]
+        tamaños_unicos = set(tamaños)
+        
+        if len(tamaños_unicos) == 1:
+            logger.info(f"✅ Todas las predicciones alineadas: {list(tamaños_unicos)[0]} muestras")
+        else:
+            logger.warning(f"⚠️  Tamaños aún desalineados: {tamaños_unicos}")
+        
+        return predictions_alineadas
     
     def _generate_base_predictions_legacy(self, df_players: pd.DataFrame, 
                                  df_teams: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
@@ -737,7 +847,7 @@ class FinalEnsembleModel:
         logger.info(f"Ensemble guardado como objeto directo (JOBLIB): {filepath}")
     
     @classmethod
-    def load_ensemble(cls, filepath: str, models_path: str = "results"):
+    def load_ensemble(cls, filepath: str, models_path: str = "trained_models"):
         """Cargar ensemble desde archivo con compatibilidad para ambos formatos (JOBLIB prioritario)"""
         try:
             # Intentar cargar con JOBLIB primero (formato estándar)

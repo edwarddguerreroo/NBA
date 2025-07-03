@@ -745,8 +745,9 @@ THRESHOLD OPTIMIZADO:
         # Asegurar que el directorio de salida existe
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Guardar modelo entrenado con protocolo corregido
-        model_path = os.path.join(self.output_dir, "dd_model.joblib")
+        # Guardar modelo entrenado con protocolo corregido en trained_models/
+        model_path = os.path.join('trained_models', "dd_model.joblib")
+        os.makedirs('trained_models', exist_ok=True)
         try:
             if hasattr(self.model, 'stacking_model') and self.model.stacking_model is not None:
                 # Guardar solo el stacking model con protocolo correcto

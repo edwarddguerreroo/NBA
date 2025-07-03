@@ -840,7 +840,10 @@ class AssistsFeatureEngineer:
         # 10. FRECUENCIA DE JUEGOS DE ALTO IMPACTO (AST >= 7)
         high_ast_games = df.groupby('Player').apply(
             lambda x: (x['AST'].shift(1) >= 7).rolling(10, min_periods=1).mean()
-        ).reset_index(level=0, drop=True).fillna(0)
+        )
+        if isinstance(high_ast_games, pd.DataFrame):
+            high_ast_games = high_ast_games.iloc[:, 0]  # Tomar primera columna si es DataFrame
+        high_ast_games = high_ast_games.reset_index(level=0, drop=True).fillna(0)
         df['high_assist_game_freq'] = high_ast_games
         features.append('high_assist_game_freq')
         
@@ -1270,7 +1273,10 @@ class AssistsFeatureEngineer:
             lambda x: x['AST'].rolling(10, min_periods=1).apply(
                 lambda s: calculate_streak(s > s.mean()), raw=False
             ).shift(1)
-        ).reset_index(level=0, drop=True)
+        )
+        if isinstance(hot_streak, pd.DataFrame):
+            hot_streak = hot_streak.iloc[:, 0]  # Tomar primera columna si es DataFrame
+        hot_streak = hot_streak.reset_index(level=0, drop=True)
         
         df['ast_streak_factor'] = hot_streak.fillna(0)
         features.append('ast_streak_factor')
