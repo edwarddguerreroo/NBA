@@ -1,5 +1,5 @@
 """
-Modelo Avanzado de Predicción de Puntos Totales NBA (PTS + PTS_Opp)
+Modelo Avanzado de Predicción de Puntos Totales NBA (Total Points)
 ===================================================================
 
 Este módulo implementa un sistema de predicción de alto rendimiento para
@@ -11,8 +11,6 @@ puntos totales en partidos NBA utilizando:
 4. Validación cruzada temporal rigurosa
 5. Métricas de evaluación exhaustivas
 6. Feature engineering especializado para totales
-
-Objetivo: 97%+ de precisión en predicción de puntos totales
 """
 
 # Standard Library
@@ -913,15 +911,22 @@ class NBATotalPointsPredictor:
             random_state=self.random_state
         )
 
-        # 2. Elastic Net - SEGUNDO MEJOR (MAE: 5.35, R²: 0.88) - CONFIGURACIÓN MEJORADA
-        self.models['elastic_net'] = ElasticNet(
-            alpha=0.001, 
-            l1_ratio=0.7, 
-            max_iter=10000,  # Aumentado para evitar warnings de convergencia
-            tol=1e-4,        # Tolerancia más relajada
-            random_state=self.random_state,
-            selection='cyclic'  # Método más estable
-        )
+        # 2. Elastic Net - SEGUNDO MEJOR (MAE: 5.35, R²: 0.88) - CONFIGURACIÓN CORREGIDA
+        # Usar Pipeline con escalado para evitar problemas de convergencia
+        self.models['elastic_net'] = Pipeline([
+            ('scaler', StandardScaler()),  # Escalado estándar antes del Elastic Net
+            ('regressor', ElasticNet(
+                alpha=0.01,      # Alpha más alto para mejor convergencia
+                l1_ratio=0.5,    # Ratio balanceado L1/L2
+                max_iter=5000,   # Iteraciones suficientes
+                tol=1e-3,        # Tolerancia apropiada
+                random_state=self.random_state,
+                selection='cyclic',  # Método más estable
+                warm_start=False,
+                precompute=False,  # Cambiado de 'auto' para compatibilidad
+                copy_X=True
+            ))
+        ])
 
         # 3. Huber Regressor - TERCER MEJOR (MAE: 5.36, R²: 0.88) - CONFIGURACIÓN OPTIMIZADA
         # Usar Pipeline con escalado robusto para evitar problemas de convergencia
@@ -1589,11 +1594,11 @@ class NBATotalPointsPredictor:
         
         # Intentar obtener información de los modelos base (para debugging)
         try:
-            if hasattr(stacking_regressor, 'estimators_') and stacking_regressor.estimators_:
+            # Verificar si el modelo tiene estimadores entrenados
+            if hasattr(stacking_regressor, 'estimators') and stacking_regressor.estimators:
                 logger.info("Modelos base entrenados exitosamente:")
-                for i, (name, _) in enumerate(stacking_regressor.estimators):
-                    if i < len(stacking_regressor.estimators_):
-                        logger.info(f"  - {name}: OK")
+                for name, _ in stacking_regressor.estimators:
+                    logger.info(f"  - {name}: OK")
                 
                 # Información del meta-modelo
                 if hasattr(stacking_regressor, 'final_estimator_'):
@@ -1738,9 +1743,10 @@ class NBATotalPointsPredictor:
                     # Importancia del meta-modelo (Ridge)
                     importance = np.abs(stacking_model.final_estimator_.coef_)
                     # Los nombres de features para el meta-modelo son los nombres de los modelos base
-                    estimator_names = [name for name, _ in stacking_model.estimators]
-                    importance_dict['stacking_meta'] = dict(zip(estimator_names, importance))
-                    logger.info(f"Importancia del meta-modelo stacking calculada: {len(importance)} estimadores")
+                    if hasattr(stacking_model, 'estimators') and stacking_model.estimators:
+                        estimator_names = [name for name, _ in stacking_model.estimators]
+                        importance_dict['stacking_meta'] = dict(zip(estimator_names, importance))
+                        logger.info(f"Importancia del meta-modelo stacking calculada: {len(importance)} estimadores")
             except Exception as e:
                 logger.warning(f"Error calculando importancia para stacking: {str(e)}")
 

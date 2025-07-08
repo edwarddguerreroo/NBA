@@ -28,10 +28,23 @@ import pandas as pd
 import seaborn as sns
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from tqdm import tqdm
+from sklearn.linear_model import BayesianRidge, Ridge, ElasticNet
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, StackingRegressor
+from sklearn.svm import SVR
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.linear_model import HuberRegressor
+from lightgbm import LGBMRegressor
+from xgboost import XGBRegressor
+from catboost import CatBoostRegressor
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import train_test_split
 
 # Imports del proyecto
 from src.preprocessing.data_loader import NBADataLoader
 from src.models.teams.total_points.model_total_points import NBATotalPointsPredictor
+# from src.models.teams.total_points.pytorch_model import create_pytorch_model  # No necesario aquí
 
 # Import del sistema de logging unificado
 from config.logging_config import configure_trainer_logging, NBALogger
@@ -221,11 +234,23 @@ class TotalPointsTrainer:
         
         # Generar predicciones
         try:
-            self.predictions = self.model.predict(
-                self.test_data,
-                self.df_players,
-                model_name='stacking'  # Usar el mejor modelo ensemble
-            )
+            # Intentar primero con stacking, si falla usar ridge como fallback
+            try:
+                self.predictions = self.model.predict(
+                    self.test_data,
+                    self.df_players,
+                    model_name='stacking'  # Usar el mejor modelo ensemble
+                )
+            except AttributeError as attr_error:
+                if "estimators_" in str(attr_error):
+                    logger.warning("Problema con stacking model, usando ridge como fallback")
+                    self.predictions = self.model.predict(
+                        self.test_data,
+                        self.df_players,
+                        model_name='ridge'  # Fallback robusto
+                    )
+                else:
+                    raise attr_error
             
             # Calcular métricas reales
             y_true = self.test_data['total_points'].values

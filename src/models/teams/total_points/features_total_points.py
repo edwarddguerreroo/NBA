@@ -37,18 +37,58 @@ class TotalPointsFeatureEngine:
 
     def __init__(self, lookback_games: int = 10):
         """
-        Inicializa el motor de features.
+        Inicializa el motor de características para puntos totales.
         
         Args:
-            lookback_games: Número de juegos hacia atrás para cálculos históricos
+            lookback_games: Número de juegos históricos a considerar
         """
         self.lookback_games = lookback_games
-        self.feature_columns = None
         self.scaler = StandardScaler()
-        # Cache para evitar recálculos
-        self._cached_calculations = {}
-        # Estadísticas de validación
-        self._validation_stats = {}
+        self.feature_columns = []
+
+    def generate_all_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        MÉTODO ESTÁNDAR - Genera todas las features para total_points siguiendo el patrón del proyecto.
+        Mantiene consistencia con teams_points, is_win, pts, trb, ast, dd, y triples.
+        
+        Args:
+            df: DataFrame con datos de equipos
+            
+        Returns:
+            Lista de nombres de features generadas (excluyendo target y columnas auxiliares)
+        """
+        logger.info("Generando features NBA OPTIMIZADAS para predicción de puntos totales...")
+        
+        if df.empty:
+            logger.warning("DataFrame vacío recibido")
+            return []
+        
+        # Usar create_features existente que ya implementa toda la lógica
+        df_processed = self.create_features(df.copy())
+        
+        # Compilar lista de features siguiendo el patrón estándar del proyecto
+        excluded_columns = {
+            # Columnas de identificación
+            'Team', 'Date', 'Away', 'Opp', 'Result', 'MP',
+            # Target y componentes (evitar data leakage)
+            'PTS', 'PTS_Opp', 'total_points',
+            # Estadísticas básicas de tiro (pueden causar data leakage si no tienen shift)
+            'FG', 'FGA', 'FG%', '2P', '2PA', '2P%', '3P', '3PA', '3P%', 
+            'FT', 'FTA', 'FT%', 'FG_Opp', 'FGA_Opp', 'FG%_Opp', 
+            '2P_Opp', '2PA_Opp', '2P%_Opp', '3P_Opp', '3PA_Opp', '3P%_Opp',
+            'FT_Opp', 'FTA_Opp', 'FT%_Opp',
+            # Variables auxiliares y categóricas
+            'season', 'temp_oct_first'
+        }
+        
+        # Obtener todas las features válidas
+        all_features = [col for col in df_processed.columns if col not in excluded_columns]
+        
+        # Aplicar filtros de ruido específicos para total_points
+        clean_features = self._apply_noise_filters(df_processed, all_features)
+        
+        logger.info(f"Generadas {len(clean_features)} características OPTIMIZADAS para puntos totales")
+        return clean_features
 
     def create_features(self, df_teams: pd.DataFrame, df_players: pd.DataFrame = None) -> pd.DataFrame:
         """
@@ -75,6 +115,24 @@ class TotalPointsFeatureEngine:
         # Aplicar transformaciones básicas
         df = self._apply_base_calculations(df)
 
+        # Crear características básicas del equipo (medias móviles, std, etc.)
+        df = self._create_team_basic_features(df)
+
+        # Crear características de momentum
+        df = self._create_momentum_features(df)
+
+        # Crear características de eficiencia
+        df = self._create_efficiency_features(df)
+
+        # Crear características de pace
+        df = self._create_pace_features(df)
+
+        # Crear características situacionales
+        df = self._create_situational_features(df)
+
+        # Crear características de interacción
+        df = self._create_interaction_features(df)
+
         # Crear características de oponentes
         df = self._create_opponent_features(df)
 
@@ -91,9 +149,6 @@ class TotalPointsFeatureEngine:
         # Crear características de porcentajes de tiro
         df = self._create_shooting_percentage_features(df)
 
-        # Crear características de patrones de mercado (NUEVA FUNCIÓN)
-        df = self._create_market_pattern_features(df)
-        
         # Crear características avanzadas
         df = self._create_advanced_features(df)
 
@@ -170,62 +225,54 @@ class TotalPointsFeatureEngine:
             return None
 
     def _apply_base_calculations(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Aplica cálculos básicos y transformaciones iniciales al DataFrame"""
-
-        if df.empty:
-            return df
-
-        # Asegurar que tenemos las columnas necesarias
-        required_cols = ['Team', 'Opp', 'PTS', 'PTS_Opp']
-        if not all(col in df.columns for col in required_cols):
-            missing = [col for col in required_cols if col not in df.columns]
-            logger.warning(f"Faltan columnas requeridas: {missing}")
-            return df
-
-        # Ordenar cronológicamente si hay fecha disponible
+        """
+        Aplica cálculos básicos en lugar para evitar duplicaciones.
+        """
+        # Ordenar cronológicamente PRIMERO
         if 'Date' in df.columns:
-            df = df.sort_values(['Team', 'Date'])
-
-        # Crear características básicas
-        if 'total_points' not in df.columns:
-            df['total_points'] = df['PTS'] + df['PTS_Opp']
-
-        # Características de victoria/derrota
-        if 'is_win' not in df.columns:
-            df['is_win'] = (df['PTS'] > df['PTS_Opp']).astype(int)
-
-        # Características de local/visitante
-        if 'is_home' not in df.columns and '@' in df.columns:
-            df['is_home'] = (~df['@']).astype(int)
-        elif 'is_home' not in df.columns:
-            logger.warning("No se pudo determinar local/visitante")
-
-        # Días de descanso
+            df['Date'] = pd.to_datetime(df['Date'])
+            df.sort_values(['Team', 'Date'], inplace=True)
+            df.reset_index(drop=True, inplace=True)
+        
+        # ================= CÁLCULOS TEMPORALES =================
         if 'Date' in df.columns:
-            df['days_rest'] = df.groupby('Team')['Date'].diff().dt.days.fillna(3).clip(upper=5)
-
-        # Día de la semana
-        if 'Date' in df.columns and 'day_of_week' not in df.columns:
+            df['days_rest'] = df.groupby('Team')['Date'].diff().dt.days.fillna(2)
             df['day_of_week'] = df['Date'].dt.dayofweek
-            df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
-
-        # Mes
-        if 'Date' in df.columns and 'month' not in df.columns:
             df['month'] = df['Date'].dt.month
-
-        # Día de la temporada
-        if 'Date' in df.columns and 'day_of_season' not in df.columns:
-            # Asumir que la temporada comienza en octubre (mes 10)
-            df['season'] = df['Date'].dt.year
-            oct_first = pd.to_datetime(df['season'].astype(str) + '-10-01')
-
-            # Método alternativo para ajustar fechas sin usar itertuples
-            df['temp_oct_first'] = oct_first
-            mask = df['Date'] < df['temp_oct_first']
-            df.loc[mask, 'temp_oct_first'] = pd.to_datetime((df.loc[mask, 'season'] - 1).astype(str) + '-10-01')
-            df['day_of_season'] = (df['Date'] - df['temp_oct_first']).dt.days
-            df.drop('temp_oct_first', axis=1, inplace=True)
-
+            df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
+            
+            # Progreso en temporada
+            season_start = df['Date'].min()
+            df['days_into_season'] = (df['Date'] - season_start).dt.days
+            df['season_progress'] = df['days_into_season'] / 180  # Temporada ~180 días
+            df['season_progress'] = df['season_progress'].clip(0, 1)
+            
+            # Características trigonométricas para capturar ciclos estacionales
+            df['day_of_season_sin'] = np.sin(2 * np.pi * df['season_progress'])
+            df['day_of_season_cos'] = np.cos(2 * np.pi * df['season_progress'])
+            
+            # Fases de temporada
+            df['phase_early'] = (df['season_progress'] < 0.25).astype(int)
+            df['phase_early_mid'] = ((df['season_progress'] >= 0.25) & (df['season_progress'] < 0.5)).astype(int)
+            df['phase_mid'] = ((df['season_progress'] >= 0.5) & (df['season_progress'] < 0.6)).astype(int)
+            df['phase_late_mid'] = ((df['season_progress'] >= 0.6) & (df['season_progress'] < 0.75)).astype(int)
+            df['phase_late'] = (df['season_progress'] >= 0.75).astype(int)
+            df['season_phase_numeric'] = df['season_progress'] * 4  # 0-4 scale
+        
+        # ================= CÁLCULOS BÁSICOS DE POSESIONES NBA =================
+        # Estimación de posesiones usando fórmula NBA aproximada (sin TOV disponible)
+        if 'FGA' in df.columns and 'FTA' in df.columns:
+            df['possessions'] = df['FGA'] + df['FTA'] * 0.44
+            df['opp_possessions'] = df['FGA_Opp'] + df['FTA_Opp'] * 0.44
+            
+            # Pace aproximado (posesiones por 48 minutos)
+            df['pace_approx'] = (df['possessions'] + df['opp_possessions']) / 2
+            
+            # Eficiencias ofensiva y defensiva aproximadas
+            if 'PTS' in df.columns:
+                df['off_rating_approx'] = (df['PTS'] / (df['possessions'] + 1e-6)) * 100
+                df['def_rating_approx'] = (df['PTS_Opp'] / (df['opp_possessions'] + 1e-6)) * 100
+        
         return df
 
     def _create_team_basic_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -327,6 +374,25 @@ class TotalPointsFeatureEngine:
                 lambda x: (x['PTS'] + x['PTS_Opp']).pct_change(periods=periods).shift(1)
             ).reset_index(level=0, drop=True)
 
+        # Transformaciones matemáticas de momentum (movidas desde _create_advanced_features)
+        df['pts_momentum_squared'] = df.groupby('Team')['PTS'].transform(
+            lambda x: x.diff(1).pow(2).shift(1)
+        )
+        df['pts_momentum_sqrt'] = df.groupby('Team')['PTS'].transform(
+            lambda x: (x.diff(1).abs().pow(0.5) * np.sign(x.diff(1))).shift(1)
+        )
+        df['pts_momentum_log'] = df.groupby('Team')['PTS'].transform(
+            lambda x: (np.log1p(x.diff(1).abs()) * np.sign(x.diff(1))).shift(1)
+        )
+
+        # Aceleración (movidas desde _create_advanced_features)
+        df['pts_acceleration'] = df.groupby('Team')['PTS'].transform(
+            lambda x: x.diff(1).diff(1).shift(1)
+        )
+        df['total_pts_acceleration'] = df.groupby('Team')['total_points'].transform(
+            lambda x: x.diff(1).diff(1).shift(1)
+        )
+
         # Consistencia (coeficiente de variación)
         df['pts_consistency'] = df.groupby('Team').apply(
             lambda x: (x['PTS'].rolling(10, min_periods=3).std() / 
@@ -338,7 +404,7 @@ class TotalPointsFeatureEngine:
                       (x['PTS'] + x['PTS_Opp']).rolling(10, min_periods=3).mean()).shift(1)
         ).reset_index(level=0, drop=True)
 
-        logger.info(f"Features de momentum creadas: {len([col for col in df.columns if 'momentum' in col or 'streak' in col])}")
+        logger.info(f"Features de momentum consolidadas: {len([col for col in df.columns if 'momentum' in col or 'streak' in col or 'acceleration' in col])}")
 
         return df
 
@@ -958,20 +1024,8 @@ class TotalPointsFeatureEngine:
         # Componentes de fecha ya creados en base calculations
         # Agregar features adicionales
 
-        # Fase de la temporada
-        if 'day_of_season' in df.columns:
-            # Usar pd.cut de manera más eficiente
-            df['season_phase'] = pd.cut(df['day_of_season'], 
-                                       bins=[0, 30, 60, 120, 180, 365],
-                                       labels=['early', 'early_mid', 'mid', 'late_mid', 'late'])
-
-            # Crear dummies de manera más eficiente sin concatenar
-            phase_dummies = pd.get_dummies(df['season_phase'], prefix='phase')
-            for col in phase_dummies.columns:
-                df[col] = phase_dummies[col]
-
-            # Porcentaje de temporada completado
-            df['season_progress'] = df['day_of_season'] / 365
+        # NOTA: Características de temporada ya creadas en _apply_base_calculations:
+        # season_progress, season_phase_numeric, phase_early, phase_mid, etc.
 
         # Asegurar que Date es datetime
         if not pd.api.types.is_datetime64_any_dtype(df['Date']):
@@ -1476,20 +1530,12 @@ class TotalPointsFeatureEngine:
         if 'Date' in df.columns:
             df = df.sort_values(['Team', 'Date'])
 
-            # Tendencias no lineales
-            df['pts_momentum_squared'] = df.groupby('Team')['PTS'].diff(1).pow(2)
-            df['pts_momentum_sqrt'] = df.groupby('Team')['PTS'].diff(1).abs().pow(0.5) * np.sign(df.groupby('Team')['PTS'].diff(1))
-            df['pts_momentum_log'] = np.log1p(df.groupby('Team')['PTS'].diff(1).abs()) * np.sign(df.groupby('Team')['PTS'].diff(1))
+            # NOTA: Features de momentum y aceleración movidas a _create_momentum_features 
+            # para evitar duplicación
 
-            # Características de aceleración (cambio en la tendencia)
-            df['pts_acceleration'] = df.groupby('Team')['PTS'].diff(1).diff(1)
-            df['total_pts_acceleration'] = df.groupby('Team')['total_points'].diff(1).diff(1)
-
-            # Características de volatilidad
-            window_sizes = [5, 10, 15]
-            for window in window_sizes:
-                df[f'pts_volatility_{window}'] = df.groupby('Team')['PTS'].rolling(window=window).std().reset_index(level=0, drop=True)
-                df[f'total_pts_volatility_{window}'] = df.groupby('Team')['total_points'].rolling(window=window).std().reset_index(level=0, drop=True)
+            # NOTA: Features de volatilidad (std) ya existen en _create_team_basic_features 
+            # como pts_std_5, pts_std_10, pts_std_15 y total_pts_std_5, etc.
+            # No duplicar aquí para evitar redundancia
 
         # Características de matchup avanzadas
         if 'Opp' in df.columns:
@@ -1518,30 +1564,20 @@ class TotalPointsFeatureEngine:
             # Indicador de experiencia en el matchup
             df['matchup_experience'] = np.log1p(df['total_points_count'])
 
-        # Características de forma y tendencia
+        # Características de forma y tendencia (USANDO FEATURES EXISTENTES con shift)
         if 'Date' in df.columns and 'PTS' in df.columns:
-            # Forma reciente (últimos N partidos vs promedio de temporada)
+            # Las medias móviles siempre existen a esta altura del procesamiento
             for window in [3, 5, 10]:
-                # Calcular promedio móvil
-                df[f'pts_ma_{window}'] = df.groupby('Team')['PTS'].transform(
-                    lambda x: x.rolling(window=window, min_periods=1).mean()
-                )
-
-                # Comparar con promedio de temporada
+                # Comparar con promedio de temporada (usando features existentes)
                 pts_form = df.groupby('Team').apply(
-                    lambda x: x[f'pts_ma_{window}'] / x['PTS'].expanding().mean()
+                    lambda x: x[f'pts_ma_{window}'] / x['PTS'].expanding().mean().shift(1)
                 )
                 if isinstance(pts_form, pd.DataFrame):
                     pts_form = pts_form.iloc[:, 0]  # Tomar primera columna si es DataFrame
                 df[f'pts_form_{window}'] = pts_form.reset_index(level=0, drop=True)
 
-                # Lo mismo para puntos totales
-                df[f'total_pts_ma_{window}'] = df.groupby('Team')['total_points'].transform(
-                    lambda x: x.rolling(window=window, min_periods=1).mean()
-                )
-
                 total_pts_form = df.groupby('Team').apply(
-                    lambda x: x[f'total_pts_ma_{window}'] / x['total_points'].expanding().mean()
+                    lambda x: x[f'total_pts_ma_{window}'] / x['total_points'].expanding().mean().shift(1)
                 )
                 if isinstance(total_pts_form, pd.DataFrame):
                     total_pts_form = total_pts_form.iloc[:, 0]  # Tomar primera columna si es DataFrame
@@ -1556,19 +1592,10 @@ class TotalPointsFeatureEngine:
                 df['home_streak_interaction'] = df['is_home'] * df['win_streak']
                 df['rest_streak_interaction'] = df['days_rest'] * df['win_streak']
 
-        # Características polinomiales para variables numéricas clave (CORREGIDAS)
-        if 'total_pts_ma_5' in df.columns:
-            # Normalizar antes de aplicar transformaciones polinomiales para evitar valores extremos
-            total_pts_normalized = (df['total_pts_ma_5'] - df['total_pts_ma_5'].mean()) / (df['total_pts_ma_5'].std() + 1e-8)
-            df['total_pts_ma_5_squared'] = np.clip(total_pts_normalized ** 2, -100, 100)
-            df['total_pts_ma_5_cubed'] = np.clip(total_pts_normalized ** 3, -100, 100)
-
-        # Características cíclicas para variables temporales
-        if 'day_of_season' in df.columns:
-            # Transformar día de temporada a características cíclicas
-            df['day_of_season_sin'] = np.sin(2 * np.pi * df['day_of_season'] / 365)
-            df['day_of_season_cos'] = np.cos(2 * np.pi * df['day_of_season'] / 365)
-
+        # Características polinomiales para variables numéricas clave
+        total_pts_normalized = (df['total_pts_ma_5'] - df['total_pts_ma_5'].mean()) / (df['total_pts_ma_5'].std() + 1e-8)
+        df['total_pts_ma_5_squared'] = np.clip(total_pts_normalized ** 2, -100, 100)
+        df['total_pts_ma_5_cubed'] = np.clip(total_pts_normalized ** 3, -100, 100)
 
         # 1. Análisis de tendencias de puntos totales con regresión polinomial
         if 'total_points' in df.columns:
@@ -1600,8 +1627,8 @@ class TotalPointsFeatureEngine:
                         df.loc[df['Team'] == team, 'total_pts_trend_const'] = team_data['total_points'].mean()
                         df.loc[df['Team'] == team, 'total_pts_trend_residuals'] = team_data['total_points'].std()
 
-        # 2. Análisis de patrones de ritmo de juego
-        if all(col in df.columns for col in ['pace_ma_5', 'total_pts_ma_5']):
+        # 2. Análisis de patrones de ritmo de juego  
+        if 'pace_ma_5' in df.columns:
             # Correlación entre ritmo y puntos totales (ventana móvil)
             for team in df['Team'].unique():
                 team_data = df[df['Team'] == team].sort_values('Date') if 'Date' in df.columns else df[df['Team'] == team]
@@ -1623,42 +1650,48 @@ class TotalPointsFeatureEngine:
 
         # 3. Características de calendario y descanso avanzadas
         if 'days_rest' in df.columns:
-            # Efecto acumulativo del descanso (media móvil de días de descanso)
+            # Efecto acumulativo del descanso (CON SHIFT para evitar data leakage)
             df['rest_ma_5'] = df.groupby('Team')['days_rest'].transform(
-                lambda x: x.rolling(window=5, min_periods=1).mean()
+                lambda x: x.rolling(window=5, min_periods=1).mean().shift(1)
             )
 
             # Efecto de fatiga (inverso del descanso acumulado)
             df['fatigue_factor'] = 1 / (df['rest_ma_5'] + 1)
 
             # Interacción entre fatiga y puntos totales históricos
-            if 'total_pts_ma_5' in df.columns:
-                df['fatigue_total_pts_interaction'] = df['fatigue_factor'] * df['total_pts_ma_5']
+            df['fatigue_total_pts_interaction'] = df['fatigue_factor'] * df['total_pts_ma_5']
 
-        # 4. Análisis de matchup específico para puntos totales
+        # 4. Análisis de matchup específico para puntos totales (CORREGIDO - SIN DATA LEAKAGE)
         if 'matchup_id' in df.columns and 'total_points' in df.columns:
-            # Calcular desviación de cada matchup respecto a los promedios de los equipos
+            # Calcular desviación histórica usando solo datos pasados
             matchup_deviations = []
 
-            for idx, row in df.iterrows():
+            # Ordenar por fecha para procesar cronológicamente
+            df_sorted = df.sort_values(['Team', 'Date']) if 'Date' in df.columns else df.sort_index()
+            
+            for idx, row in df_sorted.iterrows():
                 team = row['Team']
                 opp = row['Opp']
 
-                # Obtener promedio de puntos totales del equipo y oponente
-                team_avg = df[df['Team'] == team]['total_points'].mean()
-                opp_avg = df[df['Team'] == opp]['total_points'].mean()
-
-                # Promedio esperado
-                expected_avg = (team_avg + opp_avg) / 2
-
-                # Valor actual
-                actual = row['total_points']
-
-                # Desviación
-                if pd.notna(expected_avg) and pd.notna(actual):
-                    deviation = actual - expected_avg
+                # OBTENER SOLO DATOS HISTÓRICOS (anteriores al juego actual)
+                if 'Date' in df.columns:
+                    historical_data = df_sorted[df_sorted['Date'] < row['Date']]
                 else:
-                    deviation = 0
+                    historical_data = df_sorted.iloc[:df_sorted.index.get_loc(idx)]
+
+                if len(historical_data) > 0:
+                    # Promedios históricos (SIN incluir el juego actual)
+                    team_historical_avg = historical_data[historical_data['Team'] == team]['total_points'].mean()
+                    opp_historical_avg = historical_data[historical_data['Team'] == opp]['total_points'].mean()
+                    
+                    if pd.notna(team_historical_avg) and pd.notna(opp_historical_avg):
+                        expected_avg = (team_historical_avg + opp_historical_avg) / 2
+                        # La desviación se calculará después del juego para uso futuro
+                        deviation = 0  # No usar el valor actual para evitar leakage
+                    else:
+                        deviation = 0
+                else:
+                    deviation = 0  # No hay datos históricos suficientes
 
                 matchup_deviations.append(deviation)
 
@@ -1693,20 +1726,9 @@ class TotalPointsFeatureEngine:
             )
 
         # 6. Características de estacionalidad y contexto de temporada
-        if 'day_of_season' in df.columns:
-            # Fase de temporada (categórica)
-            df['season_phase_numeric'] = pd.cut(
-                df['day_of_season'], 
-                bins=[0, 30, 90, 180, 270, 365],
-                labels=[1, 2, 3, 4, 5]
-            ).astype(float)
-
-            # ELIMINADO: Distancias específicas de calendario
-            # days_to_allstar y days_to_playoffs generan ruido según análisis
-
-            # Interacciones con fase de temporada
-            if 'total_pts_ma_5' in df.columns:
-                df['season_phase_total_pts'] = df['season_phase_numeric'] * df['total_pts_ma_5'] / 1000
+        # NOTA: season_phase_numeric ya existe de _apply_base_calculations
+        # Interacciones con fase de temporada
+        df['season_phase_total_pts'] = df['season_phase_numeric'] * df['total_pts_ma_5'] / 1000
 
         # ELIMINADO: Análisis de tendencias de overtime
         # overtime_prob_ma5 y overtime_pts_interaction generan ruido según análisis
@@ -2349,95 +2371,145 @@ class TotalPointsFeatureEngine:
 
         return df
 
-    def _create_market_pattern_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _apply_noise_filters(self, df: pd.DataFrame, features: List[str]) -> List[str]:
         """
-        Crea características avanzadas basadas en patrones de mercado y líneas de apuestas
-        para mejorar la precisión del modelo de predicción de puntos totales.
+        Aplica filtros avanzados para eliminar features que solo agregan ruido a los modelos de puntos totales.
+        Específicamente diseñado para mantener solo features útiles para predicción de total_points.
         
         Args:
-            df: DataFrame con datos de equipos
+            df: DataFrame con los datos
+            features: Lista de features a filtrar
             
         Returns:
-            DataFrame con características de patrones de mercado agregadas
+            List[str]: Lista de features filtradas sin ruido
         """
-        if df.empty:
-            return df
+        logger.info(f"Iniciando filtrado de ruido en {len(features)} features de puntos totales...")
         
-        # Verificar si tenemos las columnas necesarias
-        if 'Date' not in df.columns or 'Team' not in df.columns:
-            logger.warning("Columnas Date o Team no encontradas para crear features de mercado")
-            return df
+        if not features:
+            return features
         
-        # Ordenar cronológicamente
-        df = df.sort_values(['Team', 'Date'])
+        # FILTRO 1: Varianza mínima (solo columnas numéricas)
+        clean_features = []
+        for feature in features:
+            if feature in df.columns:
+                # Verificar si es columna numérica
+                if pd.api.types.is_numeric_dtype(df[feature]):
+                    variance = df[feature].var()
+                    if pd.isna(variance) or variance < 1e-8:
+                        logger.debug(f"Eliminando {feature} por varianza muy baja: {variance}")
+                        continue
+                    clean_features.append(feature)
+                else:
+                    # Columnas no numéricas se omiten automáticamente
+                    logger.debug(f"Omitiendo {feature} por ser no numérica")
+            else:
+                logger.warning(f"Feature {feature} no encontrada en DataFrame")
         
-        # Crear características de tendencia de mercado (simuladas)
-        if 'total_points' in df.columns:
-            # Calcular la tendencia del mercado (diferencia entre predicción y resultado)
-            # Simulamos líneas de mercado como promedio móvil + bias
-            df['market_line_sim'] = df.groupby('Team')['total_points'].transform(
-                lambda x: x.rolling(10, min_periods=1).mean().shift(1) + 
-                         x.rolling(20, min_periods=1).std().shift(1) * 0.2
-            )
-            
-            # Calcular error del mercado (diferencia entre línea simulada y resultado real)
-            df['market_error'] = df['total_points'] - df['market_line_sim']
-            
-            # Tendencias de error del mercado
-            df['market_error_ma_5'] = df.groupby('Team')['market_error'].transform(
-                lambda x: x.rolling(5, min_periods=1).mean().shift(1)
-            )
-            
-            df['market_error_ma_10'] = df.groupby('Team')['market_error'].transform(
-                lambda x: x.rolling(10, min_periods=1).mean().shift(1)
-            )
-            
-            # Volatilidad del error del mercado
-            df['market_error_std_5'] = df.groupby('Team')['market_error'].transform(
-                lambda x: x.rolling(5, min_periods=1).std().shift(1)
-            )
-            
-            # Dirección del error del mercado (positivo = mercado subestima, negativo = sobrestima)
-            df['market_direction'] = df.groupby('Team')['market_error'].transform(
-                lambda x: np.sign(x.rolling(3, min_periods=1).mean().shift(1))
-            )
-            
-            # Patrón de zigzag (cambios en la dirección del error)
-            df['market_zigzag'] = df.groupby('Team')['market_direction'].transform(
-                lambda x: (x != x.shift(1)).astype(int).rolling(5, min_periods=1).mean().shift(1)
-            )
-            
-            # Eficiencia del mercado (qué tan cerca estuvo la línea del resultado)
-            df['market_efficiency'] = 1 / (1 + np.abs(df['market_error'].shift(1)))
-            
-            # Tendencia de ajuste del mercado
-            df['market_adjustment_trend'] = df.groupby('Team')['market_line_sim'].transform(
-                lambda x: x.diff().rolling(3, min_periods=1).mean().shift(1)
-            )
-            
-            # Correlación entre línea de mercado y resultado real
-            window = 10
-            market_corr = df.groupby('Team').apply(
-                lambda g: g['market_line_sim'].rolling(window, min_periods=3).corr(g['total_points']).shift(1)
-            )
-            if isinstance(market_corr, pd.DataFrame):
-                market_corr = market_corr.iloc[:, 0]  # Tomar primera columna si es DataFrame
-            df['market_correlation'] = market_corr.reset_index(level=0, drop=True)
-            
-            # ELIMINADO: Sesgo sistemático del mercado por día de la semana
-            # Estas features generan ruido según análisis de importancia
-            
-            # Características de momentum de mercado
-            df['market_momentum'] = df.groupby('Team')['market_line_sim'].transform(
-                lambda x: x.diff().rolling(3, min_periods=1).mean().shift(1)
-            )
-            
-            # Características de reversión a la media
-            df['market_mean_reversion'] = df.groupby('Team')['market_error'].transform(
-                lambda x: x.shift(1) * -0.5  # Factor de reversión
-            )
-            
-            # Eliminar la línea de mercado simulada para evitar data leakage
-            df = df.drop('market_line_sim', axis=1)
+        # FILTRO 2: Valores infinitos o NaN excesivos (solo columnas numéricas)
+        filtered_features = []
+        for feature in clean_features:
+            if feature in df.columns and pd.api.types.is_numeric_dtype(df[feature]):
+                nan_pct = df[feature].isna().mean()
+                inf_count = np.isinf(df[feature]).sum()
+                
+                if nan_pct > 0.5:  # Más del 50% NaN
+                    logger.debug(f"Eliminando {feature} por exceso de NaN: {nan_pct:.2%}")
+                    continue
+                if inf_count > 0:  # Cualquier valor infinito
+                    logger.debug(f"Eliminando {feature} por valores infinitos: {inf_count}")
+                    continue
+                filtered_features.append(feature)
         
-        return df
+        # FILTRO 3: Correlación extrema con total_points (posible data leakage, solo numéricas)
+        if 'total_points' in df.columns and pd.api.types.is_numeric_dtype(df['total_points']):
+            safe_features = []
+            for feature in filtered_features:
+                if feature in df.columns and feature != 'total_points' and pd.api.types.is_numeric_dtype(df[feature]):
+                    try:
+                        corr = df[feature].corr(df['total_points'])
+                        if pd.isna(corr) or abs(corr) > 0.99:  # Correlación sospechosamente alta
+                            logger.debug(f"Eliminando {feature} por correlación sospechosa con total_points: {corr:.3f}")
+                            continue
+                        safe_features.append(feature)
+                    except:
+                        safe_features.append(feature)  # Conservar si no se puede calcular correlación
+                else:
+                    safe_features.append(feature)
+        else:
+            safe_features = filtered_features
+        
+        # FILTRO 4: Features que tienden a ser ruidosas o poco predictivas para puntos totales
+        noise_patterns = [
+            '_squared_',  # Features cuadráticas suelen ser ruidosas
+            '_cubed_',    # Features cúbicas suelen ser ruidosas
+            '_interaction_complex_',  # Interacciones complejas suelen ser ruidosas
+            '_polynomial_',  # Features polinomiales suelen ser ruidosas
+            'noise_',     # Features de ruido
+            '_random_',   # Features aleatorias
+            '_test_',     # Features de prueba
+            'cosmic_',    # Features cósmicas experimentales suelen ser ruidosas
+            'quantum_',   # Features cuánticas experimentales suelen ser ruidosas
+            'fractal_',   # Features fractales suelen ser ruidosas
+            '_chaos_',    # Features de caos suelen ser ruidosas
+            '_entropy_extreme_',  # Features de entropía extrema
+        ]
+        
+        final_features = []
+        removed_by_pattern = []
+        
+        for feature in safe_features:
+            is_noisy = False
+            for pattern in noise_patterns:
+                if pattern in feature.lower():
+                    removed_by_pattern.append(feature)
+                    is_noisy = True
+                    break
+            
+            if not is_noisy:
+                final_features.append(feature)
+        
+        # FILTRO 5: Límite de features para evitar overfitting en total_points
+        max_features_total = 100  # Límite específico para puntos totales (mayor que individual)
+        if len(final_features) > max_features_total:
+            logger.info(f"Aplicando límite de features: {max_features_total}")
+            # Priorizar features más importantes para puntos totales
+            priority_keywords = [
+                'total_pts', 'pace', 'momentum', 'efficiency', 'pts_ma', 'trend',
+                'home', 'rest', 'season', 'matchup', 'opp', 'shooting',
+                'form', 'streak', 'volatility', 'avg_player'
+            ]
+            
+            prioritized_features = []
+            remaining_features = []
+            
+            for feature in final_features:
+                is_priority = any(keyword in feature for keyword in priority_keywords)
+                if is_priority:
+                    prioritized_features.append(feature)
+                else:
+                    remaining_features.append(feature)
+            
+            # Tomar features prioritarias + algunas adicionales hasta el límite
+            final_features = prioritized_features[:max_features_total//2] + remaining_features[:max_features_total//2]
+        
+        # Log de resultados
+        removed_count = len(features) - len(final_features)
+        logger.info(f"Filtrado de ruido completado:")
+        logger.info(f"  Features originales: {len(features)}")
+        logger.info(f"  Features finales: {len(final_features)}")
+        logger.info(f"  Features eliminadas: {removed_count}")
+        
+        if removed_by_pattern:
+            logger.info("Features eliminadas por ruido:")
+            for feature in removed_by_pattern[:5]:  # Mostrar solo las primeras 5
+                logger.info(f"  - {feature}")
+            if len(removed_by_pattern) > 5:
+                logger.info(f"  ... y {len(removed_by_pattern) - 5} más")
+        
+        if not final_features:
+            logger.warning("ADVERTENCIA: Todas las features fueron eliminadas por filtros de ruido")
+            # Devolver al menos algunas features básicas si todo fue eliminado
+            basic_features = [f for f in features if any(keyword in f for keyword in ['pts', 'momentum', 'pace', 'home'])]
+            return basic_features[:10] if basic_features else features[:5]
+        
+        return final_features
