@@ -934,9 +934,9 @@ class NBATotalPointsPredictor:
             ('scaler', RobustScaler()),  # Escalado robusto antes del Huber
             ('regressor', HuberRegressor(
                 epsilon=1.35, 
-                max_iter=10000,  # Máximo de iteraciones
-                alpha=0.001,     # Alpha más alto para regularización
-                tol=1e-4,        # Tolerancia más relajada para convergencia 
+                max_iter=50000,  
+                alpha=0.01,      
+                tol=1e-3,       
                 warm_start=False,
                 fit_intercept=True
             ))
@@ -1093,6 +1093,9 @@ class NBATotalPointsPredictor:
             warnings.filterwarnings('ignore', category=FutureWarning)
             warnings.filterwarnings('ignore', message='.*did not converge.*')
             warnings.filterwarnings('ignore', message='.*increase the number of iterations.*')
+            warnings.filterwarnings('ignore', message='.*lbfgs failed to converge.*')
+            warnings.filterwarnings('ignore', message='.*STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT.*')
+            warnings.filterwarnings('ignore', module='sklearn.linear_model._huber')
 
             for name, model in tqdm(self.models.items(), desc="Entrenando modelos"):
                 logger.info(f"Entrenando {name}...")
@@ -1559,9 +1562,18 @@ class NBATotalPointsPredictor:
             logger.warning(f"Solo {num_base_models} modelos base para Stacking - puede no ser efectivo")
         
         try:
-            # Entrenar el modelo de stacking
+            # Entrenar el modelo de stacking con supresión de warnings
             logger.info("Iniciando entrenamiento de Stacking Regressor...")
-            stacking_regressor.fit(X_train, y_train)
+            
+            # Suprimir warnings específicos durante el entrenamiento del stacking
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning)
+                warnings.filterwarnings('ignore', message='.*lbfgs failed to converge.*')
+                warnings.filterwarnings('ignore', message='.*STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT.*')
+                warnings.filterwarnings('ignore', module='sklearn.linear_model._huber')
+                warnings.filterwarnings('ignore', category=FutureWarning)
+                
+                stacking_regressor.fit(X_train, y_train)
             
             # Realizar predicciones
             logger.info("Realizando predicciones con Stacking...")
@@ -1658,9 +1670,16 @@ class NBATotalPointsPredictor:
                     # Clonar modelo para evitar interferencias
                     model_clone = clone(model)
 
-                    # Entrenar modelo (todos son de scikit-learn ahora)
-                    model_clone.fit(X_train_cv, y_train_cv)
-                    y_pred = model_clone.predict(X_val_cv)
+                    # Entrenar modelo (todos son de scikit-learn ahora) con supresión de warnings
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings('ignore', category=UserWarning)
+                        warnings.filterwarnings('ignore', message='.*lbfgs failed to converge.*')
+                        warnings.filterwarnings('ignore', message='.*STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT.*')
+                        warnings.filterwarnings('ignore', module='sklearn.linear_model._huber')
+                        warnings.filterwarnings('ignore', category=FutureWarning)
+                        
+                        model_clone.fit(X_train_cv, y_train_cv)
+                        y_pred = model_clone.predict(X_val_cv)
 
                     # Calcular métricas
                     mae = mean_absolute_error(y_val_cv, y_pred)

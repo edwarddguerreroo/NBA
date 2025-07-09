@@ -243,7 +243,7 @@ class TotalPointsFeatureEngine:
             
             # Progreso en temporada
             season_start = df['Date'].min()
-            df['days_into_season'] = (df['Date'] - season_start).dt.days
+            df['days_into_season'] = np.clip((df['Date'] - season_start).dt.days, 0, 250)  # Clip para evitar valores extremos
             df['season_progress'] = df['days_into_season'] / 180  # Temporada ~180 días
             df['season_progress'] = df['season_progress'].clip(0, 1)
             
@@ -375,8 +375,9 @@ class TotalPointsFeatureEngine:
             ).reset_index(level=0, drop=True)
 
         # Transformaciones matemáticas de momentum (movidas desde _create_advanced_features)
+        # Aplicar clipping muy agresivo para evitar valores extremos
         df['pts_momentum_squared'] = df.groupby('Team')['PTS'].transform(
-            lambda x: x.diff(1).pow(2).shift(1)
+            lambda x: np.clip(x.diff(1).pow(2).shift(1), 0, 100)  # Clip muy agresivo: 0-100 para reducir varianza
         )
         df['pts_momentum_sqrt'] = df.groupby('Team')['PTS'].transform(
             lambda x: (x.diff(1).abs().pow(0.5) * np.sign(x.diff(1))).shift(1)
@@ -698,9 +699,9 @@ class TotalPointsFeatureEngine:
                     lambda x: x[col].fillna(x['PTS'].rolling(10, min_periods=1).mean().shift(1))
                 ).reset_index(level=0, drop=True)
 
-            # Ventaja de local
-            df['home_advantage'] = df['home_pts_avg'] - df['away_pts_avg']
-            df['home_total_advantage'] = df['home_total_avg'] - df['away_total_avg']
+            # Ventaja de local con clipping para evitar valores extremos
+            df['home_advantage'] = np.clip(df['home_pts_avg'] - df['away_pts_avg'], -50, 50)
+            df['home_total_advantage'] = np.clip(df['home_total_avg'] - df['away_total_avg'], -100, 100)
 
         # Rendimiento en juegos cerrados (con shift)
         df['close_game'] = (df['PTS'] - df['PTS_Opp']).abs() <= 5
@@ -996,10 +997,13 @@ class TotalPointsFeatureEngine:
         if all(col in df.columns for col in ['win_rate_last_10', 'three_point_rate']):
             df['quality_style_interaction'] = df['win_rate_last_10'] * df['three_point_rate']
 
-        # Polinomios de características clave
+        # Polinomios de características clave con clipping agresivo
         for col in ['pts_ma_5', 'pace_ma_5', 'total_pts_ma_5']:
             if col in df.columns:
-                df[f'{col}_squared'] = df[col] ** 2
+                # Normalizar antes de elevar al cuadrado
+                col_normalized = (df[col] - df[col].mean()) / (df[col].std() + 1e-8)
+                col_normalized = np.clip(col_normalized, -5, 5)  # Clip normalizado
+                df[f'{col}_squared'] = np.clip(col_normalized ** 2, 0, 25)
                 df[f'{col}_sqrt'] = np.sqrt(np.abs(df[col]))
 
         # Ratios importantes
@@ -1424,6 +1428,9 @@ class TotalPointsFeatureEngine:
             logger.info(f"Eliminando {len(potential_leakage)} columnas de porcentajes sin shift: {potential_leakage[:3]}{'...' if len(potential_leakage) > 3 else ''}")
             X = X.drop(columns=potential_leakage, errors='ignore')
 
+        # Aplicar clipping robusto final para evitar valores extremos
+        X = self._apply_robust_clipping(X)
+
         # Registrar columnas finales
         self.feature_columns = list(X.columns)
         logger.info(f"Features finales identificadas: {len(self.feature_columns)}")
@@ -1645,9 +1652,12 @@ class TotalPointsFeatureEngine:
                 df['rest_streak_interaction'] = df['days_rest'] * df['win_streak']
 
         # Características polinomiales para variables numéricas clave
-        total_pts_normalized = (df['total_pts_ma_5'] - df['total_pts_ma_5'].mean()) / (df['total_pts_ma_5'].std() + 1e-8)
-        df['total_pts_ma_5_squared'] = np.clip(total_pts_normalized ** 2, -100, 100)
-        df['total_pts_ma_5_cubed'] = np.clip(total_pts_normalized ** 3, -100, 100)
+        if 'total_pts_ma_5' in df.columns:
+            total_pts_normalized = (df['total_pts_ma_5'] - df['total_pts_ma_5'].mean()) / (df['total_pts_ma_5'].std() + 1e-8)
+            # Aplicar clipping más agresivo para evitar valores extremos
+            total_pts_normalized = np.clip(total_pts_normalized, -5, 5)
+            df['total_pts_ma_5_squared'] = np.clip(total_pts_normalized ** 2, 0, 25)
+            df['total_pts_ma_5_cubed'] = np.clip(total_pts_normalized ** 3, -125, 125)
 
         # 1. Análisis de tendencias de puntos totales con regresión polinomial
         if 'total_points' in df.columns:
@@ -1661,17 +1671,18 @@ class TotalPointsFeatureEngine:
                         # Regresión polinomial de grado 2 para capturar tendencias no lineales
                         poly_coefs = np.polyfit(indices, team_data['total_points'].values, 2)
 
-                        # Guardar coeficientes como características
-                        df.loc[df['Team'] == team, 'total_pts_trend_quad'] = poly_coefs[0]
-                        df.loc[df['Team'] == team, 'total_pts_trend_linear'] = poly_coefs[1]
-                        df.loc[df['Team'] == team, 'total_pts_trend_const'] = poly_coefs[2]
+                        # Guardar coeficientes como características con clipping para evitar valores extremos
+                        df.loc[df['Team'] == team, 'total_pts_trend_quad'] = np.clip(poly_coefs[0], -10, 10)
+                        df.loc[df['Team'] == team, 'total_pts_trend_linear'] = np.clip(poly_coefs[1], -50, 50)
+                        df.loc[df['Team'] == team, 'total_pts_trend_const'] = np.clip(poly_coefs[2], 150, 300)
 
                         # Calcular valores ajustados
                         fitted_values = np.polyval(poly_coefs, indices)
 
                         # Calcular residuos para medir volatilidad
                         residuals = team_data['total_points'].values - fitted_values
-                        df.loc[df['Team'] == team, 'total_pts_trend_residuals'] = np.std(residuals)
+                        residuals_std = np.std(residuals)
+                        df.loc[df['Team'] == team, 'total_pts_trend_residuals'] = np.clip(residuals_std, 0, 100)
                     except:
                         # Si hay error en el ajuste, usar valores neutrales
                         df.loc[df['Team'] == team, 'total_pts_trend_quad'] = 0
@@ -1694,9 +1705,13 @@ class TotalPointsFeatureEngine:
                             window_data = team_data.iloc[max(0, i-10):i]
                             if len(window_data) >= 5:  # Verificar datos suficientes
                                 corr = window_data['pace_ma_5'].corr(window_data['total_pts_ma_5'])
-                                rolling_corrs.append(corr)
+                                # Manejar NaN en correlación
+                                if np.isnan(corr):
+                                    rolling_corrs.append(0.0)
+                                else:
+                                    rolling_corrs.append(np.clip(corr, -1, 1))
                             else:
-                                rolling_corrs.append(np.nan)
+                                rolling_corrs.append(0.0)
 
                     df.loc[df['Team'] == team, 'pace_pts_correlation'] = rolling_corrs
 
@@ -2565,3 +2580,86 @@ class TotalPointsFeatureEngine:
             return basic_features[:10] if basic_features else features[:5]
         
         return final_features
+
+    def _apply_robust_clipping(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Aplica clipping robusto para evitar valores extremos que causan problemas en el modelo"""
+        
+        if X.empty:
+            return X
+        
+        X_clipped = X.copy()
+        
+        # Aplicar clipping por tipo de feature
+        for col in X_clipped.columns:
+            if X_clipped[col].dtype in ['float64', 'int64']:
+                
+                # Clipping específico para features problemáticas identificadas
+                if 'pts_momentum_squared' in col:
+                    # pts_momentum_squared: clipping muy agresivo para reducir varianza
+                    X_clipped[col] = np.clip(X_clipped[col], 0, 100)  # Límite muy restrictivo para std < 100
+                elif 'momentum_squared' in col or 'pts_ma_5_squared' in col or 'pace_ma_5_squared' in col:
+                    # Otras features cuadráticas: usar percentiles para clipping
+                    q1 = X_clipped[col].quantile(0.01)
+                    q99 = X_clipped[col].quantile(0.99)
+                    X_clipped[col] = np.clip(X_clipped[col], q1, q99)
+                
+                elif 'days_into_season' in col:
+                    # Días en temporada: 0-250 días máximo
+                    X_clipped[col] = np.clip(X_clipped[col], 0, 250)
+                
+                elif 'home_total_advantage' in col or 'home_advantage' in col:
+                    # Ventajas de local: rango razonable
+                    X_clipped[col] = np.clip(X_clipped[col], -100, 100)
+                
+                elif 'acceleration' in col:
+                    # Aceleración: clipping por percentiles
+                    q5 = X_clipped[col].quantile(0.05)
+                    q95 = X_clipped[col].quantile(0.95)
+                    X_clipped[col] = np.clip(X_clipped[col], q5, q95)
+                
+                elif 'trend_residuals' in col:
+                    # Residuos de tendencia: 0-100 rango
+                    X_clipped[col] = np.clip(X_clipped[col], 0, 100)
+                
+                elif 'trend_quad' in col:
+                    # Coeficientes cuadráticos: -10 a 10
+                    X_clipped[col] = np.clip(X_clipped[col], -10, 10)
+                
+                elif 'trend_linear' in col:
+                    # Coeficientes lineales: -50 a 50
+                    X_clipped[col] = np.clip(X_clipped[col], -50, 50)
+                
+                elif 'correlation' in col:
+                    # Correlaciones: -1 a 1
+                    X_clipped[col] = np.clip(X_clipped[col], -1, 1)
+                
+                elif 'fatigue' in col:
+                    # Fatiga: 0-10 rango
+                    X_clipped[col] = np.clip(X_clipped[col], 0, 10)
+                
+                elif 'cumulative_minutes' in col:
+                    # Minutos acumulados: ya normalizado a 0-100
+                    X_clipped[col] = np.clip(X_clipped[col], 0, 100)
+                
+                else:
+                    # Clipping general usando IQR para detectar outliers extremos
+                    Q1 = X_clipped[col].quantile(0.25)
+                    Q3 = X_clipped[col].quantile(0.75)
+                    IQR = Q3 - Q1
+                    
+                    if IQR > 0:  # Solo si hay varianza
+                        lower_bound = Q1 - 3 * IQR  # 3 IQR en lugar de 1.5
+                        upper_bound = Q3 + 3 * IQR
+                        
+                        # Aplicar clipping solo si hay valores extremos
+                        outliers_count = ((X_clipped[col] < lower_bound) | (X_clipped[col] > upper_bound)).sum()
+                        if outliers_count > 0:
+                            X_clipped[col] = np.clip(X_clipped[col], lower_bound, upper_bound)
+        
+        # Verificar que no hay infinitos o NaN después del clipping
+        X_clipped = X_clipped.replace([np.inf, -np.inf], np.nan)
+        if X_clipped.isnull().any().any():
+            logger.warning("Se encontraron NaN después del clipping, rellenando con 0")
+            X_clipped = X_clipped.fillna(0)
+        
+        return X_clipped

@@ -161,10 +161,10 @@ class TeamPointsFeatureEngineer:
             df['team_possessions'] = df['FGA'] + df['FTA'] * 0.44
             df['opp_possessions'] = df['FGA_Opp'] + df['FTA_Opp'] * 0.44
         
-        # Posesiones alternativas (para validación)
-        if all(col in df.columns for col in ['FGA', 'FTA']):
-            df['real_possessions'] = df['FGA'] + df['FTA'] * 0.44
-            df['opp_real_possessions'] = df['FGA_Opp'] + df['FTA_Opp'] * 0.44
+        # REMOVIDO: real_possessions (DATA LEAKAGE - usa FGA/FTA del juego actual)
+        # Esta feature conoce cuántos tiros se realizaron en el juego que estamos prediciendo
+        # df['real_possessions'] = df['FGA'] + df['FTA'] * 0.44
+        # df['opp_real_possessions'] = df['FGA_Opp'] + df['FTA_Opp'] * 0.44
         
         # ==================== CÁLCULOS DE EFICIENCIA BASE ====================
         # True Shooting Percentage aproximado (SIN usar PTS reales para evitar data leakage)
@@ -593,7 +593,6 @@ class TeamPointsFeatureEngineer:
         """Aplicar filtros de calidad para eliminar features problemáticas"""
         # Eliminar features con alta correlación o problemas
         problematic_features = [
-            'temp_total_points'  # Feature temporal si se creó
         ]
         
         for feature in problematic_features:

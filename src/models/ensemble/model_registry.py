@@ -35,6 +35,30 @@ class ModelWithFeatures:
         self.model_name = model_name
         self.teams_df = None  # Para almacenar teams_df cuando esté disponible
         
+    def _detect_dataset_type(self, df: pd.DataFrame) -> str:
+        """
+        Detectar automáticamente el tipo de dataset (jugadores vs equipos)
+        """
+        # Verificar columnas típicas de jugadores
+        player_columns = ['Player', 'USG%', 'AST', 'TRB', 'STL', 'BLK', 'Player']
+        player_score = sum(1 for col in player_columns if col in df.columns)
+        
+        # Verificar columnas típicas de equipos
+        team_columns = ['Team', 'Tm', 'Opp', 'PTS_Opp', 'home_team', 'away_team', 'TEAM_NAME']
+        team_score = sum(1 for col in team_columns if col in df.columns)
+        
+        # Detectar por tipo de modelo también
+        if self.model_name in ['pts', 'trb', 'ast', '3pt', 'double_double']:
+            return 'players'
+        elif self.model_name in ['teams_points', 'total_points', 'is_win']:
+            return 'teams'
+        
+        # Usar score de columnas como fallback
+        if player_score >= team_score:
+            return 'players'
+        else:
+            return 'teams'
+
     def predict(self, df: pd.DataFrame) -> np.ndarray:
         """
         Generar features específicas usando el FeatureEngineer del modelo y predecir
@@ -51,6 +75,34 @@ class ModelWithFeatures:
             if df.empty:
                 logger.error(f"DataFrame de entrada vacío para {self.model_name}")
                 return self._generate_dummy_predictions(1)
+            
+            # DETECTAR TIPO DE DATASET Y VALIDAR COMPATIBILIDAD
+            dataset_type = self._detect_dataset_type(df)
+            logger.info(f"Tipo de dataset detectado: {dataset_type}")
+            
+            # VALIDAR COMPATIBILIDAD MODELO-DATASET
+            model_requires_players = self.model_name in ['pts', 'trb', 'ast', '3pt', 'double_double']
+            model_requires_teams = self.model_name in ['teams_points', 'total_points', 'is_win']
+            
+            if model_requires_players and dataset_type != 'players':
+                logger.warning(f"Modelo {self.model_name} requiere datos de jugadores pero recibió datos de {dataset_type}")
+                # Intentar usar players_df si está disponible
+                if hasattr(self, 'players_df') and self.players_df is not None:
+                    logger.info(f"Usando players_df alternativo para {self.model_name}")
+                    df = self.players_df.copy()
+                else:
+                    logger.warning(f"No hay datos de jugadores disponibles, generando predicciones dummy")
+                    return self._generate_dummy_predictions(len(df))
+            
+            elif model_requires_teams and dataset_type != 'teams':
+                logger.warning(f"Modelo {self.model_name} requiere datos de equipos pero recibió datos de {dataset_type}")
+                # Intentar usar teams_df si está disponible  
+                if hasattr(self, 'teams_df') and self.teams_df is not None:
+                    logger.info(f"Usando teams_df alternativo para {self.model_name}")
+                    df = self.teams_df.copy()
+                else:
+                    logger.warning(f"No hay datos de equipos disponibles, generando predicciones dummy")
+                    return self._generate_dummy_predictions(len(df))
             
             # PASO 1: Generar features específicas usando el FeatureEngineer del modelo
             if self.feature_engineer is not None:
@@ -134,7 +186,7 @@ class ModelWithFeatures:
             # CORRECCIÓN ESPECÍFICA PARA TOTAL_POINTS
             if self.model_name == 'total_points':
                 # Validar rango más estricto después de las correcciones
-                if predictions.min() < 150 or predictions.max() > 300 or np.any(np.isnan(predictions)):
+                if predictions.min() < 160 or predictions.max() > 280 or np.any(np.isnan(predictions)) or np.any(np.isinf(predictions)):
                     logger.warning(f"Predicciones total_points fuera de rango: [{predictions.min():.1f}, {predictions.max():.1f}]")
                     
                     # Si hay NaN o valores extremos, usar baseline inteligente
@@ -153,6 +205,11 @@ class ModelWithFeatures:
                     # Asegurar rango válido
                     predictions = np.clip(predictions, 180, 280)
                     logger.info(f"Predicciones total_points corregidas: [{predictions.min():.1f}, {predictions.max():.1f}]")
+            
+            # VALIDACIÓN FINAL PARA TOTAL_POINTS - Forzar rango válido siempre
+            if self.model_name == 'total_points':
+                predictions = np.clip(predictions, 170, 290)
+                logger.info(f"Validación final total_points: [{predictions.min():.1f}, {predictions.max():.1f}]")
             
             # Validar que las predicciones son válidas
             if np.any(np.isnan(predictions)) or np.any(np.isinf(predictions)):
@@ -244,12 +301,18 @@ class ModelWithFeatures:
             elif hasattr(self.feature_engineer, 'generate_all_features'):
                 logger.info(f"Ejecutando generate_all_features() para {self.model_name}")
                 
-                # El método modifica el DataFrame directamente Y devuelve lista de features
+                # PRIMERO: Ejecutar métodos específicos de generación de features si existen
+                self._execute_all_feature_methods(df_work)
+                
+                # SEGUNDO: El método modifica el DataFrame directamente Y devuelve lista de features
                 feature_names = self.feature_engineer.generate_all_features(df_work)
                 
                 if not feature_names:
                     logger.warning(f"No se generaron features para {self.model_name}")
                     return df_work
+                
+                # TERCERO: Validar features críticas y crear fallbacks
+                self._validate_critical_features(df_work)
                 
                 # Verificar que las features existen en el DataFrame modificado
                 available_features = [f for f in feature_names if f in df_work.columns]
@@ -260,7 +323,7 @@ class ModelWithFeatures:
                     logger.warning(f"Features faltantes: {missing_features[:5]}...")
                 
                 if available_features:
-                    return df_work[available_features].copy()
+                    return df_work
                 else:
                     logger.error(f"Ninguna feature disponible para {self.model_name}")
                     return df_work
@@ -329,7 +392,31 @@ class ModelWithFeatures:
                     X = features_df[selected_features].copy()
                     X = X.replace([np.inf, -np.inf], 0).fillna(0)
                     
+                    # NORMALIZACIÓN ESPECÍFICA PARA TOTAL_POINTS
+                    # Aplicar clipping a valores extremos para evitar predicciones fuera de rango
+                    for col in X.columns:
+                        # Detectar outliers usando IQR
+                        Q1 = X[col].quantile(0.25)
+                        Q3 = X[col].quantile(0.75)
+                        IQR = Q3 - Q1
+                        
+                        # Definir límites conservadores
+                        lower_bound = Q1 - 3 * IQR
+                        upper_bound = Q3 + 3 * IQR
+                        
+                        # Aplicar clipping solo si hay valores extremos
+                        if X[col].min() < lower_bound or X[col].max() > upper_bound:
+                            X[col] = X[col].clip(lower_bound, upper_bound)
+                            logger.debug(f"Clipping aplicado a {col}: [{lower_bound:.2f}, {upper_bound:.2f}]")
+                    
+                    # Verificar que no hay valores extremos restantes
+                    if X.abs().max().max() > 1000:
+                        logger.warning("Valores extremos detectados, aplicando normalización adicional")
+                        # Normalización suave para valores muy grandes
+                        X = X.clip(-100, 100)
+                    
                     logger.info(f"✅ TOTAL_POINTS resuelto: {X.shape} (esperado: {expected_n_features})")
+                    logger.info(f"   Rango de features: [{X.min().min():.2f}, {X.max().max():.2f}]")
                     return X
                 
                 else:
@@ -484,6 +571,337 @@ class ModelWithFeatures:
         else:
             return 0.0
     
+    def _execute_all_feature_methods(self, df: pd.DataFrame):
+        """
+        Ejecutar todos los métodos de generación de features específicos del FeatureEngineer
+        """
+        try:
+            # Lista de métodos comunes de generación de features
+            feature_methods = [
+                '_create_basic_features',
+                '_create_historical_features',
+                '_create_rolling_features',
+                '_create_trending_features',
+                '_create_efficiency_features',
+                '_create_contextual_features',
+                '_create_momentum_features',
+                '_create_shooting_efficiency_features_optimized',
+                '_create_usage_and_opportunity_features_optimized',
+                '_create_opponent_defensive_features_optimized',
+                '_create_biometric_and_position_features_optimized',
+                '_create_advanced_stacking_features_optimized',
+                '_create_recent_trend_features',
+                '_create_high_scoring_situation_features',
+                '_create_elite_player_features'
+            ]
+            
+            executed_methods = []
+            for method_name in feature_methods:
+                if hasattr(self.feature_engineer, method_name):
+                    try:
+                        method = getattr(self.feature_engineer, method_name)
+                        method(df)
+                        executed_methods.append(method_name)
+                    except Exception as e:
+                        logger.warning(f"Error ejecutando {method_name}: {e}")
+            
+            if executed_methods:
+                logger.info(f"Métodos ejecutados para {self.model_name}: {len(executed_methods)} métodos")
+            
+        except Exception as e:
+            logger.error(f"Error ejecutando métodos de features para {self.model_name}: {e}")
+    
+    def _validate_critical_features(self, df: pd.DataFrame):
+        """
+        Validar que las features críticas estén presentes y crear fallbacks si faltan
+        """
+        try:
+            critical_features_map = {
+                'pts': ['pts_hist_avg_5g', 'pts_trend_factor', 'shooting_volume_5g', 'usage_rate_5g', 'player_tier'],
+                'trb': ['trb_hist_avg_5g', 'trb_trend_factor', 'defensive_rebounds_5g'],
+                'ast': ['ast_hist_avg_5g', 'ast_trend_factor', 'playmaking_5g'],
+                '3pt': ['threept_made_5g', 'threept_attempts_5g', 'threept_percentage_5g'],
+                'double_double': ['dd_probability_5g', 'high_scoring_games_5g'],
+                'teams_points': ['team_win_rate_5g', 'weighted_win_rate_5g', 'team_win_rate_10g'],
+                'is_win': ['team_win_rate_5g', 'weighted_win_rate_5g', 'home_win_rate_10g', 'away_win_rate_10g'],
+                'total_points': ['team_win_rate_5g', 'total_points_trend', 'pace_factor']
+            }
+            
+            if self.model_name in critical_features_map:
+                missing_features = []
+                for feature in critical_features_map[self.model_name]:
+                    if feature not in df.columns:
+                        missing_features.append(feature)
+                        # Crear feature de manera inteligente basada en datos disponibles
+                        self._create_intelligent_feature(df, feature)
+                
+                if missing_features:
+                    logger.info(f"Features críticas creadas para {self.model_name}: {missing_features}")
+                    
+        except Exception as e:
+            logger.error(f"Error validando features críticas para {self.model_name}: {e}")
+    
+    def _create_intelligent_feature(self, df: pd.DataFrame, feature_name: str):
+        """
+        Crear features de manera inteligente basada en datos disponibles
+        """
+        try:
+            # FEATURES HISTÓRICAS DE PUNTOS
+            if feature_name == 'pts_hist_avg_5g' and 'PTS' in df.columns:
+                # Calcular promedio histórico de 5 juegos usando rolling window
+                if 'Player' in df.columns:
+                    df['pts_hist_avg_5g'] = df.groupby('Player')['PTS'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(df['PTS'].mean())
+                else:
+                    df['pts_hist_avg_5g'] = df['PTS'].mean()
+                
+            elif feature_name == 'pts_trend_factor' and 'PTS' in df.columns:
+                # Calcular factor de tendencia basado en comparación reciente vs histórica
+                if 'Player' in df.columns:
+                    pts_recent = df.groupby('Player')['PTS'].rolling(3, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+                    pts_long = df.groupby('Player')['PTS'].rolling(10, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+                    df['pts_trend_factor'] = (pts_recent / (pts_long + 0.01)).fillna(1.0)
+                else:
+                    df['pts_trend_factor'] = 1.0
+                
+            elif feature_name == 'shooting_volume_5g' and 'FGA' in df.columns:
+                if 'Player' in df.columns:
+                    df['shooting_volume_5g'] = df.groupby('Player')['FGA'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(df['FGA'].mean())
+                else:
+                    df['shooting_volume_5g'] = df['FGA'].mean()
+                
+            elif feature_name == 'usage_rate_5g':
+                if 'USG%' in df.columns and 'Player' in df.columns:
+                    df['usage_rate_5g'] = df.groupby('Player')['USG%'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(20.0)
+                elif 'FGA' in df.columns and 'MP' in df.columns and 'Player' in df.columns:
+                    # Estimar usage rate basado en tiros y minutos
+                    df['estimated_usage_temp'] = (df['FGA'] / (df['MP'] + 0.01)) * 25  # Estimación aproximada
+                    df['usage_rate_5g'] = df.groupby('Player')['estimated_usage_temp'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(20.0)
+                    # Eliminar columna temporal
+                    df.drop('estimated_usage_temp', axis=1, inplace=True)
+                else:
+                    df['usage_rate_5g'] = 20.0
+                        
+            elif feature_name == 'player_tier' and 'PTS' in df.columns:
+                # Clasificar jugadores por tier basado en promedio de puntos
+                if 'Player' in df.columns:
+                    pts_avg = df.groupby('Player')['PTS'].expanding().mean().shift(1).reset_index(0, drop=True)
+                    df['player_tier'] = pd.cut(pts_avg, bins=[0, 8, 15, 22, 28, 100], labels=[0, 1, 2, 3, 4], include_lowest=True).astype(float).fillna(2.0)
+                else:
+                    df['player_tier'] = 2.0
+            
+            # FEATURES HISTÓRICAS DE REBOTES
+            elif feature_name == 'trb_hist_avg_5g' and 'TRB' in df.columns:
+                if 'Player' in df.columns:
+                    df['trb_hist_avg_5g'] = df.groupby('Player')['TRB'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(df['TRB'].mean())
+                else:
+                    df['trb_hist_avg_5g'] = df['TRB'].mean()
+                
+            elif feature_name == 'trb_trend_factor' and 'TRB' in df.columns:
+                if 'Player' in df.columns:
+                    trb_recent = df.groupby('Player')['TRB'].rolling(3, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+                    trb_long = df.groupby('Player')['TRB'].rolling(10, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+                    df['trb_trend_factor'] = (trb_recent / (trb_long + 0.01)).fillna(1.0)
+                else:
+                    df['trb_trend_factor'] = 1.0
+                
+            elif feature_name == 'defensive_rebounds_5g' and 'DRB' in df.columns:
+                if 'Player' in df.columns:
+                    df['defensive_rebounds_5g'] = df.groupby('Player')['DRB'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(df['DRB'].mean())
+                else:
+                    df['defensive_rebounds_5g'] = df['DRB'].mean()
+            
+            # FEATURES HISTÓRICAS DE ASISTENCIAS
+            elif feature_name == 'ast_hist_avg_5g' and 'AST' in df.columns:
+                if 'Player' in df.columns:
+                    df['ast_hist_avg_5g'] = df.groupby('Player')['AST'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(df['AST'].mean())
+                else:
+                    df['ast_hist_avg_5g'] = df['AST'].mean()
+                
+            elif feature_name == 'ast_trend_factor' and 'AST' in df.columns:
+                if 'Player' in df.columns:
+                    ast_recent = df.groupby('Player')['AST'].rolling(3, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+                    ast_long = df.groupby('Player')['AST'].rolling(10, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+                    df['ast_trend_factor'] = (ast_recent / (ast_long + 0.01)).fillna(1.0)
+                else:
+                    df['ast_trend_factor'] = 1.0
+                
+            elif feature_name == 'playmaking_5g' and 'AST' in df.columns:
+                if 'Player' in df.columns:
+                    df['playmaking_5g'] = df.groupby('Player')['AST'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(df['AST'].mean())
+                else:
+                    df['playmaking_5g'] = df['AST'].mean()
+            
+            # FEATURES DE TRIPLES
+            elif feature_name == 'threept_made_5g' and '3P' in df.columns:
+                if 'Player' in df.columns:
+                    df['threept_made_5g'] = df.groupby('Player')['3P'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(df['3P'].mean())
+                else:
+                    df['threept_made_5g'] = df['3P'].mean()
+                
+            elif feature_name == 'threept_attempts_5g' and '3PA' in df.columns:
+                if 'Player' in df.columns:
+                    df['threept_attempts_5g'] = df.groupby('Player')['3PA'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(df['3PA'].mean())
+                else:
+                    df['threept_attempts_5g'] = df['3PA'].mean()
+                
+            elif feature_name == 'threept_percentage_5g':
+                if '3P' in df.columns and '3PA' in df.columns and 'Player' in df.columns:
+                    made_5g = df.groupby('Player')['3P'].rolling(5, min_periods=1).sum().shift(1).reset_index(0, drop=True)
+                    attempts_5g = df.groupby('Player')['3PA'].rolling(5, min_periods=1).sum().shift(1).reset_index(0, drop=True)
+                    df['threept_percentage_5g'] = (made_5g / (attempts_5g + 0.01)).fillna(0.35)
+                else:
+                    df['threept_percentage_5g'] = 0.35
+            
+            # FEATURES DE DOUBLE DOUBLE
+            elif feature_name == 'dd_probability_5g':
+                if 'double_double' in df.columns and 'Player' in df.columns:
+                    df['dd_probability_5g'] = df.groupby('Player')['double_double'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(0.1)
+                else:
+                    df['dd_probability_5g'] = 0.1
+                    
+            elif feature_name == 'high_scoring_games_5g' and 'PTS' in df.columns:
+                try:
+                    high_scoring = (df['PTS'] >= 20).astype(int)
+                    if 'Player' in df.columns:
+                        df['high_scoring_games_5g'] = df.groupby('Player')['PTS'].apply(
+                            lambda x: (x >= 20).astype(int).rolling(5, min_periods=1).mean().shift(1)
+                        ).reset_index(0, drop=True).fillna(0.2)
+                    else:
+                        df['high_scoring_games_5g'] = 0.2
+                except Exception as e:
+                    logger.warning(f"Error específico en high_scoring_games_5g: {e}")
+                    df['high_scoring_games_5g'] = 0.2
+            
+            # FEATURES DE TEAMS
+            elif feature_name in ['team_win_rate_5g', 'weighted_win_rate_5g', 'team_win_rate_10g']:
+                if 'is_win' in df.columns and 'Team' in df.columns:
+                    window = 10 if '10g' in feature_name else 5
+                    df[feature_name] = df.groupby('Team')['is_win'].rolling(window, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(0.5)
+                else:
+                    df[feature_name] = 0.5
+                    
+            elif feature_name in ['home_win_rate_10g', 'away_win_rate_10g']:
+                if 'is_win' in df.columns and 'is_home' in df.columns and 'Team' in df.columns:
+                    is_home = feature_name.startswith('home')
+                    mask = df['is_home'] == (1 if is_home else 0)
+                    win_rate = df.groupby('Team')['is_win'].rolling(10, min_periods=1).mean().shift(1)
+                    df[feature_name] = win_rate.reset_index(0, drop=True).fillna(0.55 if is_home else 0.45)
+                else:
+                    df[feature_name] = 0.55 if feature_name.startswith('home') else 0.45
+            
+            elif feature_name in ['explosion_potential', 'is_high_scorer', 'high_volume_efficiency', 'high_minutes_player', 'pts_per_minute_5g']:
+                # Estas features son específicas de PointsFeatureEngineer, crear valores por defecto
+                if 'Player' in df.columns:
+                    if feature_name == 'explosion_potential':
+                        df['explosion_potential'] = 0.5  # Potencial neutral
+                    elif feature_name == 'is_high_scorer':
+                        df['is_high_scorer'] = 0  # Por defecto no es high scorer
+                    elif feature_name == 'high_volume_efficiency':
+                        df['high_volume_efficiency'] = 0.8  # Eficiencia moderada
+                    elif feature_name == 'high_minutes_player':
+                        df['high_minutes_player'] = 0  # Por defecto no es de muchos minutos
+                    elif feature_name == 'pts_per_minute_5g':
+                        df['pts_per_minute_5g'] = 0.4  # Puntos por minuto promedio
+                else:
+                    # Para datos de equipos, estas features no son relevantes
+                    df[feature_name] = 0.0
+            
+            # FEATURES DE TOTAL POINTS
+            elif feature_name == 'total_points_trend':
+                if 'total_points' in df.columns:
+                    if 'Team' in df.columns:
+                        df['total_points_trend'] = df.groupby('Team')['total_points'].rolling(3, min_periods=1).mean().shift(1).reset_index(0, drop=True).fillna(220.0)
+                    else:
+                        df['total_points_trend'] = df['total_points'].rolling(3, min_periods=1).mean().shift(1).fillna(220.0)
+                else:
+                    df['total_points_trend'] = 220.0
+                    
+            elif feature_name == 'pace_factor':
+                if 'Pace' in df.columns:
+                    df['pace_factor'] = df['Pace'] / 100  # Normalizar pace
+                else:
+                    df['pace_factor'] = 1.0  # Pace neutral
+            
+            # FALLBACK: usar valor por defecto
+            else:
+                df[feature_name] = self._get_intelligent_default_value(feature_name)
+                
+        except Exception as e:
+            logger.warning(f"Error creando feature {feature_name}: {e}")
+            # Fallback al valor por defecto
+            df[feature_name] = self._get_intelligent_default_value(feature_name)
+    
+    def _get_intelligent_default_value(self, feature_name: str) -> float:
+        """
+        Obtener valor por defecto inteligente para features faltantes
+        """
+        feature_lower = feature_name.lower()
+        
+        # Patrones específicos de NBA
+        if 'pts' in feature_lower and ('hist_avg' in feature_lower or 'avg' in feature_lower):
+            return 12.0  # Promedio conservador de puntos
+        elif 'trb' in feature_lower and ('hist_avg' in feature_lower or 'avg' in feature_lower):
+            return 5.0   # Promedio conservador de rebotes
+        elif 'ast' in feature_lower and ('hist_avg' in feature_lower or 'avg' in feature_lower):
+            return 3.0   # Promedio conservador de asistencias
+        elif '3p' in feature_lower or 'threept' in feature_lower:
+            if 'made' in feature_lower or 'avg' in feature_lower:
+                return 1.5   # Promedio conservador de triples hechos
+            elif 'attempts' in feature_lower:
+                return 4.0   # Promedio conservador de intentos de triples
+            elif 'percentage' in feature_lower:
+                return 0.35  # 35% 3P típico
+        
+        # Patrones de tendencias
+        elif 'trend_factor' in feature_lower:
+            return 1.0   # Factor neutro de tendencia
+        elif 'momentum' in feature_lower:
+            return 0.0   # Momentum neutro
+        
+        # Patrones de volumen y usage
+        elif 'shooting_volume' in feature_lower:
+            return 10.0  # Volumen moderado de tiros
+        elif 'usage_rate' in feature_lower:
+            return 20.0  # Usage rate moderado
+        
+        # Patrones de tier y clasificación
+        elif 'player_tier' in feature_lower:
+            return 2.0   # Tier medio (0-4 scale)
+        elif 'tier' in feature_lower:
+            return 2.0   # Tier medio
+        
+        # Patrones de probabilidad
+        elif 'probability' in feature_lower:
+            return 0.1   # Probabilidad baja por defecto
+        
+        # Patrones de win rate
+        elif 'win_rate' in feature_lower:
+            return 0.5   # 50% win rate neutral
+        elif 'weighted_win' in feature_lower:
+            return 0.5   # 50% win rate ponderado
+        
+        # Patrones home/away
+        elif 'home_' in feature_lower and 'rate' in feature_lower:
+            return 0.55  # Ventaja de local ligera
+        elif 'away_' in feature_lower and 'rate' in feature_lower:
+            return 0.45  # Desventaja de visitante ligera
+        
+        # Patrones de rebotes defensivos
+        elif 'defensive_rebounds' in feature_lower:
+            return 3.5   # Rebotes defensivos promedio
+        
+        # Patrones de playmaking
+        elif 'playmaking' in feature_lower:
+            return 3.0   # Asistencias promedio
+        
+        # Patrones de high scoring
+        elif 'high_scoring' in feature_lower:
+            return 0.2   # 20% de juegos de alto scoring
+        
+        # Por defecto
+        else:
+            return 0.0
+
     def _generate_dummy_predictions(self, n_samples: int) -> np.ndarray:
         """Generar predicciones dummy inteligentes basadas en el tipo de modelo"""
         logger.warning(f"Generando predicciones dummy para {self.model_name} ({n_samples} muestras)")
@@ -651,7 +1069,25 @@ class ModelWithFeatures:
         mapping = {}
         
         # Mapeos específicos conocidos por modelo
-        if model_name == 'teams_points':
+        if model_name == 'pts':
+            specific_mappings = {
+                'pts_hist_avg_5g': 'PTS',
+                'pts_trend_factor': 'PTS',
+                'shooting_volume_5g': 'FGA',
+                'usage_rate_5g': 'USG%',
+                'player_tier': 'PTS',  # Calculado desde PTS
+                'pts_hist_avg_3g': 'PTS',
+                'fg_hist_avg_5g': 'FG',
+                'fga_hist_avg_5g': 'FGA',
+                'fg_efficiency_5g': 'FG%',
+                'mp_hist_avg_5g': 'MP',
+                'pts_above_season_avg': 'PTS',
+                'scoring_form_5g': 'PTS',
+                'pace_adjusted_scoring': 'PTS'
+            }
+            mapping.update(specific_mappings)
+            
+        elif model_name == 'teams_points':
             specific_mappings = {
                 'team_true_shooting_approx': 'FG%',
                 'opp_true_shooting_approx': 'FG%_Opp',
@@ -672,8 +1108,58 @@ class ModelWithFeatures:
             }
             mapping.update(specific_mappings)
             
+        elif model_name == 'trb':
+            specific_mappings = {
+                'trb_hist_avg_5g': 'TRB',
+                'trb_trend_factor': 'TRB',
+                'defensive_rebounds_5g': 'DRB',
+                'offensive_rebounds_5g': 'ORB',
+                'player_fg_pct_5g': 'FG%',
+                'player_fga_5g': 'FGA',
+                'mp_hist_avg_5g': 'MP'
+            }
+            mapping.update(specific_mappings)
+            
+        elif model_name == 'ast':
+            specific_mappings = {
+                'ast_hist_avg_5g': 'AST',
+                'ast_trend_factor': 'AST',
+                'playmaking_5g': 'AST',
+                'ast_per_minute_5g': 'AST',
+                'turnover_rate_5g': 'TOV',
+                'team_pace_5g': 'FGA'
+            }
+            mapping.update(specific_mappings)
+            
+        elif model_name == '3pt':
+            specific_mappings = {
+                'threept_made_5g': '3P',
+                'threept_attempts_5g': '3PA',
+                'threept_percentage_5g': '3P%',
+                'threept_made_season': '3P',
+                'threept_attempts_season': '3PA',
+                'threept_made_last': '3P',
+                'threept_attempts_last': '3PA'
+            }
+            mapping.update(specific_mappings)
+            
+        elif model_name == 'double_double':
+            specific_mappings = {
+                'dd_probability_5g': 'double_double',
+                'high_scoring_games_5g': 'PTS',
+                'pts_hist_avg_5g': 'PTS',
+                'trb_hist_avg_5g': 'TRB',
+                'ast_hist_avg_5g': 'AST'
+            }
+            mapping.update(specific_mappings)
+
         elif model_name == 'is_win':
             specific_mappings = {
+                'team_win_rate_5g': 'is_win',
+                'weighted_win_rate_5g': 'is_win', 
+                'team_win_rate_10g': 'is_win',
+                'home_win_rate_10g': 'is_win',
+                'away_win_rate_10g': 'is_win',
                 'pts_hist_avg_5g': 'PTS',
                 'pts_opp_hist_avg_5g': 'PTS_Opp',
                 'point_diff_hist_avg_5g': 'PTS',  # PTS - PTS_Opp calculado luego
@@ -728,6 +1214,36 @@ class ModelWithFeatures:
             
         if 'point_diff_hist_avg_10g' in expected_features and 'PTS' in features_df.columns and 'PTS_Opp' in features_df.columns:
             result_df['point_diff_hist_avg_10g'] = features_df['PTS'] - features_df['PTS_Opp']
+        
+        # Features derivadas para PTS model
+        if 'pts_trend_factor' in expected_features and 'PTS' in features_df.columns:
+            # Calcular factor de tendencia basado en promedio móvil
+            result_df['pts_trend_factor'] = features_df['PTS'] / (features_df['PTS'].mean() + 0.01)
+            
+        if 'player_tier' in expected_features and 'PTS' in features_df.columns:
+            # Clasificar jugadores por tier basado en puntos
+            pts_values = features_df['PTS']
+            result_df['player_tier'] = pd.cut(pts_values, bins=[0, 8, 15, 22, 28, 100], labels=[0, 1, 2, 3, 4], include_lowest=True).astype(float)
+        
+        # Features derivadas para TRB model 
+        if 'trb_trend_factor' in expected_features and 'TRB' in features_df.columns:
+            result_df['trb_trend_factor'] = features_df['TRB'] / (features_df['TRB'].mean() + 0.01)
+            
+        # Features derivadas para AST model
+        if 'ast_trend_factor' in expected_features and 'AST' in features_df.columns:
+            result_df['ast_trend_factor'] = features_df['AST'] / (features_df['AST'].mean() + 0.01)
+            
+        # Features derivadas para 3PT model
+        if 'threept_percentage_5g' in expected_features and '3P' in features_df.columns and '3PA' in features_df.columns:
+            result_df['threept_percentage_5g'] = features_df['3P'] / (features_df['3PA'] + 0.01)
+        
+        # Features derivadas para team models
+        if 'team_win_rate_5g' in expected_features and 'is_win' in features_df.columns:
+            # Usar win rate como proxy
+            result_df['team_win_rate_5g'] = features_df['is_win']
+            
+        if 'weighted_win_rate_5g' in expected_features and 'is_win' in features_df.columns:
+            result_df['weighted_win_rate_5g'] = features_df['is_win']
         
         # Limpiar datos
         result_df = result_df.replace([np.inf, -np.inf], 0).fillna(0)

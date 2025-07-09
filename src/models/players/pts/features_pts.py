@@ -527,9 +527,12 @@ class PointsFeatureEngineer:
         
         # Rol ofensivo en el equipo
         if self._register_feature('scoring_role_importance', 'usage'):
-            pts_avg = df.get('pts_hist_avg_5g', 0)
-            team_avg_pts = pts_avg.groupby(df['Team']).transform('mean')
-            df['scoring_role_importance'] = pts_avg / (team_avg_pts + 0.1)
+            if 'pts_hist_avg_5g' in df.columns:
+                pts_avg = df['pts_hist_avg_5g']
+                team_avg_pts = pts_avg.groupby(df['Team']).transform('mean')
+                df['scoring_role_importance'] = pts_avg / (team_avg_pts + 0.1)
+            else:
+                df['scoring_role_importance'] = 0.5  # Valor neutral por defecto
         
         logger.debug(f"Features de usage creadas: {len(self._feature_registry['usage'])}")
     
