@@ -751,11 +751,17 @@ class TotalPointsFeatureEngine:
         if df_players is None or df_players.empty:
             logger.warning("No hay datos de jugadores disponibles, usando valores por defecto")
             
-            # Valores por defecto realistas basados en estadísticas NBA típicas
-            df['team_total_pts_players'] = df['PTS']  # Usar PTS del equipo como aproximación
-            df['avg_player_pts'] = df['PTS'] / 5  # Aproximadamente 5 jugadores principales
+            # Valores por defecto realistas CON SHIFT para evitar data leakage
+            df['team_total_pts_players'] = df.groupby('Team')['PTS'].transform(
+                lambda x: x.shift(1)
+            ).fillna(110)  # Valor por defecto realista
+            df['avg_player_pts'] = df.groupby('Team')['PTS'].transform(
+                lambda x: x.shift(1) / 5
+            ).fillna(22)  # ~5 jugadores principales 
             df['pts_distribution'] = 5.0  # Distribución típica
-            df['top_scorer_pts'] = df['PTS'] * 0.3  # ~30% del scoring del top scorer
+            df['top_scorer_pts'] = df.groupby('Team')['PTS'].transform(
+                lambda x: x.shift(1) * 0.3
+            ).fillna(33)  # ~30% del scoring del top scorer
             df['avg_minutes'] = 24.0  # Minutos promedio típicos
             df['minutes_distribution'] = 8.0  # Distribución típica de minutos
             df['num_starters'] = 5.0  # 5 titulares estándar
@@ -872,12 +878,12 @@ class TotalPointsFeatureEngine:
                 num_missing = missing_data_rows.sum()
                 logger.warning(f"Hay {num_missing} filas sin datos de jugadores")
                 
-                # Rellenar con valores por defecto para filas sin datos
+                # Rellenar con valores por defecto CON DATOS HISTÓRICOS para filas sin datos
                 default_values = {
-                    'team_total_pts_players': df.loc[missing_data_rows, 'PTS'] if 'PTS' in df.columns else 110,
-                    'avg_player_pts': df.loc[missing_data_rows, 'PTS'] / 5 if 'PTS' in df.columns else 22,
+                    'team_total_pts_players': df.groupby('Team')['PTS'].transform(lambda x: x.shift(1)).fillna(110),
+                    'avg_player_pts': df.groupby('Team')['PTS'].transform(lambda x: x.shift(1) / 5).fillna(22),
                     'pts_distribution': 5.0,
-                    'top_scorer_pts': df.loc[missing_data_rows, 'PTS'] * 0.3 if 'PTS' in df.columns else 33,
+                    'top_scorer_pts': df.groupby('Team')['PTS'].transform(lambda x: x.shift(1) * 0.3).fillna(33),
                     'avg_minutes': 24.0,
                     'minutes_distribution': 8.0,
                     'num_starters': 5.0,
@@ -1542,19 +1548,65 @@ class TotalPointsFeatureEngine:
             # Crear identificador único para cada combinación de equipos
             df['matchup_id'] = df.apply(lambda x: '_'.join(sorted([x['Team'], x['Opp']])), axis=1)
 
-            # Estadísticas históricas de matchup
-            matchup_stats = df.groupby('matchup_id').agg({
-                'total_points': ['mean', 'std', 'min', 'max', 'count'],
-                'PTS': ['mean'],
-                'PTS_Opp': ['mean']
-            })
-
-            # Aplanar los nombres de columnas
-            matchup_stats.columns = ['_'.join(col).strip() for col in matchup_stats.columns.values]
-            matchup_stats = matchup_stats.reset_index()
-
-            # Fusionar de vuelta al DataFrame principal
-            df = pd.merge(df, matchup_stats, on='matchup_id', how='left')
+            # Estadísticas históricas de matchup CON SHIFT TEMPORAL para evitar data leakage
+            df_sorted = df.sort_values(['Team', 'Date']) if 'Date' in df.columns else df.sort_index()
+            
+            # Calcular estadísticas de matchup usando solo datos históricos
+            matchup_historical_stats = []
+            
+            for idx, row in df_sorted.iterrows():
+                matchup_id = row['matchup_id']
+                current_date = row['Date'] if 'Date' in df.columns else idx
+                
+                # Obtener datos históricos del matchup (anteriores al juego actual)
+                if 'Date' in df.columns:
+                    historical_matchup = df_sorted[
+                        (df_sorted['matchup_id'] == matchup_id) & 
+                        (df_sorted['Date'] < current_date)
+                    ]
+                else:
+                    historical_matchup = df_sorted[
+                        (df_sorted['matchup_id'] == matchup_id) & 
+                        (df_sorted.index < idx)
+                    ]
+                
+                if len(historical_matchup) > 0:
+                    # Calcular estadísticas solo con datos históricos
+                    stats = {
+                        'total_points_mean': historical_matchup['total_points'].mean(),
+                        'total_points_std': historical_matchup['total_points'].std(),
+                        'total_points_min': historical_matchup['total_points'].min(),
+                        'total_points_max': historical_matchup['total_points'].max(),
+                        'total_points_count': len(historical_matchup),
+                        'PTS_mean': historical_matchup['PTS'].mean(),
+                        'PTS_Opp_mean': historical_matchup['PTS_Opp'].mean()
+                    }
+                else:
+                    # Sin datos históricos, usar valores neutrales
+                    stats = {
+                        'total_points_mean': 220,  # Promedio típico NBA
+                        'total_points_std': 20,
+                        'total_points_min': 180,
+                        'total_points_max': 260,
+                        'total_points_count': 0,
+                        'PTS_mean': 110,
+                        'PTS_Opp_mean': 110
+                    }
+                
+                matchup_historical_stats.append(stats)
+            
+            # Crear DataFrame con estadísticas históricas
+            stats_df = pd.DataFrame(matchup_historical_stats)
+            
+            # Asignar índices para alinear con df_sorted
+            stats_df.index = df_sorted.index
+            
+            # Agregar las nuevas columnas al dataframe principal
+            for col in stats_df.columns:
+                df_sorted[col] = stats_df[col]
+            
+            # Reordenar de vuelta al orden original si es necesario
+            df = df_sorted.sort_index()
 
             # Calcular características derivadas de matchup
             df['matchup_total_range'] = df['total_points_max'] - df['total_points_min']
@@ -1704,25 +1756,25 @@ class TotalPointsFeatureEngine:
 
         # 5. Características de consistencia y variabilidad avanzadas
         if 'total_points' in df.columns:
-            # Rango intercuartílico móvil (medida robusta de dispersión)
+            # Rango intercuartílico móvil CON SHIFT (medida robusta de dispersión)
             for window in [5, 10]:
                 df[f'total_pts_iqr_{window}'] = df.groupby('Team')['total_points'].transform(
                     lambda x: x.rolling(window=window, min_periods=3).apply(
                         lambda y: np.percentile(y, 75) - np.percentile(y, 25) if len(y) >= 3 else np.nan
-                    )
+                    ).shift(1)
                 )
 
-            # Asimetría y curtosis (forma de la distribución de puntos)
+            # Asimetría y curtosis CON SHIFT (forma de la distribución de puntos)
             df['total_pts_skew_5'] = df.groupby('Team')['total_points'].transform(
                 lambda x: x.rolling(window=5, min_periods=3).apply(
                     lambda y: pd.Series(y).skew() if len(y) >= 3 else np.nan
-                )
+                ).shift(1)
             )
 
             df['total_pts_kurt_5'] = df.groupby('Team')['total_points'].transform(
                 lambda x: x.rolling(window=5, min_periods=3).apply(
                     lambda y: pd.Series(y).kurt() if len(y) >= 3 else np.nan
-                )
+                ).shift(1)
             )
 
         # 6. Características de estacionalidad y contexto de temporada

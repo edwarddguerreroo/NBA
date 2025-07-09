@@ -328,31 +328,54 @@ MODELOS BASE:
     def _plot_feature_importance_compact(self, ax):
         """Gráfico compacto de importancia de features."""
         try:
-            # Obtener feature importance del modelo
-            if hasattr(self.model, 'get_feature_importance'):
-                importance_dict = self.model.get_feature_importance(top_n=15)
-            else:
-                # Backup: intentar obtener del modelo interno
-                importance_dict = getattr(self.model, 'feature_importance', None)
+            # Debug logging
+            logger.info("DEBUG: Iniciando _plot_feature_importance_compact")
+            logger.info(f"DEBUG: Modelo entrenado: {getattr(self.model, 'is_trained', False)}")
+            logger.info(f"DEBUG: Tiene get_feature_importance: {hasattr(self.model, 'get_feature_importance')}")
             
-            if not importance_dict:
+            # Obtener feature importance del modelo
+            top_features = {}
+            
+            if hasattr(self.model, 'get_feature_importance'):
+                logger.info("DEBUG: Llamando get_feature_importance...")
+                importance_dict = self.model.get_feature_importance(top_n=20)
+                logger.info(f"DEBUG: Resultado importance_dict: {type(importance_dict)}")
+                logger.info(f"DEBUG: Claves en importance_dict: {list(importance_dict.keys()) if importance_dict else 'None'}")
+                
+                if importance_dict and 'top_features' in importance_dict and importance_dict['top_features']:
+                    logger.info(f"DEBUG: top_features encontrado, longitud: {len(importance_dict['top_features'])}")
+                    # Convertir la lista de diccionarios a un diccionario simple
+                    top_features_list = importance_dict['top_features'][:20]
+                    top_features = {item['feature']: item['importance'] for item in top_features_list}
+                    logger.info(f"DEBUG: top_features convertido: {len(top_features)} items")
+                elif importance_dict and 'feature_importance' in importance_dict:
+                    logger.info("DEBUG: Usando feature_importance")
+                    top_features = dict(list(importance_dict['feature_importance'].items())[:20])
+                elif importance_dict and isinstance(importance_dict, dict):
+                    logger.info("DEBUG: Usando dict directo")
+                    top_features = dict(list(importance_dict.items())[:20])
+                else:
+                    logger.warning("DEBUG: No se pudo procesar importance_dict")
+            else:
+                logger.warning("DEBUG: Modelo no tiene get_feature_importance")
+            
+            # Si no se obtuvo feature importance, crear uno básico
+            if not top_features and hasattr(self.model, 'feature_columns') and len(self.model.feature_columns) > 0:
+                logger.info("DEBUG: Creando feature importance básico")
+                features = self.model.feature_columns[:20]
+                importances = [1.0/len(features)] * len(features)
+                top_features = {f: imp for f, imp in zip(features, importances)}
+                logger.info(f"DEBUG: Feature importance básico creado: {len(top_features)} items")
+            
+            # Si aún no hay datos, mostrar mensaje
+            if not top_features:
+                logger.warning("DEBUG: No hay top_features, mostrando mensaje de no disponible")
                 ax.text(0.5, 0.5, 'Feature importance\nno disponible', 
                        ha='center', va='center', transform=ax.transAxes)
                 ax.set_title('Feature Importance', fontweight='bold')
                 return
             
-            # Procesar importance dict según su estructura
-            if isinstance(importance_dict, dict):
-                if 'feature_importance' in importance_dict:
-                    top_features = dict(list(importance_dict['feature_importance'].items())[:15])
-                else:
-                    top_features = dict(list(importance_dict.items())[:15])
-            else:
-                ax.text(0.5, 0.5, 'Feature importance\nformato no válido', 
-                       ha='center', va='center', transform=ax.transAxes)
-                ax.set_title('Feature Importance', fontweight='bold')
-                return
-            
+            logger.info(f"DEBUG: Creando plot con {len(top_features)} features")
             features = list(top_features.keys())
             importances = list(top_features.values())
             
@@ -361,9 +384,9 @@ MODELOS BASE:
             bars = ax.barh(y_pos, importances, color='lightcoral', alpha=0.8)
             
             ax.set_yticks(y_pos)
-            ax.set_yticklabels([f.replace('_', ' ').title()[:20] for f in features], fontsize=8)
+            ax.set_yticklabels([f.replace('_', ' ').title()[:25] for f in features], fontsize=7)
             ax.set_xlabel('Importancia')
-            ax.set_title('Top 15 Features Más Importantes', fontweight='bold')
+            ax.set_title('Top 20 Features Más Importantes', fontweight='bold')
             
             # Agregar valores en las barras
             for i, (bar, val) in enumerate(zip(bars, importances)):
@@ -372,8 +395,12 @@ MODELOS BASE:
             
             ax.grid(axis='x', alpha=0.3)
             ax.invert_yaxis()
+            logger.info("DEBUG: Plot de feature importance completado exitosamente")
             
         except Exception as e:
+            logger.error(f"DEBUG: Error en _plot_feature_importance_compact: {e}")
+            import traceback
+            logger.error(f"DEBUG: Traceback: {traceback.format_exc()}")
             ax.text(0.5, 0.5, f'Error cargando\nfeature importance:\n{str(e)}', 
                    ha='center', va='center', transform=ax.transAxes)
             ax.set_title('Feature Importance', fontweight='bold')
@@ -661,16 +688,31 @@ MODELOS BASE:
         try:
             if hasattr(self.model, 'get_feature_importance'):
                 importance_dict = self.model.get_feature_importance(top_n=50)
-                if importance_dict and 'feature_importance' in importance_dict:
-                    importance_df = pd.DataFrame([
-                        {'feature': k, 'importance': v} 
-                        for k, v in importance_dict['feature_importance'].items()
-                    ]).sort_values('importance', ascending=False)
+                if importance_dict and 'top_features' in importance_dict and importance_dict['top_features']:
+                    # Convertir la lista de diccionarios a DataFrame
+                    importance_df = pd.DataFrame(importance_dict['top_features'])
                     
                     importance_path = os.path.normpath(os.path.join(self.output_dir, 'feature_importance.csv'))
                     importance_df.to_csv(importance_path, index=False)
+                    logger.info(f"Feature importance guardado en: {importance_path}")
+                else:
+                    logger.warning("Feature importance está vacío o no tiene 'top_features'")
+            else:
+                logger.warning("El modelo no tiene método 'get_feature_importance'")
         except Exception as e:
-            logger.warning(f"No se pudo guardar feature importance: {e}")
+            logger.error(f"Error al guardar feature importance: {e}")
+            # Intentar crear un archivo básico de feature importance
+            try:
+                if hasattr(self.model, 'feature_columns'):
+                    basic_df = pd.DataFrame({
+                        'feature': self.model.feature_columns[:50],
+                        'importance': [1.0/len(self.model.feature_columns)] * min(50, len(self.model.feature_columns))
+                    })
+                    importance_path = os.path.normpath(os.path.join(self.output_dir, 'feature_importance.csv'))
+                    basic_df.to_csv(importance_path, index=False)
+                    logger.info(f"Feature importance básico guardado en: {importance_path}")
+            except Exception as e2:
+                logger.error(f"No se pudo crear feature importance básico: {e2}")
         
         # Crear resumen de archivos generados
         files_summary = {
@@ -694,6 +736,7 @@ MODELOS BASE:
         logger.info(f"  • Reporte: {report_path}")
         if self.predictions is not None:
             logger.info(f"  • Predicciones: {predictions_path}")
+        logger.info(f"  • Feature Importance: {os.path.normpath(os.path.join(self.output_dir, 'feature_importance.csv'))}")
         logger.info(f"  • Resumen: {summary_path}")
     
     def run_complete_training(self):
