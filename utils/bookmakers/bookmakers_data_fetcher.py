@@ -1,23 +1,24 @@
 """
-Este módulo proporciona funcionalidades para obtener y procesar datos de odds (cuotas)
-de diferentes casas de apuestas. Su propósito principal es:
+Bookmakers Data Fetcher - Integración Completa con Sportradar
+============================================================
 
-1. Obtener datos de odds desde diferentes fuentes:
-   - APIs externas como The Odds API
-   - Archivos locales en varios formatos (CSV, JSON, Excel)
+Fetcher avanzado que obtiene, procesa y gestiona datos de cuotas desde múltiples fuentes:
+- Sportradar API (principal)
+- APIs secundarias (The Odds API, etc.)
+- Archivos locales
+- Simulación inteligente
 
-2. Gestionar caché de datos para optimizar llamadas a API y reducir costos
+Su propósito es actuar como capa de abstracción unificada para todas las fuentes
+de datos de cuotas, proporcionando interfaz consistente para el sistema de predicción.
 
-3. Estandarizar datos de diferentes fuentes en un formato común
-
-4. Integrar los datos de odds con nuestros DataFrames de jugadores/equipos
-
-5. Simular datos de odds cuando no hay datos reales disponibles (para pruebas)
-
-6. Comparar odds entre diferentes casas de apuestas para análisis de mercado
-
-Esta clase es utilizada por BookmakersIntegration para el análisis avanzado 
-de oportunidades de apuestas con alta confianza.
+Funciones principales:
+1. Integración completa con Sportradar API para cuotas NBA
+2. Obtener player props (PTS, AST, TRB, 3P) en tiempo real
+3. Cargar datos desde archivos (Excel, CSV, JSON)
+4. Simulación inteligente de cuotas con varianza realista
+5. Normalización y procesamiento de diferentes formatos
+6. Cache inteligente para optimizar rendimiento
+7. Análisis comparativo entre casas de apuestas
 """
 
 import pandas as pd
@@ -31,25 +32,90 @@ from datetime import datetime, timedelta
 import os
 from pathlib import Path
 
+from .sportradar_api import SportradarAPI
+from .config import get_config
+from .exceptions import (
+    BookmakersAPIError,
+    SportradarAPIError,
+    InsufficientDataError,
+    DataValidationError,
+    CacheError
+)
+
 logger = logging.getLogger(__name__)
 
 class BookmakersDataFetcher:
     """
-    Clase para obtener y gestionar datos de odds de diferentes casas de apuestas.
+    Fetcher avanzado para datos de cuotas con integración completa de Sportradar.
+    
+    Funcionalidades principales:
+    - Sportradar API como fuente principal
+    - APIs secundarias como respaldo
+    - Cache inteligente con validación temporal
+    - Simulación avanzada con varianza realista
+    - Normalización de datos entre proveedores
     """
     
     def __init__(
         self,
         api_keys: Dict[str, str] = None,
         odds_data_dir: str = "data/bookmakers",
-        cache_expiry: int = 12  # Horas
+        cache_expiry: int = 12,  # Horas
+        config_override: Optional[Dict] = None
     ):
+        """
+        Inicializa el fetcher con configuración avanzada.
+        
+        Args:
+            api_keys: Diccionario con API keys por proveedor
+            odds_data_dir: Directorio para datos y cache
+            cache_expiry: Horas antes de que expire el cache
+            config_override: Configuración personalizada
+        """
+        # Configuración
+        self.config = get_config()
+        if config_override:
+            for section, values in config_override.items():
+                for key, value in values.items():
+                    self.config.set(section, key, value=value)
+        
+        # API Keys y configuración
         self.api_keys = api_keys or {}
         self.odds_data_dir = Path(odds_data_dir)
         self.cache_expiry = cache_expiry
         
-        # Asegurar que el directorio de datos existe
+        # Crear directorios necesarios
         self.odds_data_dir.mkdir(parents=True, exist_ok=True)
+        (self.odds_data_dir / 'cache').mkdir(exist_ok=True)
+        (self.odds_data_dir / 'raw').mkdir(exist_ok=True)
+        
+        # Inicializar Sportradar API como proveedor principal
+        sportradar_key = (
+            self.api_keys.get('sportradar') or 
+            self.config.get('sportradar', 'api_key') or
+            os.getenv('API_SPORTRADAR') or
+            os.getenv('SPORTRADAR_API_KEY')
+        )
+        self.sportradar_api = None
+        
+        if sportradar_key:
+            try:
+                self.sportradar_api = SportradarAPI(
+                    api_key=sportradar_key,
+                    config_override=config_override.get('sportradar') if config_override else None
+                )
+                logger.info("Sportradar API inicializada como proveedor principal")
+                logger.info(f"API Key configurada: {'*' * (len(sportradar_key) - 4)}{sportradar_key[-4:]}")
+            except Exception as e:
+                logger.error(f"Error inicializando Sportradar API: {e}")
+        else:
+            logger.warning("Sportradar API key no encontrada. Funcionalidad limitada.")
+            logger.warning("Configura la variable de entorno API_SPORTRADAR o SPORTRADAR_API_KEY")
+        
+        # Métricas de uso
+        self.api_calls_made = 0
+        self.cache_hits = 0
+        self.cache_misses = 0
         
         # Diccionario de casas de apuestas conocidas
         self.supported_bookmakers = {
@@ -76,13 +142,198 @@ class BookmakersDataFetcher:
             'betonline': 'BetOnline'
         }
 
+    # === MÉTODOS SPORTRADAR (PROVEEDOR PRINCIPAL) ===
+    
+    def get_nba_odds_from_sportradar(
+        self,
+        date: Optional[str] = None,
+        team_filter: Optional[List[str]] = None,
+        include_props: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Obtiene cuotas NBA desde Sportradar API.
+        
+        Args:
+            date: Fecha específica (YYYY-MM-DD). Si es None, obtiene próximos partidos
+            team_filter: Lista de equipos para filtrar
+            include_props: Si incluir player props
+            
+        Returns:
+            Diccionario con cuotas organizadas por partido
+        """
+        if not self.sportradar_api:
+            raise SportradarAPIError("Sportradar API no inicializada")
+        
+        try:
+            # Obtener schedule
+            if date:
+                schedule_data = self.sportradar_api.get_schedule(date)
+            else:
+                # Obtener próximos partidos
+                today = datetime.now().strftime("%Y-%m-%d")
+                schedule_data = self.sportradar_api.get_schedule(today)
+            
+            if 'games' not in schedule_data:
+                return {
+                    'success': True,
+                    'date': date or today,
+                    'games': [],
+                    'total_games': 0
+                }
+            
+            games = schedule_data['games']
+            
+            # Filtrar por equipos si se especifica
+            if team_filter:
+                filtered_games = []
+                for game in games:
+                    home_team = game.get('home', {}).get('name', '').lower()
+                    away_team = game.get('away', {}).get('name', '').lower()
+                    
+                    if any(team.lower() in home_team or team.lower() in away_team 
+                          for team in team_filter):
+                        filtered_games.append(game)
+                games = filtered_games
+            
+            # Obtener cuotas para cada partido
+            games_with_odds = []
+            for game in games:
+                game_id = game.get('id')
+                if game_id:
+                    try:
+                        # Obtener cuotas principales
+                        odds_data = self.sportradar_api.get_odds(game_id)
+                        
+                        game_info = {
+                            'game_id': game_id,
+                            'home_team': game.get('home', {}).get('name'),
+                            'away_team': game.get('away', {}).get('name'),
+                            'scheduled': game.get('scheduled'),
+                            'odds': odds_data,
+                            'props': None
+                        }
+                        
+                        # Obtener player props si se solicita
+                        if include_props:
+                            try:
+                                props_data = self.sportradar_api.get_player_props(game_id)
+                                game_info['props'] = props_data
+                            except SportradarAPIError as e:
+                                logger.warning(f"No se pudieron obtener props para {game_id}: {e}")
+                        
+                        games_with_odds.append(game_info)
+                        self.api_calls_made += (2 if include_props else 1)
+                        
+                    except SportradarAPIError as e:
+                        logger.error(f"Error obteniendo cuotas para {game_id}: {e}")
+            
+            return {
+                'success': True,
+                'source': 'sportradar',
+                'date': date or today,
+                'games': games_with_odds,
+                'total_games': len(games),
+                'games_with_odds': len(games_with_odds),
+                'api_calls_made': self.api_calls_made
+            }
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo datos de Sportradar: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'source': 'sportradar'
+            }
+    
+    def get_player_props_sportradar(
+        self,
+        player_name: str,
+        target: str = 'PTS',
+        days_ahead: int = 7
+    ) -> List[Dict[str, Any]]:
+        """
+        Obtiene player props específicos desde Sportradar.
+        
+        Args:
+            player_name: Nombre del jugador
+            target: Estadística objetivo (PTS, AST, TRB, 3P)
+            days_ahead: Días hacia adelante para buscar
+            
+        Returns:
+            Lista de props encontrados
+        """
+        if not self.sportradar_api:
+            raise SportradarAPIError("Sportradar API no inicializada")
+        
+        try:
+            # Obtener partidos próximos
+            start_date = datetime.now().strftime("%Y-%m-%d")
+            end_date = (datetime.now() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+            
+            games = self.sportradar_api.get_games_by_date_range(start_date, end_date)
+            
+            player_props = []
+            
+            for game in games:
+                game_id = game.get('id')
+                if game_id:
+                    try:
+                        props_data = self.sportradar_api.get_player_props(game_id)
+                        
+                        # Buscar props del jugador específico
+                        if 'markets' in props_data:
+                            for market in props_data['markets']:
+                                if target.lower() in market.get('description', '').lower():
+                                    for outcome in market.get('outcomes', []):
+                                        player_in_outcome = outcome.get('player', {}).get('name', '')
+                                        if player_name.lower() in player_in_outcome.lower():
+                                            player_props.append({
+                                                'game_id': game_id,
+                                                'player': player_in_outcome,
+                                                'target': target,
+                                                'line': outcome.get('point'),
+                                                'over_odds': outcome.get('over_odds'),
+                                                'under_odds': outcome.get('under_odds'),
+                                                'market': market.get('description'),
+                                                'bookmaker': outcome.get('bookmaker'),
+                                                'game_info': {
+                                                    'home': game.get('home', {}).get('name'),
+                                                    'away': game.get('away', {}).get('name'),
+                                                    'date': game.get('scheduled')
+                                                }
+                                            })
+                    except SportradarAPIError as e:
+                        logger.warning(f"Error obteniendo props para {game_id}: {e}")
+            
+            return player_props
+            
+        except Exception as e:
+            logger.error(f"Error buscando props para {player_name}: {e}")
+            return []
+    
+    def get_market_overview_sportradar(self, date: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Obtiene resumen completo del mercado NBA desde Sportradar.
+        
+        Args:
+            date: Fecha específica (YYYY-MM-DD)
+            
+        Returns:
+            Resumen del mercado con estadísticas
+        """
+        if not self.sportradar_api:
+            raise SportradarAPIError("Sportradar API no inicializada")
+        
+        return self.sportradar_api.get_market_overview(date)
+
     def load_odds_from_api(
         self,
         sport: str = 'basketball_nba',
         markets: List[str] = None,
         bookmakers: List[str] = None,
-        api_provider: str = 'odds_api',
-        force_refresh: bool = False
+        api_provider: str = 'sportradar',  # Cambiado a Sportradar como default
+        force_refresh: bool = False,
+        date: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Carga odds desde un proveedor de API (The Odds API o similar)
@@ -129,16 +380,43 @@ class BookmakersDataFetcher:
                 logger.warning(f"Error al leer caché: {e}")
         
         # Si llegamos aquí, necesitamos obtener nuevos datos
-        api_key = self.api_keys.get(api_provider)
-        if not api_key:
-            logger.error(f"No se encontró API key para {api_provider}")
-            return {'success': False, 'error': f"API key no configurada para {api_provider}"}
-            
         # Diferentes implementaciones según el proveedor
-        if api_provider == 'odds_api':
+        if api_provider == 'sportradar':
+            # Usar Sportradar como proveedor principal
+            if not self.sportradar_api:
+                logger.error("Sportradar API no está configurada")
+                return {'success': False, 'error': "Sportradar API no configurada"}
+            
+            try:
+                # Obtener datos usando los métodos específicos de Sportradar
+                if sport == 'basketball_nba':
+                    odds_data = self.get_nba_odds_from_sportradar(
+                        date=date,
+                        include_props=True
+                    )
+                else:
+                    logger.error(f"Deporte no soportado en Sportradar: {sport}")
+                    return {'success': False, 'error': f"Deporte no soportado: {sport}"}
+            except Exception as e:
+                logger.error(f"Error obteniendo datos de Sportradar: {e}")
+                return {'success': False, 'error': str(e)}
+                
+        elif api_provider == 'odds_api':
+            # Fallback a The Odds API
+            api_key = self.api_keys.get(api_provider)
+            if not api_key:
+                logger.error(f"No se encontró API key para {api_provider}")
+                return {'success': False, 'error': f"API key no configurada para {api_provider}"}
             odds_data = self._fetch_from_odds_api(api_key, sport, markets, bookmakers)
+            
         elif api_provider == 'sportsdata_io':
+            # Otro proveedor alternativo
+            api_key = self.api_keys.get(api_provider)
+            if not api_key:
+                logger.error(f"No se encontró API key para {api_provider}")
+                return {'success': False, 'error': f"API key no configurada para {api_provider}"}
             odds_data = self._fetch_from_sportsdata_io(api_key, sport, markets, bookmakers)
+            
         else:
             logger.error(f"Proveedor de API no soportado: {api_provider}")
             return {'success': False, 'error': f"Proveedor no soportado: {api_provider}"}
@@ -744,3 +1022,174 @@ class BookmakersDataFetcher:
             })
         
         return pd.DataFrame(comparison_data) 
+    
+    # === MÉTODOS DE UTILIDAD Y GESTIÓN ===
+    
+    def get_api_status(self) -> Dict[str, Any]:
+        """
+        Obtiene el estado de todas las APIs configuradas.
+        
+        Returns:
+            Estado de cada API
+        """
+        status = {
+            'sportradar': {'configured': False, 'accessible': False, 'error': None},
+            'odds_api': {'configured': False, 'accessible': False, 'error': None},
+            'sportsdata_io': {'configured': False, 'accessible': False, 'error': None}
+        }
+        
+        # Verificar Sportradar
+        if self.sportradar_api:
+            status['sportradar']['configured'] = True
+            try:
+                test_result = self.sportradar_api.test_connection()
+                status['sportradar']['accessible'] = test_result['success']
+                if not test_result['success']:
+                    status['sportradar']['error'] = test_result.get('error', 'Unknown error')
+            except Exception as e:
+                status['sportradar']['error'] = str(e)
+        
+        # Verificar otros proveedores
+        for provider in ['odds_api', 'sportsdata_io']:
+            if self.api_keys.get(provider):
+                status[provider]['configured'] = True
+                # Aquí podrías añadir tests de conexión para otros proveedores
+        
+        return status
+    
+    def get_cache_status(self) -> Dict[str, Any]:
+        """
+        Obtiene estadísticas del cache.
+        
+        Returns:
+            Estadísticas del cache
+        """
+        cache_stats = {
+            'cache_hits': self.cache_hits,
+            'cache_misses': self.cache_misses,
+            'hit_rate': self.cache_hits / max(1, self.cache_hits + self.cache_misses),
+            'api_calls_made': self.api_calls_made,
+            'cache_directory': str(self.odds_data_dir),
+            'cache_expiry_hours': self.cache_expiry
+        }
+        
+        # Añadir estadísticas de Sportradar si está disponible
+        if self.sportradar_api:
+            try:
+                sportradar_cache = self.sportradar_api.get_cache_stats()
+                cache_stats['sportradar_cache'] = sportradar_cache
+            except:
+                pass
+        
+        return cache_stats
+    
+    def clear_all_cache(self):
+        """Limpia todo el cache."""
+        try:
+            # Limpiar cache de archivos
+            cache_dir = self.odds_data_dir / 'cache'
+            for cache_file in cache_dir.glob('*.json'):
+                cache_file.unlink()
+            
+            # Limpiar cache de Sportradar
+            if self.sportradar_api:
+                self.sportradar_api.clear_cache()
+            
+            # Resetear contadores
+            self.cache_hits = 0
+            self.cache_misses = 0
+            
+            logger.info("Cache limpiado completamente")
+            
+        except Exception as e:
+            logger.error(f"Error limpiando cache: {e}")
+            raise CacheError(f"Error limpiando cache: {e}")
+    
+    def get_supported_features(self) -> Dict[str, List[str]]:
+        """
+        Obtiene características soportadas por cada proveedor.
+        
+        Returns:
+            Características por proveedor
+        """
+        features = {
+            'sportradar': [
+                'nba_odds',
+                'player_props',
+                'game_schedule',
+                'team_info',
+                'market_overview',
+                'historical_data',
+                'real_time_updates',
+                'cache_management'
+            ],
+            'odds_api': [
+                'multi_sport',
+                'bookmaker_comparison',
+                'multiple_markets',
+                'historical_odds'
+            ],
+            'sportsdata_io': [
+                'player_stats',
+                'game_data',
+                'odds_integration'
+            ],
+            'file_loading': [
+                'csv_files',
+                'json_files',
+                'excel_files',
+                'data_standardization'
+            ],
+            'simulation': [
+                'realistic_odds',
+                'variance_modeling',
+                'bookmaker_simulation',
+                'market_simulation'
+            ]
+        }
+        
+        return features
+    
+    def export_data_summary(self, output_file: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Exporta resumen de datos obtenidos.
+        
+        Args:
+            output_file: Archivo opcional para guardar el resumen
+            
+        Returns:
+            Resumen de datos
+        """
+        summary = {
+            'timestamp': datetime.now().isoformat(),
+            'api_status': self.get_api_status(),
+            'cache_status': self.get_cache_status(),
+            'supported_features': self.get_supported_features(),
+            'configuration': {
+                'cache_expiry_hours': self.cache_expiry,
+                'data_directory': str(self.odds_data_dir),
+                'sportradar_enabled': self.sportradar_api is not None
+            }
+        }
+        
+        if output_file:
+            try:
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump(summary, f, indent=2, ensure_ascii=False)
+                logger.info(f"Resumen exportado a {output_file}")
+            except Exception as e:
+                logger.error(f"Error exportando resumen: {e}")
+        
+        return summary
+    
+    def __str__(self) -> str:
+        """Representación string del fetcher."""
+        sportradar_status = "OK" if self.sportradar_api else "NO CONFIGURADO"
+        return (f"BookmakersDataFetcher("
+                f"sportradar={sportradar_status}, "
+                f"cache_hits={self.cache_hits}, "
+                f"api_calls={self.api_calls_made})")
+    
+    def __repr__(self) -> str:
+        """Representación detallada del fetcher."""
+        return self.__str__() 

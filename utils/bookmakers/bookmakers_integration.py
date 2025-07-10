@@ -28,8 +28,9 @@ import numpy as np
 import logging
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
-from src.preprocessing.utils.bookmakers.bookmakers_data_fetcher import BookmakersDataFetcher
-from src.preprocessing.utils.features_selector import FeaturesSelector
+from utils.bookmakers.bookmakers_data_fetcher import BookmakersDataFetcher
+from utils.bookmakers.exceptions import DataValidationError
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,6 @@ class BookmakersIntegration:
         confidence_threshold: float = 0.95  # 96% de precisión
     ):
         self.bookmakers_fetcher = BookmakersDataFetcher(api_keys, odds_data_dir)
-        self.features_selector = FeaturesSelector()
         self.minimum_edge = minimum_edge
         self.confidence_threshold = confidence_threshold
         
@@ -617,4 +617,368 @@ class BookmakersIntegration:
             'success': False,
             'error': 'Scraping no implementado completamente',
             'data': []
+        } 
+
+    def __repr__(self) -> str:
+        """Representación detallada del sistema."""
+        return self.__str__()
+    
+    # === MÉTODO PRINCIPAL PARA FLUJO DIRECTO ===
+    
+    def get_best_prediction_odds(
+        self,
+        predictions_data: pd.DataFrame,
+        target: str,
+        date: Optional[str] = None,
+        min_confidence: float = 0.90
+    ) -> Dict[str, Any]:
+        """
+        MÉTODO PRINCIPAL: Recibe predicciones → Obtiene cuotas Sportradar → Devuelve mejor combinación.
+        
+        Flujo directo:
+        1. Recibe DataFrame con predicciones del modelo
+        2. Obtiene cuotas desde Sportradar API 
+        3. Encuentra la mejor combinación predicción/cuota
+        4. Devuelve resultado con recomendación de apuesta
+        
+        Args:
+            predictions_data: DataFrame con predicciones (debe tener columnas: Player, Team, {target}, {target}_confidence)
+            target: Estadística objetivo (PTS, AST, TRB, 3P)
+            date: Fecha específica (YYYY-MM-DD), si None usa hoy
+            min_confidence: Confianza mínima para considerar predicción
+            
+        Returns:
+            Dict con mejor combinación predicción/cuota y datos para apostar
+        """
+        logger.info(f"INICIANDO FLUJO PRINCIPAL: Predicciones → Sportradar → Mejor cuota para {target}")
+        
+        try:
+            # PASO 1: Validar predicciones
+            required_columns = ['Player', 'Team', target, f'{target}_confidence']
+            missing_cols = [col for col in required_columns if col not in predictions_data.columns]
+            if missing_cols:
+                raise DataValidationError(f"Faltan columnas requeridas: {missing_cols}")
+            
+            # Filtrar por confianza mínima
+            high_confidence_predictions = predictions_data[
+                predictions_data[f'{target}_confidence'] >= min_confidence
+            ].copy()
+            
+            if high_confidence_predictions.empty:
+                return {
+                    'success': False,
+                    'error': f'No hay predicciones con confianza >= {min_confidence:.1%}',
+                    'total_predictions': len(predictions_data)
+                }
+            
+            logger.info(f"Predicciones válidas: {len(high_confidence_predictions)}/{len(predictions_data)}")
+            
+            # PASO 2: Obtener cuotas desde Sportradar
+            logger.info("Obteniendo cuotas desde Sportradar...")
+            sportradar_data = self.bookmakers_fetcher.get_nba_odds_from_sportradar(
+                date=date, 
+                include_props=True
+            )
+            
+            if not sportradar_data.get('success', False):
+                logger.warning("Error obteniendo cuotas reales, usando simulación")
+                # Fallback a simulación
+                simulated_odds = self.bookmakers_fetcher.simulate_bookmaker_data(
+                    high_confidence_predictions, target
+                )
+                return self._process_simulated_best_bet(simulated_odds, target)
+            
+            logger.info(f"Cuotas obtenidas: {sportradar_data['games_with_odds']} juegos")
+            
+            # PASO 3: Encontrar mejores combinaciones
+            best_combinations = self._find_best_prediction_odds_combinations(
+                high_confidence_predictions, 
+                sportradar_data, 
+                target
+            )
+            
+            if not best_combinations:
+                return {
+                    'success': False,
+                    'error': 'No se encontraron combinaciones válidas predicción/cuota',
+                    'sportradar_games': sportradar_data.get('games_with_odds', 0)
+                }
+            
+            # PASO 4: Seleccionar la mejor opción
+            best_bet = self._select_absolute_best_bet(best_combinations)
+            
+            # PASO 5: Calcular stake recomendado
+            recommended_stake = self._calculate_optimal_stake(best_bet)
+            
+            # PASO 6: Compilar resultado final
+            result = {
+                'success': True,
+                'timestamp': datetime.now().isoformat(),
+                'target': target,
+                'date': date or datetime.now().strftime('%Y-%m-%d'),
+                'best_bet': {
+                    **best_bet,
+                    'recommended_stake': recommended_stake,
+                    'potential_profit': recommended_stake * (best_bet['decimal_odds'] - 1),
+                    'roi_percentage': ((best_bet['decimal_odds'] - 1) * best_bet['win_probability'] - 
+                                     (1 - best_bet['win_probability'])) * 100
+                },
+                'alternatives': best_combinations[1:6],  # Top 5 alternativas
+                'market_summary': {
+                    'total_predictions_analyzed': len(high_confidence_predictions),
+                    'total_odds_found': len(best_combinations),
+                    'average_confidence': high_confidence_predictions[f'{target}_confidence'].mean(),
+                    'best_edge_found': best_bet['edge']
+                }
+            }
+            
+            logger.info(f"MEJOR APUESTA ENCONTRADA: {best_bet['player']} {best_bet['bet_type']} {best_bet['line']} | Edge: {best_bet['edge']:.1%}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error en flujo principal: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
+    
+    def _find_best_prediction_odds_combinations(
+        self,
+        predictions: pd.DataFrame,
+        sportradar_data: Dict[str, Any],
+        target: str
+    ) -> List[Dict[str, Any]]:
+        """Encuentra todas las combinaciones válidas predicción/cuota."""
+        combinations = []
+        
+        # Extraer juegos con props
+        games = sportradar_data.get('games', [])
+        
+        for game in games:
+            if not game.get('props'):
+                continue
+                
+            # Extraer props para el target específico
+            target_props = self._extract_target_props(game['props'], target)
+            
+            if not target_props:
+                continue
+            
+            # Para cada jugador en nuestras predicciones
+            for _, pred_row in predictions.iterrows():
+                player_name = pred_row['Player']
+                prediction = pred_row[target]
+                confidence = pred_row[f'{target}_confidence']
+                
+                # Buscar props para este jugador
+                player_props = [
+                    prop for prop in target_props 
+                    if self._player_name_matches(player_name, prop.get('player', ''))
+                ]
+                
+                # Evaluar cada prop
+                for prop in player_props:
+                    line = prop.get('line', 0)
+                    over_odds = prop.get('over_odds', 0)
+                    under_odds = prop.get('under_odds', 0)
+                    bookmaker = prop.get('bookmaker', 'unknown')
+                    
+                    # Evaluar OVER
+                    if over_odds > 0 and prediction > line:
+                        win_prob = self._calculate_model_probability(prediction, line, target)
+                        market_prob = self._odds_to_probability(over_odds)
+                        edge = win_prob - market_prob
+                        
+                        if edge > self.minimum_edge:
+                            combinations.append({
+                                'player': player_name,
+                                'team': pred_row['Team'],
+                                'target': target,
+                                'line': line,
+                                'bet_type': 'over',
+                                'prediction': prediction,
+                                'confidence': confidence,
+                                'win_probability': win_prob,
+                                'market_probability': market_prob,
+                                'edge': edge,
+                                'american_odds': over_odds,
+                                'decimal_odds': self._american_to_decimal(over_odds),
+                                'bookmaker': bookmaker,
+                                'game_id': game.get('game_id'),
+                                'opponent': game.get('away_team') if pred_row['Team'] in game.get('home_team', '') else game.get('home_team')
+                            })
+                    
+                    # Evaluar UNDER
+                    if under_odds > 0 and prediction < line:
+                        win_prob = 1 - self._calculate_model_probability(prediction, line, target)
+                        market_prob = self._odds_to_probability(under_odds)
+                        edge = win_prob - market_prob
+                        
+                        if edge > self.minimum_edge:
+                            combinations.append({
+                                'player': player_name,
+                                'team': pred_row['Team'],
+                                'target': target,
+                                'line': line,
+                                'bet_type': 'under',
+                                'prediction': prediction,
+                                'confidence': confidence,
+                                'win_probability': win_prob,
+                                'market_probability': market_prob,
+                                'edge': edge,
+                                'american_odds': under_odds,
+                                'decimal_odds': self._american_to_decimal(under_odds),
+                                'bookmaker': bookmaker,
+                                'game_id': game.get('game_id'),
+                                'opponent': game.get('away_team') if pred_row['Team'] in game.get('home_team', '') else game.get('home_team')
+                            })
+        
+        # Ordenar por edge descendente
+        combinations.sort(key=lambda x: x['edge'], reverse=True)
+        return combinations
+    
+    def _player_name_matches(self, pred_name: str, prop_name: str) -> bool:
+        """Verifica si los nombres de jugador coinciden (manejo de variaciones)."""
+        pred_clean = pred_name.lower().strip()
+        prop_clean = prop_name.lower().strip()
+        
+        # Coincidencia exacta
+        if pred_clean == prop_clean:
+            return True
+        
+        # Coincidencia por palabras (apellido principalmente)
+        pred_words = pred_clean.split()
+        prop_words = prop_clean.split()
+        
+        # Si al menos el apellido coincide
+        if pred_words and prop_words:
+            return pred_words[-1] == prop_words[-1]
+        
+        return False
+    
+    def _american_to_decimal(self, american_odds: float) -> float:
+        """Convierte odds americanas a decimales."""
+        if american_odds > 0:
+            return 1 + (american_odds / 100)
+        else:
+            return 1 + (100 / abs(american_odds))
+    
+    def _select_absolute_best_bet(self, combinations: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Selecciona la mejor apuesta considerando edge, confianza y odds."""
+        if not combinations:
+            raise ValueError("No hay combinaciones para seleccionar")
+        
+        # Función de puntuación que combina múltiples factores
+        def score_combination(combo):
+            edge_score = combo['edge'] * 100  # Edge base
+            confidence_boost = (combo['confidence'] - 0.9) * 50  # Boost por confianza alta
+            odds_penalty = max(0, combo['decimal_odds'] - 3) * -5  # Penalizar odds muy altas
+            
+            return edge_score + confidence_boost + odds_penalty
+        
+        # Calcular scores y seleccionar el mejor
+        for combo in combinations:
+            combo['composite_score'] = score_combination(combo)
+        
+        best_bet = max(combinations, key=lambda x: x['composite_score'])
+        return best_bet
+    
+    def _calculate_optimal_stake(self, best_bet: Dict[str, Any]) -> float:
+        """Calcula stake óptimo usando Kelly Criterion modificado."""
+        win_prob = best_bet['win_probability']
+        decimal_odds = best_bet['decimal_odds']
+        
+        # Kelly Criterion: f = (bp - q) / b
+        b = decimal_odds - 1  # ganancia neta por unidad apostada
+        q = 1 - win_prob      # probabilidad de perder
+        
+        if b > 0:
+            kelly_fraction = (win_prob * b - q) / b
+            # Limitar Kelly a máximo configurado
+            kelly_fraction = max(0, min(kelly_fraction, self.max_kelly_fraction))
+        else:
+            kelly_fraction = 0
+        
+        # Calcular stake en dinero
+        stake = kelly_fraction * self.bankroll
+        
+        # Aplicar límites configurados
+        min_bet = self.config.get('betting', 'min_bet_amount')
+        max_bet = self.config.get('betting', 'max_bet_amount')
+        
+        return max(min_bet, min(stake, max_bet))
+    
+    def _process_simulated_best_bet(self, simulated_df: pd.DataFrame, target: str) -> Dict[str, Any]:
+        """Procesa datos simulados para encontrar mejor apuesta."""
+        # Buscar columnas de odds simuladas
+        odds_columns = [col for col in simulated_df.columns if f'{target}_over_' in col and '_odds_' in col]
+        
+        if not odds_columns:
+            return {
+                'success': False,
+                'error': 'No se encontraron odds simuladas',
+                'simulated': True
+            }
+        
+        best_edge = -1
+        best_bet = None
+        
+        for _, row in simulated_df.iterrows():
+            prediction = row.get(target, 0)
+            confidence = row.get(f'{target}_confidence', 0)
+            
+            for odds_col in odds_columns:
+                # Extraer información de la columna
+                parts = odds_col.split('_')
+                if len(parts) >= 4:
+                    line = float(parts[2])
+                    bookmaker = parts[-1]
+                    
+                    odds = row.get(odds_col, 0)
+                    if odds <= 0:
+                        continue
+                    
+                    # Calcular edge para OVER
+                    if prediction > line:
+                        win_prob = self._calculate_model_probability(prediction, line, target)
+                        market_prob = 1 / odds  # odds decimales simuladas
+                        edge = win_prob - market_prob
+                        
+                        if edge > best_edge:
+                            best_edge = edge
+                            best_bet = {
+                                'player': row['Player'],
+                                'team': row['Team'],
+                                'target': target,
+                                'line': line,
+                                'bet_type': 'over',
+                                'prediction': prediction,
+                                'confidence': confidence,
+                                'win_probability': win_prob,
+                                'market_probability': market_prob,
+                                'edge': edge,
+                                'decimal_odds': odds,
+                                'bookmaker': bookmaker,
+                                'simulated': True
+                            }
+        
+        if best_bet:
+            stake = self._calculate_optimal_stake(best_bet)
+            return {
+                'success': True,
+                'timestamp': datetime.now().isoformat(),
+                'best_bet': {
+                    **best_bet,
+                    'recommended_stake': stake,
+                    'potential_profit': stake * (best_bet['decimal_odds'] - 1)
+                },
+                'simulated': True,
+                'note': 'Datos simulados - no usar para apuestas reales'
+            }
+        
+        return {
+            'success': False,
+            'error': 'No se encontró ninguna combinación válida en simulación'
         } 
