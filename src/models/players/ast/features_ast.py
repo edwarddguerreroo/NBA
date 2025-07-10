@@ -2831,11 +2831,52 @@ class AssistsFeatureEngineer:
         # Actualizar categoría
         self.feature_categories['model_feedback'] = len(features)
         
+        # === FEATURES CRÍTICAS REQUERIDAS POR EL ENSEMBLE ===
+        # Estas features son esperadas por el ModelRegistry y deben tener nombres exactos
+        
+        # 11. EXPLOSION_POTENTIAL - Potencial de explosión (requerido por ensemble)
+        ast_max_5g = df.groupby('Player')['AST'].rolling(5, min_periods=1).max().shift(1).reset_index(0, drop=True)
+        ast_avg_5g = df.groupby('Player')['AST'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+        df['explosion_potential'] = (ast_max_5g - ast_avg_5g).fillna(0.5)  # 0.5 como neutral
+        features.append('explosion_potential')
+        
+        # 12. IS_HIGH_SCORER - Indicador de anotador alto (adaptado para asistencias)
+        ast_percentile = df.groupby('Player')['AST'].expanding().quantile(0.75).shift(1).reset_index(0, drop=True)
+        df['is_high_scorer'] = (ast_last > ast_percentile).astype(int).fillna(0)
+        features.append('is_high_scorer')
+        
+        # 13. HIGH_VOLUME_EFFICIENCY - Eficiencia en alto volumen (adaptado)
+        if 'MP' in df.columns:
+            mp_avg_5g = df.groupby('Player')['MP'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+            df['high_volume_efficiency'] = ((ast_avg_5g / (mp_avg_5g + 1)) * (mp_avg_5g > 25).astype(int)).fillna(0)
+        else:
+            df['high_volume_efficiency'] = ast_avg_5g.fillna(0)
+        features.append('high_volume_efficiency')
+        
+        # 14. HIGH_MINUTES_PLAYER - Jugador de muchos minutos
+        if 'MP' in df.columns:
+            mp_avg_10g = df.groupby('Player')['MP'].rolling(10, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+            df['high_minutes_player'] = (mp_avg_10g > 30).astype(int).fillna(0)
+        else:
+            df['high_minutes_player'] = pd.Series([0] * len(df), index=df.index)
+        features.append('high_minutes_player')
+        
+        # 15. PTS_PER_MINUTE_5G - Puntos por minuto (requerido por ensemble)
+        if 'PTS' in df.columns and 'MP' in df.columns:
+            pts_avg_5g = df.groupby('Player')['PTS'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+            mp_avg_5g = df.groupby('Player')['MP'].rolling(5, min_periods=1).mean().shift(1).reset_index(0, drop=True)
+            df['pts_per_minute_5g'] = (pts_avg_5g / (mp_avg_5g + 1)).fillna(0)
+        else:
+            # Si no hay PTS, usar AST como proxy
+            df['pts_per_minute_5g'] = (ast_avg_5g / (mp_avg_5g + 1)).fillna(0) if 'MP' in df.columns else ast_avg_5g.fillna(0)
+        features.append('pts_per_minute_5g')
+        
         # Registrar features
         for feature in features:
             self._register_feature(feature, 'model_feedback')
         
         logger.info(f"Generadas {len(features)} FEATURES ULTRA-PREDICTIVAS BASADAS EN FEEDBACK DEL MODELO")
+        logger.info("Features críticas del ensemble añadidas: explosion_potential, is_high_scorer, high_volume_efficiency, high_minutes_player, pts_per_minute_5g")
         
         return features
     
@@ -3108,7 +3149,10 @@ class AssistsFeatureEngineer:
             'contextual_ast_predictor', 'home_away_ast_factor',
             # Features de contexto críticas
             'ast_avg_15g', 'ast_season_avg', 'real_opponent_def_rating',
-            'ultimate_ast_predictor', 'usage_rate', 'assist_rate'
+            'ultimate_ast_predictor', 'usage_rate', 'assist_rate',
+            # FEATURES CRÍTICAS DEL ENSEMBLE - REQUERIDAS POR MODEL_REGISTRY
+            'explosion_potential', 'is_high_scorer', 'high_volume_efficiency', 
+            'high_minutes_player', 'pts_per_minute_5g'
         ]
         
         # Filtrar features esenciales que existen

@@ -1001,7 +1001,10 @@ class PointsFeatureEngineer:
                 'ultimate_scoring_predictor', 'super_scoring_predictor', 'consensus_prediction',
                 'final_stacked_predictor', 'elite_scorer_composite', 'ensemble_scoring_prediction',
                 'momentum_accelerator', 'confidence_weighted_prediction', 'pts_hist_avg_5g',
-                'scoring_efficiency_5g', 'pts_trend_factor', 'shooting_volume_5g'
+                'scoring_efficiency_5g', 'pts_trend_factor', 'shooting_volume_5g',
+                # FEATURES CRÍTICAS DEL ENSEMBLE - NUNCA ELIMINAR
+                'explosion_potential', 'is_high_scorer', 'high_volume_efficiency', 
+                'high_minutes_player', 'pts_per_minute_5g'
             ]
             
             # Separar features protegidas de las que pueden ser filtradas
@@ -2757,10 +2760,61 @@ class PointsFeatureEngineer:
                 elif 'score' in feature:
                     df[feature] = np.clip(df[feature], 0, 1)  # Límites para scores
         
+        # ==================== FEATURES CRÍTICAS REQUERIDAS POR EL ENSEMBLE ====================
+        # Estas features son esperadas por el ModelRegistry y deben tener nombres exactos
+        
+        logger.info("Creando features críticas requeridas por el ensemble...")
+        
+        # EXPLOSION_POTENTIAL - Potencial de explosión (requerido por ensemble)
+        if self._register_feature('explosion_potential', 'ensemble_critical'):
+            pts_max_5g = self._get_historical_series(df, 'PTS', 5, 'max')
+            pts_avg_5g = self._get_historical_series(df, 'PTS', 5, 'mean')
+            df['explosion_potential'] = (pts_max_5g - pts_avg_5g).fillna(0.5)  # 0.5 como neutral
+        
+        # IS_HIGH_SCORER - Indicador de anotador alto (requerido por ensemble)
+        if self._register_feature('is_high_scorer', 'ensemble_critical'):
+            pts_percentile = df.groupby('Player')['PTS'].expanding().quantile(0.75).shift(1).reset_index(0, drop=True)
+            pts_last = df.groupby('Player')['PTS'].shift(1)
+            df['is_high_scorer'] = (pts_last > pts_percentile).astype(int).fillna(0)
+        
+        # HIGH_VOLUME_EFFICIENCY - Eficiencia en alto volumen (requerido por ensemble)
+        if self._register_feature('high_volume_efficiency', 'ensemble_critical'):
+            if 'MP' in df.columns:
+                mp_avg_5g = self._get_historical_series(df, 'MP', 5, 'mean')
+                pts_avg_5g = self._get_historical_series(df, 'PTS', 5, 'mean')
+                df['high_volume_efficiency'] = ((pts_avg_5g / (mp_avg_5g + 1)) * (mp_avg_5g > 25).astype(int)).fillna(0)
+            else:
+                pts_avg_5g = self._get_historical_series(df, 'PTS', 5, 'mean')
+                df['high_volume_efficiency'] = pts_avg_5g.fillna(0)
+        
+        # HIGH_MINUTES_PLAYER - Jugador de muchos minutos (requerido por ensemble)
+        if self._register_feature('high_minutes_player', 'ensemble_critical'):
+            if 'MP' in df.columns:
+                mp_avg_10g = self._get_historical_series(df, 'MP', 10, 'mean')
+                df['high_minutes_player'] = (mp_avg_10g > 30).astype(int).fillna(0)
+            else:
+                df['high_minutes_player'] = pd.Series([0] * len(df), index=df.index)
+        
+        # PTS_PER_MINUTE_5G - Puntos por minuto (requerido por ensemble)
+        if self._register_feature('pts_per_minute_5g', 'ensemble_critical'):
+            if 'MP' in df.columns:
+                pts_avg_5g = self._get_historical_series(df, 'PTS', 5, 'mean')
+                mp_avg_5g = self._get_historical_series(df, 'MP', 5, 'mean')
+                df['pts_per_minute_5g'] = (pts_avg_5g / (mp_avg_5g + 1)).fillna(0)
+            else:
+                pts_avg_5g = self._get_historical_series(df, 'PTS', 5, 'mean')
+                df['pts_per_minute_5g'] = pts_avg_5g.fillna(0)
+        
+        # Agregar features críticas a la lista de ensemble
+        critical_features = ['explosion_potential', 'is_high_scorer', 'high_volume_efficiency', 
+                            'high_minutes_player', 'pts_per_minute_5g']
+        ensemble_features.extend(critical_features)
+        
         logger.info(f"ENSEMBLE REVOLUCIONARIO CREADO: {len(ensemble_features)} features")
         logger.info("  temporal_ensemble_predictor: Combina múltiples ventanas temporales")
         logger.info("  final_ensemble_predictor: Predictor ensemble definitivo")
         logger.info("  ensemble_confidence_score: Score de confianza del ensemble")
+        logger.info("  Features críticas del ensemble añadidas: explosion_potential, is_high_scorer, high_volume_efficiency, high_minutes_player, pts_per_minute_5g")
     
     def _apply_noise_filters(self, df: pd.DataFrame, features: List[str]) -> List[str]:
         """

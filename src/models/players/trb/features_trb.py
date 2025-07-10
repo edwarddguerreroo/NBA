@@ -126,6 +126,9 @@ class ReboundsFeatureEngineer:
         # 7. FEATURES DE SITUACIÓN DEL JUEGO
         self._create_game_situation_features(df)
         
+        # 8. FEATURES CRÍTICAS REQUERIDAS POR EL ENSEMBLE
+        self._create_ensemble_critical_features(df)
+        
         # Obtener lista de features creadas
         created_features = list(self.feature_registry.keys())
         
@@ -160,14 +163,27 @@ class ReboundsFeatureEngineer:
                 X_filtered = df[clean_features].fillna(0)
                 y = df['TRB'].fillna(df['TRB'].mean())
                 
-                # Seleccionar mejores features
-                selector = SelectKBest(score_func=f_regression, k=self.max_features)
-                selector.fit(X_filtered, y)
+                # PROTEGER FEATURES CRÍTICAS DEL ENSEMBLE
+                critical_features = ['explosion_potential', 'is_high_scorer', 'high_volume_efficiency', 
+                                   'high_minutes_player', 'pts_per_minute_5g']
+                protected_features = [f for f in critical_features if f in clean_features]
+                other_features = [f for f in clean_features if f not in critical_features]
                 
-                # Obtener features seleccionadas
-                selected_features = [clean_features[i] for i in range(len(clean_features)) 
-                                   if selector.get_support()[i]]
-                clean_features = selected_features
+                # Seleccionar mejores features entre las no protegidas
+                remaining_slots = self.max_features - len(protected_features)
+                if remaining_slots > 0 and other_features:
+                    X_other = df[other_features].fillna(0)
+                    selector = SelectKBest(score_func=f_regression, k=min(remaining_slots, len(other_features)))
+                    selector.fit(X_other, y)
+                    
+                    # Obtener features seleccionadas
+                    selected_other = [other_features[i] for i in range(len(other_features)) 
+                                    if selector.get_support()[i]]
+                    
+                    # Combinar protegidas + seleccionadas
+                    clean_features = protected_features + selected_other
+                else:
+                    clean_features = protected_features
         
         # Resumen final
         self._log_feature_summary()
@@ -1069,3 +1085,57 @@ class ReboundsFeatureEngineer:
                 return features[:10]  # Devolver las primeras 10 como último recurso
         
         return clean_features
+    
+    def _create_ensemble_critical_features(self, df: pd.DataFrame) -> None:
+        """
+        Crea features críticas requeridas por el ensemble.
+        Estas features son esperadas por el ModelRegistry y deben tener nombres exactos.
+        """
+        logger.info("Creando features críticas requeridas por el ensemble...")
+        
+        # EXPLOSION_POTENTIAL - Potencial de explosión (adaptado para rebotes)
+        if self._register_feature('explosion_potential', 'ensemble_critical'):
+            trb_max_5g = self._get_historical_series(df, 'TRB', window=5, operation='max')
+            trb_avg_5g = self._get_historical_series(df, 'TRB', window=5, operation='mean')
+            df['explosion_potential'] = (trb_max_5g - trb_avg_5g).fillna(0.5)  # 0.5 como neutral
+        
+        # IS_HIGH_SCORER - Indicador de alto rendimiento (adaptado para rebotes)
+        if self._register_feature('is_high_scorer', 'ensemble_critical'):
+            trb_percentile = df.groupby('Player')['TRB'].expanding().quantile(0.75).shift(1).reset_index(0, drop=True)
+            trb_last = df.groupby('Player')['TRB'].shift(1)
+            df['is_high_scorer'] = (trb_last > trb_percentile).astype(int).fillna(0)
+        
+        # HIGH_VOLUME_EFFICIENCY - Eficiencia en alto volumen (adaptado para rebotes)
+        if self._register_feature('high_volume_efficiency', 'ensemble_critical'):
+            if 'MP' in df.columns:
+                mp_avg_5g = self._get_historical_series(df, 'MP', window=5, operation='mean')
+                trb_avg_5g = self._get_historical_series(df, 'TRB', window=5, operation='mean')
+                df['high_volume_efficiency'] = ((trb_avg_5g / (mp_avg_5g + 1)) * (mp_avg_5g > 25).astype(int)).fillna(0)
+            else:
+                trb_avg_5g = self._get_historical_series(df, 'TRB', window=5, operation='mean')
+                df['high_volume_efficiency'] = trb_avg_5g.fillna(0)
+        
+        # HIGH_MINUTES_PLAYER - Jugador de muchos minutos
+        if self._register_feature('high_minutes_player', 'ensemble_critical'):
+            if 'MP' in df.columns:
+                mp_avg_10g = self._get_historical_series(df, 'MP', window=10, operation='mean')
+                df['high_minutes_player'] = (mp_avg_10g > 30).astype(int).fillna(0)
+            else:
+                df['high_minutes_player'] = pd.Series([0] * len(df), index=df.index)
+        
+        # PTS_PER_MINUTE_5G - Puntos por minuto (requerido por ensemble aunque no sea relevante para rebotes)
+        if self._register_feature('pts_per_minute_5g', 'ensemble_critical'):
+            if 'PTS' in df.columns and 'MP' in df.columns:
+                pts_avg_5g = self._get_historical_series(df, 'PTS', window=5, operation='mean')
+                mp_avg_5g = self._get_historical_series(df, 'MP', window=5, operation='mean')
+                df['pts_per_minute_5g'] = (pts_avg_5g / (mp_avg_5g + 1)).fillna(0)
+            else:
+                # Si no hay PTS, usar TRB como proxy
+                if 'MP' in df.columns:
+                    trb_avg_5g = self._get_historical_series(df, 'TRB', window=5, operation='mean')
+                    mp_avg_5g = self._get_historical_series(df, 'MP', window=5, operation='mean')
+                    df['pts_per_minute_5g'] = (trb_avg_5g / (mp_avg_5g + 1)).fillna(0)
+                else:
+                    df['pts_per_minute_5g'] = pd.Series([0] * len(df), index=df.index)
+        
+        logger.info("Features críticas del ensemble añadidas: explosion_potential, is_high_scorer, high_volume_efficiency, high_minutes_player, pts_per_minute_5g")

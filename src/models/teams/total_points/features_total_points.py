@@ -314,6 +314,27 @@ class TotalPointsFeatureEngine:
             lambda x: x.expanding().mean().shift(1)
         )
 
+        # FEATURES ESPECÍFICAS REQUERIDAS POR EL MODELO - CÁLCULOS REALES
+        # Promedio histórico de puntos de 5 juegos (equivalente a pts_ma_5 pero con nombre específico)
+        df['pts_hist_avg_5g'] = df.groupby('Team')['PTS'].transform(
+            lambda x: x.rolling(5, min_periods=1).mean().shift(1)
+        )
+        
+        # Promedio histórico de puntos del oponente de 5 juegos
+        df['pts_opp_hist_avg_5g'] = df.groupby('Team')['PTS_Opp'].transform(
+            lambda x: x.rolling(5, min_periods=1).mean().shift(1)
+        )
+        
+        # Diferencia histórica de puntos de 5 juegos
+        df['point_diff_hist_avg_5g'] = df.groupby('Team').apply(
+            lambda x: (x['PTS'] - x['PTS_Opp']).rolling(5, min_periods=1).mean().shift(1)
+        ).reset_index(level=0, drop=True)
+        
+        # Consistencia de puntos de 5 juegos (desviación estándar)
+        df['pts_consistency_5g'] = df.groupby('Team')['PTS'].transform(
+            lambda x: x.rolling(5, min_periods=1).std().shift(1)
+        )
+
         logger.info(f"Features básicas creadas: {len([col for col in df.columns if 'pts_ma_' in col or 'pts_std_' in col])}")
 
         return df
@@ -352,6 +373,12 @@ class TotalPointsFeatureEngine:
                 df[f'win_rate_last_{n}'] = df.groupby('Team')['is_win'].transform(
                     lambda x: x.rolling(n, min_periods=1).mean().shift(1)
                 )
+                
+        # FEATURE ESPECÍFICA REQUERIDA: team_win_rate_10g
+        if 'is_win' in df.columns:
+            df['team_win_rate_10g'] = df.groupby('Team')['is_win'].transform(
+                lambda x: x.rolling(10, min_periods=1).mean().shift(1)
+            )
 
             # Puntos sobre/bajo el promedio
             df[f'pts_vs_avg_last_{n}'] = df.groupby('Team').apply(
@@ -512,6 +539,15 @@ class TotalPointsFeatureEngine:
 
     def _create_matchup_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Crea features específicas de matchup histórico"""
+        
+        # Verificar si existe la columna 'Opp'
+        if 'Opp' not in df.columns:
+            logger.warning("Columna 'Opp' no encontrada, creando features de matchup por defecto")
+            # Crear features de matchup con valores por defecto
+            for col in ['matchup_total_avg', 'matchup_total_std', 'matchup_diff_avg', 'matchup_win_rate']:
+                df[col] = np.nan
+            return df
+            
         # Crear clave de matchup
         df['matchup_key'] = df.apply(lambda x: tuple(sorted([x['Team'], x['Opp']])), axis=1)
 
@@ -656,13 +692,17 @@ class TotalPointsFeatureEngine:
             df['pace_trend'] = self._calculate_trend(df, 'pace_est', 10)
 
         # Adaptación al ritmo del oponente
-        if 'pace_ma_5' in df.columns:
+        if 'pace_ma_5' in df.columns and 'Opp' in df.columns:
             # Calcular ritmo promedio por equipo
             team_avg_pace = df.groupby('Team')['pace_ma_5'].transform('mean')
             opp_avg_pace = df.groupby('Opp')['pace_ma_5'].transform('mean')
 
             df['pace_matchup'] = df['pace_ma_5'] - opp_avg_pace
             df['pace_differential'] = team_avg_pace - opp_avg_pace
+        elif 'pace_ma_5' in df.columns:
+            # Sin datos del oponente, usar valores neutros
+            df['pace_matchup'] = 0.0
+            df['pace_differential'] = 0.0
 
         # Factor de ritmo esperado para el juego
         if all(col in df.columns for col in ['pace_ma_5', 'opp_pace_tendency']):
@@ -737,9 +777,9 @@ class TotalPointsFeatureEngine:
             df['pts_b2b'] = df[df['is_back_to_back'] == 1].groupby('Team')['PTS'].transform(
                 lambda x: x.expanding().mean().shift(1)
             )
-            df['total_b2b'] = df[df['is_back_to_back'] == 1].groupby('Team').apply(
-                lambda x: (x['PTS'] + x['PTS_Opp']).expanding().mean().shift(1)
-            ).reset_index(level=0, drop=True)
+            df['total_b2b'] = df[df['is_back_to_back'] == 1].groupby('Team')['PTS'].transform(
+                lambda x: (x + df.loc[x.index, 'PTS_Opp']).expanding().mean().shift(1)
+            )
 
         logger.info(f"Features situacionales creadas: {len([col for col in df.columns if any(x in col for x in ['home', 'away', 'close', 'ot', 'rest', 'b2b'])])}")
 
@@ -2181,9 +2221,20 @@ class TotalPointsFeatureEngine:
                 features_to_remove.append(feature)
         
         # 3. EVALUAR: Features por patrones - ser más selectivo
+        # FEATURES CRÍTICAS PARA EL MODELO - NUNCA ELIMINAR
+        critical_model_features = [
+            'team_win_rate_10g', 'pts_hist_avg_5g', 'pts_opp_hist_avg_5g', 
+            'point_diff_hist_avg_5g', 'pts_consistency_5g'
+        ]
+        
         for feature in pattern_leakage:
+            # PROTEGER features críticas para el modelo
+            if feature in critical_model_features:
+                logger.info(f"🛡️ PROTEGIENDO feature crítica del modelo: {feature}")
+                continue  # NO agregar a features_to_remove
+                
             # Conservar features importantes detectadas por patrones
-            if any(pattern in feature.lower() for pattern in [
+            elif any(pattern in feature.lower() for pattern in [
                 'ma_10', 'ma_5', 'trend_', 'momentum_', 'consistency_',
                 'home_advantage', 'rest_', 'fatigue_'
             ]) and 'shift' in feature.lower():
@@ -2203,6 +2254,20 @@ class TotalPointsFeatureEngine:
         
         # Eliminar duplicados
         features_to_remove = list(set(features_to_remove))
+        
+        # PROTECCIÓN FINAL: Asegurar que las features críticas NO se eliminen
+        protected_features = [
+            'team_win_rate_10g', 'pts_hist_avg_5g', 'pts_opp_hist_avg_5g', 
+            'point_diff_hist_avg_5g', 'pts_consistency_5g'
+        ]
+        
+        # Remover features protegidas de la lista de eliminación
+        features_to_remove = [f for f in features_to_remove if f not in protected_features]
+        
+        # Log de features protegidas
+        protected_found = [f for f in protected_features if f in df.columns]
+        if protected_found:
+            logger.info(f"🛡️ PROTEGIDAS {len(protected_found)} features críticas del modelo: {protected_found}")
         
         # Verificar que las features existen antes de eliminar
         existing_features_to_remove = [f for f in features_to_remove if f in df.columns]

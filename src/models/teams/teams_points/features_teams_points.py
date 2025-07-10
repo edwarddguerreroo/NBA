@@ -278,6 +278,39 @@ class TeamPointsFeatureEngineer:
         # Proyección base del equipo
         if 'team_direct_projection_avg_5g' in df.columns:
             df['team_base_projection'] = df['team_direct_projection_avg_5g']
+        
+        # ==================== FEATURES ESPECÍFICAS REQUERIDAS POR EL MODELO ====================
+        # ESTAS SON LAS FEATURES QUE EL ENSEMBLE ESPERA - CÁLCULOS REALES
+        
+        # team_win_rate_10g - Tasa de victorias de 10 juegos
+        if 'is_win' in df.columns:
+            df['team_win_rate_10g'] = df.groupby('Team')['is_win'].transform(
+                lambda x: x.rolling(10, min_periods=1).mean().shift(1)
+            )
+        
+        # pts_hist_avg_5g - Promedio histórico de puntos de 5 juegos  
+        if 'PTS' in df.columns:
+            df['pts_hist_avg_5g'] = df.groupby('Team')['PTS'].transform(
+                lambda x: x.rolling(5, min_periods=1).mean().shift(1)
+            )
+        
+        # pts_opp_hist_avg_5g - Promedio histórico de puntos del oponente de 5 juegos
+        if 'PTS_Opp' in df.columns:
+            df['pts_opp_hist_avg_5g'] = df.groupby('Team')['PTS_Opp'].transform(
+                lambda x: x.rolling(5, min_periods=1).mean().shift(1)
+            )
+        
+        # point_diff_hist_avg_5g - Diferencia histórica de puntos de 5 juegos
+        if 'PTS' in df.columns and 'PTS_Opp' in df.columns:
+            df['point_diff_hist_avg_5g'] = df.groupby('Team').apply(
+                lambda x: (x['PTS'] - x['PTS_Opp']).rolling(5, min_periods=1).mean().shift(1)
+            ).reset_index(level=0, drop=True)
+        
+        # pts_consistency_5g - Consistencia de puntos de 5 juegos (desviación estándar)
+        if 'PTS' in df.columns:
+            df['pts_consistency_5g'] = df.groupby('Team')['PTS'].transform(
+                lambda x: x.rolling(5, min_periods=1).std().shift(1)
+            )
     
     def _create_advanced_features_optimized(self, df: pd.DataFrame) -> None:
         """Features avanzadas optimizadas sin duplicaciones y multicolinealidad - ADAPTADO DE TOTAL_POINTS"""

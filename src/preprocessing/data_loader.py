@@ -107,7 +107,6 @@ class NBADataLoader:
         # Crear columna total_points (PTS + PTS_Opp) si no existe
         if 'total_points' not in df.columns and 'PTS' in df.columns and 'PTS_Opp' in df.columns:
             df['total_points'] = df['PTS'] + df['PTS_Opp']
-            logger.info("Columna total_points creada: PTS + PTS_Opp")
         
         return df
     
