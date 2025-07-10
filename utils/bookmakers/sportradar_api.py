@@ -1145,3 +1145,338 @@ class SportradarAPI:
     def __str__(self) -> str:
         """Representación string del cliente."""
         return f"SportradarAPI(base_url={self.base_url}, cache_entries={len(self._cache)})" 
+
+    
+    def get_next_nba_games(self, days_ahead: int = 5, max_games: int = 20) -> Dict[str, Any]:
+        """
+        Obtiene automáticamente los próximos partidos NBA en los próximos días.
+        
+        Args:
+            days_ahead: Número de días hacia adelante a buscar (default: 5)
+            max_games: Máximo número de partidos a retornar (default: 20)
+            
+        Returns:
+            Diccionario con los próximos partidos NBA y sus IDs
+        """
+        logger.info(f"Obteniendo próximos {max_games} partidos NBA en {days_ahead} días")
+        
+        result = {
+            'search_period': {
+                'start_date': datetime.now().strftime("%Y-%m-%d"),
+                'end_date': (datetime.now() + timedelta(days=days_ahead)).strftime("%Y-%m-%d"),
+                'days_ahead': days_ahead
+            },
+            'games': [],
+            'total_found': 0,
+            'metadata': {
+                'timestamp': datetime.now().isoformat(),
+                'max_games': max_games
+            }
+        }
+        
+        try:
+            # Buscar partidos día por día
+            current_date = datetime.now()
+            
+            for day_offset in range(days_ahead + 1):
+                search_date = (current_date + timedelta(days=day_offset)).strftime("%Y-%m-%d")
+                
+                try:
+                    # Obtener schedule del día
+                    daily_schedule = self.get_daily_odds_schedule(search_date, sport_id=2)
+                    
+                    if 'sport_events' in daily_schedule:
+                        for event in daily_schedule['sport_events']:
+                            if len(result['games']) >= max_games:
+                                break
+                                
+                            # Extraer información del partido
+                            game_info = {
+                                'sport_event_id': event['id'],
+                                'date': search_date,
+                                'scheduled': event.get('scheduled'),
+                                'teams': {
+                                    'home': event.get('competitors', [{}])[0].get('name', 'Unknown'),
+                                    'away': event.get('competitors', [{}])[1].get('name', 'Unknown') if len(event.get('competitors', [])) > 1 else 'Unknown'
+                                },
+                                'venue': event.get('venue', {}).get('name'),
+                                'status': event.get('status')
+                            }
+                            
+                            result['games'].append(game_info)
+                    
+                    if len(result['games']) >= max_games:
+                        break
+                        
+                except SportradarAPIError as e:
+                    logger.debug(f"No hay partidos disponibles para {search_date}: {e}")
+                    continue
+            
+            result['total_found'] = len(result['games'])
+            result['message'] = f'Encontrados {len(result["games"])} partidos NBA en los próximos {days_ahead} días'
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo próximos partidos NBA: {e}")
+            result['error'] = str(e)
+            result['message'] = f'Error en búsqueda: {e}'
+        
+        return result
+    
+    def get_odds_for_next_games(self, days_ahead: int = 3, max_games: int = 10, 
+                               targets: List[str] = None, format: str = "us") -> Dict[str, Any]:
+        """
+        Obtiene automáticamente odds para los próximos partidos NBA.
+        
+        Args:
+            days_ahead: Días hacia adelante a buscar (default: 3)
+            max_games: Máximo de partidos a procesar (default: 10)
+            targets: Targets específicos (None para todos)
+            format: Formato de odds ("us", "eu", "uk")
+            
+        Returns:
+            Odds completas para los próximos partidos
+        """
+        logger.info(f"Obteniendo odds automáticamente para próximos {max_games} partidos")
+        
+        # Obtener próximos partidos
+        next_games = self.get_next_nba_games(days_ahead, max_games)
+        
+        if not next_games['games']:
+            return {
+                'message': f'No se encontraron partidos NBA en los próximos {days_ahead} días',
+                'games': {},
+                'summary': {'total_games': 0, 'games_with_odds': 0},
+                'search_period': next_games['search_period']
+            }
+        
+        # Configurar targets por defecto
+        if targets is None:
+            targets = ['moneyline', 'totals', 'team_totals', 'player_points', 
+                      'player_assists', 'player_rebounds', 'player_threes']
+        
+        result = {
+            'search_period': next_games['search_period'],
+            'targets_requested': targets,
+            'games': {},
+            'summary': {
+                'total_games': len(next_games['games']),
+                'games_with_odds': 0,
+                'games_processed': 0,
+                'targets_found': {}
+            },
+            'metadata': {
+                'format': format,
+                'timestamp': datetime.now().isoformat(),
+                'automated': True
+            }
+        }
+        
+        # Obtener odds para cada partido
+        for game in next_games['games']:
+            sport_event_id = game['sport_event_id']
+            result['summary']['games_processed'] += 1
+            
+            try:
+                # Obtener odds específicas
+                game_odds = self.get_specific_nba_odds(sport_event_id, targets, format)
+                
+                # Estructurar datos del partido
+                game_data = {
+                    'sport_event_id': sport_event_id,
+                    'date': game['date'],
+                    'scheduled': game['scheduled'],
+                    'teams': game['teams'],
+                    'venue': game.get('venue'),
+                    'odds': game_odds.get('targets', {}),
+                    'has_odds': not game_odds.get('error'),
+                    'error': game_odds.get('error')
+                }
+                
+                result['games'][sport_event_id] = game_data
+                
+                if game_data['has_odds']:
+                    result['summary']['games_with_odds'] += 1
+                    
+                    # Contar targets encontrados
+                    for target_category in game_odds.get('targets', {}):
+                        if target_category not in result['summary']['targets_found']:
+                            result['summary']['targets_found'][target_category] = 0
+                        result['summary']['targets_found'][target_category] += 1
+                
+            except Exception as e:
+                logger.warning(f"Error obteniendo odds para {sport_event_id}: {e}")
+                result['games'][sport_event_id] = {
+                    'sport_event_id': sport_event_id,
+                    'date': game['date'],
+                    'teams': game['teams'],
+                    'error': str(e),
+                    'has_odds': False
+                }
+        
+        result['message'] = f'Procesados {result["summary"]["games_processed"]} partidos, {result["summary"]["games_with_odds"]} con odds disponibles'
+        
+        return result
+    
+    def get_live_and_upcoming_odds(self, targets: List[str] = None, format: str = "us") -> Dict[str, Any]:
+        """
+        Obtiene odds para partidos de hoy + próximos 2 días automáticamente.
+        Ideal para usar en tiempo real sin especificar fechas.
+        
+        Args:
+            targets: Targets específicos (None para todos)
+            format: Formato de odds ("us", "eu", "uk")
+            
+        Returns:
+            Odds para partidos actuales y próximos
+        """
+        logger.info("Obteniendo odds para partidos en vivo y próximos automáticamente")
+        
+        if targets is None:
+            targets = ['moneyline', 'totals', 'team_totals', 'player_points', 
+                      'player_assists', 'player_rebounds', 'player_threes']
+        
+        # Obtener fechas: hoy + próximos 2 días
+        today = datetime.now()
+        dates_to_check = [
+            today.strftime("%Y-%m-%d"),  # Hoy
+            (today + timedelta(days=1)).strftime("%Y-%m-%d"),  # Mañana
+            (today + timedelta(days=2)).strftime("%Y-%m-%d")   # Pasado mañana
+        ]
+        
+        result = {
+            'dates_checked': dates_to_check,
+            'targets_requested': targets,
+            'by_date': {},
+            'all_games': {},
+            'summary': {
+                'total_dates': len(dates_to_check),
+                'total_games': 0,
+                'games_with_odds': 0,
+                'dates_with_games': 0
+            },
+            'metadata': {
+                'format': format,
+                'timestamp': datetime.now().isoformat(),
+                'automated': True,
+                'type': 'live_and_upcoming'
+            }
+        }
+        
+        # Procesar cada fecha
+        for date in dates_to_check:
+            try:
+                # Obtener odds para la fecha específica
+                date_odds = self.get_nba_odds_for_targets(date, targets, format)
+                
+                result['by_date'][date] = date_odds
+                
+                # Agregar partidos al resultado consolidado
+                for game_id, game_data in date_odds.get('games', {}).items():
+                    result['all_games'][game_id] = game_data
+                    result['summary']['total_games'] += 1
+                    
+                    if game_data.get('has_odds'):
+                        result['summary']['games_with_odds'] += 1
+                
+                # Contar fechas con partidos
+                if date_odds.get('summary', {}).get('total_games', 0) > 0:
+                    result['summary']['dates_with_games'] += 1
+                
+            except Exception as e:
+                logger.warning(f"Error obteniendo odds para {date}: {e}")
+                result['by_date'][date] = {
+                    'date': date,
+                    'error': str(e),
+                    'games': {}
+                }
+        
+        result['message'] = f'Encontrados {result["summary"]["total_games"]} partidos en {result["summary"]["dates_with_games"]} fechas con partidos'
+        
+        return result
+    
+    def get_automated_predictions_data(self, max_games: int = 15, days_ahead: int = 5) -> Dict[str, Any]:
+        """
+        Método principal automatizado para obtener datos de odds para el sistema de predicciones.
+        No requiere especificar event_id ni date - todo es automático.
+        
+        Args:
+            max_games: Máximo número de partidos a procesar (default: 15)
+            days_ahead: Días hacia adelante para buscar partidos (default: 5)
+            
+        Returns:
+            Datos estructurados listos para el sistema de predicciones
+        """
+        logger.info(f"Iniciando proceso automatizado para sistema de predicciones")
+        
+        # Obtener odds para próximos partidos automáticamente
+        odds_data = self.get_odds_for_next_games(
+            days_ahead=days_ahead,
+            max_games=max_games,
+            targets=None,  # Todos los targets
+            format="us"
+        )
+        
+        # Extraer datos para predicciones
+        predictions_data = self.extract_odds_for_predictions(odds_data)
+        
+        # Agregar información adicional
+        predictions_data['automation_info'] = {
+            'method': 'automated_predictions_data',
+            'search_period': odds_data.get('search_period', {}),
+            'games_found': odds_data.get('summary', {}).get('total_games', 0),
+            'games_with_odds': odds_data.get('summary', {}).get('games_with_odds', 0),
+            'timestamp': datetime.now().isoformat(),
+            'parameters': {
+                'max_games': max_games,
+                'days_ahead': days_ahead
+            }
+        }
+        
+        return predictions_data
+    
+    def quick_odds_check(self, game_limit: int = 5) -> Dict[str, Any]:
+        """
+        Verificación rápida de odds disponibles sin especificar parámetros.
+        Útil para tests rápidos y verificaciones.
+        
+        Args:
+            game_limit: Límite de partidos a verificar (default: 5)
+            
+        Returns:
+            Resumen rápido de odds disponibles
+        """
+        logger.info(f"Verificación rápida de odds para {game_limit} partidos")
+        
+        try:
+            # Obtener partidos de hoy y mañana
+            today_tomorrow_odds = self.get_live_and_upcoming_odds()
+            
+            # Tomar solo los primeros N partidos
+            limited_games = {}
+            count = 0
+            for game_id, game_data in today_tomorrow_odds.get('all_games', {}).items():
+                if count >= game_limit:
+                    break
+                limited_games[game_id] = game_data
+                count += 1
+            
+            return {
+                'quick_check': True,
+                'games_checked': len(limited_games),
+                'games_limit': game_limit,
+                'games': limited_games,
+                'summary': {
+                    'has_live_odds': any(game.get('has_odds', False) for game in limited_games.values()),
+                    'total_with_odds': sum(1 for game in limited_games.values() if game.get('has_odds', False))
+                },
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error en verificación rápida: {e}")
+            return {
+                'quick_check': True,
+                'error': str(e),
+                'games': {},
+                'timestamp': datetime.now().isoformat()
+            } 
