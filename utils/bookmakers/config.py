@@ -9,17 +9,25 @@ from typing import Dict, Any, Optional
 import logging
 import json
 
+# Intentar cargar python-dotenv para variables de entorno
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # Si no está disponible python-dotenv, continuar sin él
+    pass
+
 logger = logging.getLogger(__name__)
 
 # Configuración por defecto basada en documentación oficial de Sportradar
 DEFAULT_CONFIG = {
     'sportradar': {
-        # URLs base actualizadas según documentación oficial
-        'base_url': 'https://api.sportradar.com/basketball/trial/v4/en',
-        'odds_base_url': 'https://api.sportradar.com/oddscomparison-prematch/trial/v2/',
-        'player_props_url': 'https://api.sportradar.com/oddscomparison-player-props/trial/v2/',
-        'live_odds_url': 'https://api.sportradar.com/oddscomparison-live-odds/trial/v2/',
-        'regular_odds_url': 'https://api.sportradar.com/oddscomparison-trial/v1/',
+        # URLs base corregidas según documentación oficial
+        'base_url': 'https://api.sportradar.com/basketball/trial/v8/en',
+        'odds_base_url': 'https://api.sportradar.com/oddscomparison-prematch/trial/v2',
+        'player_props_url': 'https://api.sportradar.com/oddscomparison-player-props/trial/v2',
+        'live_odds_url': 'https://api.sportradar.com/oddscomparison-live-odds/trial/v2',
+        'regular_odds_url': 'https://api.sportradar.com/oddscomparison-trial/v1',
         
         # API Key
         'api_key': '',
@@ -37,8 +45,13 @@ DEFAULT_CONFIG = {
         'rate_limit_calls': 5,
         'rate_limit_period': 1,
         
-        # Configuración de cache
-        'cache_duration': 300,  # 5 minutos
+        # Configuración de cache optimizado
+        'cache_duration': 300,  # 5 minutos por defecto
+        'cache_enabled': True,
+        'cache_type': 'memory_disk',  # memory, disk, memory_disk
+        'cache_max_size_mb': 100,     # Máximo 100MB cache en memoria
+        'cache_persistence': True,    # Persistir cache en disco
+        'cache_compression': True,    # Comprimir datos de cache
         
         # Formatos soportados según documentación
         'supported_formats': ['json', 'xml'],
@@ -47,25 +60,29 @@ DEFAULT_CONFIG = {
         
         # Endpoints según documentación oficial - SIN extensión, usar Accept: application/json
         'endpoints': {
-            # Básicos (Prematch v2)
+            # Libros/casas de apuestas
             'books': 'en/books',
-            'sports': 'en/sports',
-            'sport_categories': 'en/sports/{sport_id}/categories',
-            'sport_competitions': 'en/sports/{sport_id}/competitions',
-            
-            # Schedules (Player Props v2 para daily, Prematch v2 para competition)
-            'daily_schedules': 'en/sports/{sport_id}/schedules/{date}/schedules',  # Player Props v2
-            'competition_schedules': 'en/competitions/{competition_id}/schedules',  # Prematch v2
-            
-            # Markets (Prematch v2)
-            'sport_event_markets': 'en/sport_events/{sport_event_id}/markets',
-            'sport_event_player_props': 'en/sport_events/{sport_event_id}/players_props',
-            
-            # Change logs
-            'sport_events_markets_changelog': 'en/sport_events_markets_changelog',
+            # Player props por competición
+            'competition_player_props': 'en/competitions/{competition_id}/player_props',
+            # Calendario de player props por competición
+            'competition_schedule': 'en/competitions/{competition_id}/schedule',
+            # Player props por evento
+            'sport_event_player_props': 'en/sport_events/{sport_event_id}/player_props',
+            # Player props por fecha
+            'date_player_props': 'en/sports/{sport_id}/schedule/{date}/player_props',
+            # Calendario por fecha
+            'date_schedule': 'en/sports/{sport_id}/schedule/{date}/schedule',
+            # Changelog
             'player_props_changelog': 'en/player_props_changelog',
-            
-            # Mapping endpoints
+            # Deportes
+            'sports': 'en/sports',
+            # Competiciones
+            'sport_competitions': 'en/sports/{sport_id}/competitions',
+            # Categorías
+            'sport_categories': 'en/sports/{sport_id}/categories',
+            # Stages
+            'sport_stages': 'en/sports/{sport_id}/stages',
+            # Mapping
             'competition_mappings': 'en/mappings/competitions',
             'competitor_mappings': 'en/mappings/competitors',
             'player_mappings': 'en/mappings/players',
@@ -117,6 +134,10 @@ DEFAULT_CONFIG = {
         'cache_enabled': True,
         'cache_duration_hours': 1,
         'cache_directory': 'data/cache/bookmakers',
+        'cache_cleanup_enabled': True,
+        'cache_cleanup_interval_hours': 24,
+        'cache_max_entries': 10000,
+        'cache_stats_enabled': True,
         'simulate_when_no_data': True,
         'simulation_variance': 0.15,    # 15% varianza en simulación
         'min_historical_games': 5       # Mínimo de juegos para análisis

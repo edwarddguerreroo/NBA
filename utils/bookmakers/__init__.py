@@ -7,7 +7,7 @@ para obtener cuotas, analizar líneas y identificar oportunidades de value betti
 
 Características principales:
 - Integración con Sportradar API para cuotas NBA
-- Análisis de value betting con 96%+ precisión
+- Análisis de value betting 
 - Detección de ineficiencias de mercado
 - Análisis de arbitraje entre casas
 - Gestión óptima de capital (Kelly Criterion)

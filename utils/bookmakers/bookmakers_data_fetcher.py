@@ -129,17 +129,6 @@ class BookmakersDataFetcher:
             'wynn': 'Wynn',
             'pinnacle': 'Pinnacle',
             
-            # Otras casas menos conocidas
-            'barstool': 'Barstool',
-            'unibet': 'Unibet',
-            'foxbet': 'FOX Bet',
-            'betrivers': 'BetRivers',
-            'williamhill': 'William Hill',
-            'twinspires': 'TwinSpires',
-            'betfred': 'Betfred',
-            'bovada': 'Bovada',
-            'mybookie': 'MyBookie',
-            'betonline': 'BetOnline'
         }
 
     # === MÉTODOS SPORTRADAR (PROVEEDOR PRINCIPAL) ===
@@ -165,15 +154,17 @@ class BookmakersDataFetcher:
             raise SportradarAPIError("Sportradar API no inicializada")
         
         try:
-            # Obtener schedule
+            # Usar método optimizado para obtener todos los targets a la vez
             if date:
-                schedule_data = self.sportradar_api.get_schedule(date)
+                # Obtener odds para fecha específica
+                odds_data = self.sportradar_api.get_nba_odds_for_targets(date=date)
             else:
-                # Obtener próximos partidos
+                # Obtener odds para próximos partidos (método automatizado)
+                odds_data = self.sportradar_api.get_live_and_upcoming_odds()
+                
+            # Procesar resultados
+            if not odds_data.get('games', {}):
                 today = datetime.now().strftime("%Y-%m-%d")
-                schedule_data = self.sportradar_api.get_schedule(today)
-            
-            if 'games' not in schedule_data:
                 return {
                     'success': True,
                     'date': date or today,
@@ -181,60 +172,47 @@ class BookmakersDataFetcher:
                     'total_games': 0
                 }
             
-            games = schedule_data['games']
-            
-            # Filtrar por equipos si se especifica
-            if team_filter:
-                filtered_games = []
-                for game in games:
-                    home_team = game.get('home', {}).get('name', '').lower()
-                    away_team = game.get('away', {}).get('name', '').lower()
-                    
-                    if any(team.lower() in home_team or team.lower() in away_team 
-                          for team in team_filter):
-                        filtered_games.append(game)
-                games = filtered_games
-            
-            # Obtener cuotas para cada partido
+            # Convertir datos al formato esperado
             games_with_odds = []
-            for game in games:
-                game_id = game.get('id')
-                if game_id:
-                    try:
-                        # Obtener cuotas principales
-                        odds_data = self.sportradar_api.get_odds(game_id)
-                        
-                        game_info = {
-                            'game_id': game_id,
-                            'home_team': game.get('home', {}).get('name'),
-                            'away_team': game.get('away', {}).get('name'),
-                            'scheduled': game.get('scheduled'),
-                            'odds': odds_data,
-                            'props': None
-                        }
-                        
-                        # Obtener player props si se solicita
-                        if include_props:
-                            try:
-                                props_data = self.sportradar_api.get_player_props(game_id)
-                                game_info['props'] = props_data
-                            except SportradarAPIError as e:
-                                logger.warning(f"No se pudieron obtener props para {game_id}: {e}")
-                        
-                        games_with_odds.append(game_info)
-                        self.api_calls_made += (2 if include_props else 1)
-                        
-                    except SportradarAPIError as e:
-                        logger.error(f"Error obteniendo cuotas para {game_id}: {e}")
+            
+            # Obtener juegos de la estructura correcta según el método usado
+            if 'all_games' in odds_data:
+                games_dict = odds_data['all_games']
+            else:
+                games_dict = odds_data.get('games', {})
+                
+            for game_id, game_data in games_dict.items():
+                # Filtrar por equipo si es necesario
+                if team_filter:
+                    home_team = game_data.get('teams', {}).get('home', '').lower()
+                    away_team = game_data.get('teams', {}).get('away', '').lower()
+                    
+                    if not any(team.lower() in home_team or team.lower() in away_team 
+                              for team in team_filter):
+                        continue
+                
+                # Extraer datos del juego
+                game_info = {
+                    'game_id': game_id,
+                    'home_team': game_data.get('teams', {}).get('home'),
+                    'away_team': game_data.get('teams', {}).get('away'),
+                    'scheduled': game_data.get('scheduled'),
+                    'odds': game_data.get('odds', {}).get('game_markets', {}),
+                    'props': game_data.get('odds', {}).get('player_props', {}) if include_props else None
+                }
+                
+                games_with_odds.append(game_info)
+                self.api_calls_made += 1
             
             return {
                 'success': True,
                 'source': 'sportradar',
-                'date': date or today,
+                'date': date or odds_data.get('date', datetime.now().strftime("%Y-%m-%d")),
                 'games': games_with_odds,
-                'total_games': len(games),
+                'total_games': len(games_dict),
                 'games_with_odds': len(games_with_odds),
-                'api_calls_made': self.api_calls_made
+                'api_calls_made': self.api_calls_made,
+                'cache_stats': self.sportradar_api.get_cache_stats() if hasattr(self.sportradar_api, 'get_cache_stats') else {}
             }
             
         except Exception as e:

@@ -87,9 +87,9 @@ class SportradarAPI:
         # Configurar sesión HTTP con retry strategy
         self.session = self._setup_session()
         
-        # Cache simple en memoria
-        self._cache = {}
-        self._cache_duration = 300  # 5 minutos
+        # Cache optimizado
+        from .optimized_cache import OptimizedCache
+        self._cache = OptimizedCache(self.config.get_data_config())
         
         logger.info(f"SportradarAPI inicializada | Base URL: {self.base_url}")
     
@@ -137,21 +137,17 @@ class SportradarAPI:
         # Registrar llamada actual
         self.last_calls.append(now)
     
-    def _get_cache_key(self, endpoint: str, params: Dict) -> str:
-        """Genera clave de cache para endpoint y parámetros."""
-        params_str = json.dumps(params, sort_keys=True)
-        return f"{endpoint}:{hash(params_str)}"
+    def _get_cached_data(self, endpoint: str, params: Dict, ttl: int = None) -> Optional[Dict[str, Any]]:
+        """Obtiene datos del cache optimizado."""
+        return self._cache.get(endpoint, params, ttl)
     
-    def _is_cache_valid(self, cache_key: str) -> bool:
-        """Verifica si entrada de cache es válida."""
-        if cache_key not in self._cache:
-            return False
-        
-        cached_time = self._cache[cache_key]['timestamp']
-        return (time.time() - cached_time) < self._cache_duration
+    def _set_cached_data(self, endpoint: str, params: Dict, data: Dict[str, Any], ttl: int = None) -> bool:
+        """Almacena datos en el cache optimizado."""
+        return self._cache.set(endpoint, params, data, ttl)
     
     def _make_request(self, endpoint: str, params: Optional[Dict] = None,
-                     use_cache: bool = True, use_odds_api: bool = False, expect_xml: bool = False) -> Dict[str, Any]:
+                     use_cache: bool = True, use_odds_api: bool = False, expect_xml: bool = False, 
+                     cache_ttl: int = None) -> Dict[str, Any]:
         """
         Realiza petición HTTP a la API de Sportradar.
         
@@ -160,6 +156,7 @@ class SportradarAPI:
             params: Parámetros de query
             use_cache: Si usar cache
             use_odds_api: Si usar la API de Odds en lugar de Sports
+            cache_ttl: TTL personalizado para cache
             
         Returns:
             Respuesta JSON de la API
@@ -170,11 +167,12 @@ class SportradarAPI:
         params = params or {}
         params['api_key'] = self.api_key
         
-        # Verificar cache
-        cache_key = self._get_cache_key(endpoint, params)
-        if use_cache and self._is_cache_valid(cache_key):
-            logger.debug(f"Cache hit para {endpoint}")
-            return self._cache[cache_key]['data']
+        # Verificar cache optimizado
+        if use_cache:
+            cached_data = self._get_cached_data(endpoint, params, cache_ttl)
+            if cached_data is not None:
+                logger.debug(f"Cache hit para {endpoint}")
+                return cached_data
         
         # Rate limiting
         self._check_rate_limit()
@@ -210,12 +208,9 @@ class SportradarAPI:
                     endpoint=endpoint
                 )
             
-            # Guardar en cache
+            # Guardar en cache optimizado
             if use_cache:
-                self._cache[cache_key] = {
-                    'data': data,
-                    'timestamp': time.time()
-                }
+                self._set_cached_data(endpoint, params, data, cache_ttl)
             
             logger.debug(f"Respuesta exitosa de {endpoint}")
             return data
@@ -350,7 +345,8 @@ class SportradarAPI:
         endpoint = self.config.get_endpoint('sport_event_markets', 
                                            sport_event_id=sport_event_id)
         
-        return self._make_request(endpoint, use_odds_api=True, expect_xml=False)
+        # Odds cambian frecuentemente, cache por 2 minutos
+        return self._make_request(endpoint, use_odds_api=True, expect_xml=False, cache_ttl=120)
     
     def get_player_props(self, sport_event_id: str, format: str = "us") -> Dict[str, Any]:
         """
@@ -438,7 +434,8 @@ class SportradarAPI:
             Lista de bookmakers
         """
         endpoint = "en/books"
-        return self._make_request(endpoint, use_odds_api=True, expect_xml=False)
+        # Bookmakers cambian poco, cache por 12 horas
+        return self._make_request(endpoint, use_odds_api=True, expect_xml=False, cache_ttl=43200)
     
     def get_sports(self) -> Dict[str, Any]:
         """
@@ -448,7 +445,8 @@ class SportradarAPI:
             Lista de deportes
         """
         endpoint = "en/sports"
-        return self._make_request(endpoint, use_odds_api=True, expect_xml=False)
+        # Deportes cambian raramente, cache por 24 horas
+        return self._make_request(endpoint, use_odds_api=True, expect_xml=False, cache_ttl=86400)
     
     def get_sport_competitions(self, sport_id: int) -> Dict[str, Any]:
         """
@@ -1101,19 +1099,158 @@ class SportradarAPI:
     
     # === UTILIDADES ===
     
-    def clear_cache(self):
-        """Limpia el cache en memoria."""
-        self._cache.clear()
-        logger.info("Cache limpiado")
+    def clear_cache(self, pattern: Optional[str] = None):
+        """
+        Limpia el cache optimizado.
+        
+        Args:
+            pattern: Patrón opcional para limpiar solo ciertas entradas
+        """
+        self._cache.clear(pattern)
+        logger.info(f"Cache limpiado{f' (patrón: {pattern})' if pattern else ''}")
     
     def get_cache_stats(self) -> Dict[str, Any]:
-        """Obtiene estadísticas del cache."""
+        """Obtiene estadísticas completas del cache optimizado."""
+        stats = self._cache.get_stats()
+        size_info = self._cache.get_size_info()
+        
         return {
-            'entries': len(self._cache),
-            'cache_duration': self._cache_duration,
-            'oldest_entry': min([v['timestamp'] for v in self._cache.values()]) if self._cache else None,
-            'newest_entry': max([v['timestamp'] for v in self._cache.values()]) if self._cache else None
+            **stats,
+            **size_info,
+            'cache_type': getattr(self._cache, 'cache_type', 'unknown'),
+            'cache_enabled': getattr(self._cache, 'cache_enabled', False)
         }
+    
+    def cleanup_cache(self):
+        """Limpia entradas expiradas del cache."""
+        self._cache.cleanup_expired()
+        logger.info("Cleanup de cache completado")
+    
+    def warm_up_cache(self, targets: List[str] = None):
+        """
+        Pre-carga datos frecuentemente usados en cache.
+        
+        Args:
+            targets: Lista de datos a pre-cargar (deportes, bookmakers, etc.)
+        """
+        if targets is None:
+            targets = ['sports', 'bookmakers']
+        
+        logger.info(f"Iniciando warm-up de cache para: {targets}")
+        
+        try:
+            if 'sports' in targets:
+                self.get_sports()
+                logger.debug("Sports pre-cargados en cache")
+            
+            if 'bookmakers' in targets:
+                self.get_bookmakers()
+                logger.debug("Bookmakers pre-cargados en cache")
+            
+            logger.info("Cache warm-up completado")
+            
+        except Exception as e:
+            logger.warning(f"Error durante cache warm-up: {e}")
+    
+    def prefetch_odds_data(self, days_ahead: int = 2, max_games: int = 10):
+        """
+        Pre-carga odds para próximos partidos de manera asíncrona.
+        
+        Args:
+            days_ahead: Días hacia adelante
+            max_games: Máximo de partidos a pre-cargar
+        """
+        logger.info(f"Pre-cargando odds para próximos {max_games} partidos")
+        
+        try:
+            # Obtener próximos partidos sin usar cache para tener datos frescos
+            next_games = self.get_next_nba_games(days_ahead, max_games)
+            
+            if not next_games.get('games'):
+                logger.info("No hay partidos próximos para pre-cargar")
+                return
+            
+            # Pre-cargar odds para cada partido
+            prefetch_count = 0
+            for game in next_games['games'][:max_games]:
+                try:
+                    sport_event_id = game['sport_event_id']
+                    
+                    # Pre-cargar odds principales (TTL corto para mantener actualizado)
+                    self.get_odds(sport_event_id)
+                    
+                    # Pre-cargar player props si disponible
+                    try:
+                        self.get_player_props(sport_event_id)
+                    except Exception:
+                        pass  # Player props puede no estar disponible
+                    
+                    prefetch_count += 1
+                    
+                except Exception as e:
+                    logger.debug(f"Error pre-cargando {game.get('sport_event_id', 'unknown')}: {e}")
+            
+            logger.info(f"Pre-cargadas odds para {prefetch_count} partidos")
+            
+        except Exception as e:
+            logger.warning(f"Error durante prefetch de odds: {e}")
+    
+    def get_cache_performance_report(self) -> Dict[str, Any]:
+        """
+        Genera reporte detallado de rendimiento del cache.
+        
+        Returns:
+            Reporte completo de rendimiento
+        """
+        stats = self.get_cache_stats()
+        
+        # Calcular métricas adicionales
+        total_requests = stats.get('hits', 0) + stats.get('misses', 0)
+        hit_ratio = stats.get('hit_ratio', 0)
+        
+        # Estimar ahorro de tiempo/calls
+        estimated_time_saved = stats.get('hits', 0) * 0.5  # Asumimos 0.5s por call evitada
+        
+        performance_report = {
+            'cache_performance': {
+                'hit_ratio_percentage': hit_ratio,
+                'total_requests': total_requests,
+                'cache_hits': stats.get('hits', 0),
+                'cache_misses': stats.get('misses', 0),
+                'estimated_time_saved_seconds': estimated_time_saved,
+                'memory_efficiency': stats.get('memory_hit_ratio', 0)
+            },
+            'storage_info': {
+                'memory_entries': stats.get('memory_entries', 0),
+                'disk_files': stats.get('disk_files', 0),
+                'memory_size_mb': stats.get('estimated_memory_mb', 0),
+                'disk_size_mb': stats.get('disk_size_mb', 0)
+            },
+            'optimization_suggestions': []
+        }
+        
+        # Generar sugerencias de optimización
+        if hit_ratio < 50:
+            performance_report['optimization_suggestions'].append(
+                "Hit ratio bajo - considerar aumentar TTL para datos estables"
+            )
+        
+        if stats.get('memory_entries', 0) > 500:
+            performance_report['optimization_suggestions'].append(
+                "Muchas entradas en memoria - considerar cleanup más frecuente"
+            )
+        
+        if stats.get('disk_size_mb', 0) > 50:
+            performance_report['optimization_suggestions'].append(
+                "Cache en disco grande - considerar limpieza de archivos antiguos"
+            )
+        
+        if stats.get('errors', 0) > 0:
+            performance_report['optimization_suggestions'].append(
+                f"Se detectaron {stats.get('errors', 0)} errores de cache - revisar logs"
+            )
+        
+        return performance_report
     
     def test_connection(self) -> Dict[str, Any]:
         """
