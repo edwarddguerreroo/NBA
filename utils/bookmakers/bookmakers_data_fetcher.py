@@ -358,8 +358,15 @@ class BookmakersDataFetcher:
         
         # Ajustar targets según la temporada si no se especifican
         if targets is None:
-            targets = seasonal_info['recommendations']['priority_targets']
-            logger.info(f"Targets ajustados para {current_phase}: {targets}")
+            # Obtener targets prioritarios según la temporada
+            priority_player_targets = seasonal_info['recommendations']['priority_targets']
+            
+            # Siempre incluir targets de equipos (disponibles todo el año)
+            team_targets = ['is_win', 'total_points', 'teams_points']
+            
+            # Combinar targets de jugadores y equipos
+            targets = priority_player_targets + team_targets
+            logger.info(f"Targets ajustados para {current_phase}: Player={priority_player_targets}, Team={team_targets}")
         
         # Obtener props usando el método base
         props_data = self.get_player_props_for_targets(
@@ -387,7 +394,19 @@ class BookmakersDataFetcher:
         targets: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
-        Obtiene props específicas para nuestros targets de predicción (PTS, AST, TRB, 3P).
+        Obtiene props específicas para TODOS nuestros targets de predicción.
+        
+        PLAYER TARGETS:
+        - PTS: Puntos del jugador
+        - AST: Asistencias del jugador  
+        - TRB: Rebotes del jugador
+        - 3P: Triples del jugador
+        - DD: Double-double del jugador
+        
+        TEAM/GAME TARGETS:
+        - is_win: Victoria del equipo (1x2/moneyline)
+        - total_points: Puntos totales del partido
+        - teams_points: Puntos por equipo (home/away)
         
         Args:
             date: Fecha específica (YYYY-MM-DD). Si es None, obtiene próximos partidos
@@ -395,21 +414,33 @@ class BookmakersDataFetcher:
             targets: Lista de targets específicos (opcional, por defecto todos)
             
         Returns:
-            Diccionario con props organizadas por target y jugador
+            Diccionario con props organizadas por target y jugador/equipo
         """
         if not self.sportradar_api:
             raise SportradarAPIError("Sportradar API no inicializada")
         
-        # Targets por defecto
+        # TODOS los targets disponibles en el sistema
         if targets is None:
-            targets = ['PTS', 'AST', 'TRB', '3P']
+            targets = [
+                # Player targets
+                'PTS', 'AST', 'TRB', '3P', 'DD',
+                # Team/Game targets  
+                'is_win', 'total_points', 'teams_points'
+            ]
         
         # Mapeo de targets a mercados de Sportradar
         target_markets = {
+            # Player props
             'PTS': ['total points', 'total points (incl. overtime)', 'player points'],
             'AST': ['total assists', 'total assists (incl. overtime)', 'player assists'],
             'TRB': ['total rebounds', 'total rebounds (incl. overtime)', 'player rebounds'],
-            '3P': ['total threes', 'total three pointers', 'player threes', 'total 3-pointers']
+            '3P': ['total threes', 'total three pointers', 'player threes', 'total 3-pointers'],
+            'DD': ['double_double', 'double double', 'player double double'],
+            
+            # Team/Game props
+            'is_win': ['1x2', 'moneyline', 'match_winner', 'winner'],
+            'total_points': ['total_incl_overtime', 'total points', 'game total'],
+            'teams_points': ['home_total_incl_overtime', 'away_total_incl_overtime', 'team total']
         }
         
         try:
@@ -443,36 +474,30 @@ class BookmakersDataFetcher:
             
             for game_id, game_data in games_dict.items():
                 try:
-                    # Obtener props específicas del partido
-                    props_data = self.sportradar_api.get_player_props(game_id)
+                    # Obtener props del partido (player props y game markets)
+                    game_props = self._get_comprehensive_game_props(
+                        game_id, game_data, target_markets, players, targets
+                    )
                     
-                    if props_data.get('success', False):
-                        game_props = self._filter_target_props(
-                            props_data, 
-                            target_markets, 
-                            players, 
-                            targets
-                        )
+                    if game_props['props']:
+                        all_props['games'][game_id] = {
+                            'game_info': {
+                                'home_team': game_data.get('teams', {}).get('home', 'Unknown'),
+                                'away_team': game_data.get('teams', {}).get('away', 'Unknown'),
+                                'scheduled': game_data.get('scheduled', ''),
+                                'status': game_data.get('status', 'scheduled')
+                            },
+                            'props': game_props['props'],
+                            'stats': game_props['stats']
+                        }
                         
-                        if game_props['props']:
-                            all_props['games'][game_id] = {
-                                'game_info': {
-                                    'home_team': game_data.get('teams', {}).get('home', 'Unknown'),
-                                    'away_team': game_data.get('teams', {}).get('away', 'Unknown'),
-                                    'scheduled': game_data.get('scheduled', ''),
-                                    'status': game_data.get('status', 'scheduled')
-                                },
-                                'props': game_props['props'],
-                                'stats': game_props['stats']
-                            }
-                            
-                            # Actualizar estadísticas
-                            all_props['summary']['games_with_props'] += 1
-                            all_props['summary']['total_props'] += game_props['stats']['total_props']
-                            
-                            for target in targets:
-                                all_props['summary']['props_by_target'][target] += game_props['stats'].get(f'{target}_props', 0)
-                    
+                        # Actualizar estadísticas
+                        all_props['summary']['games_with_props'] += 1
+                        all_props['summary']['total_props'] += game_props['stats']['total_props']
+                        
+                        for target in targets:
+                            all_props['summary']['props_by_target'][target] += game_props['stats'].get(f'{target}_props', 0)
+                
                     self.api_calls_made += 1
                     
                 except Exception as e:
@@ -493,6 +518,135 @@ class BookmakersDataFetcher:
                 'error': str(e),
                 'source': 'sportradar'
             }
+    
+    def _get_comprehensive_game_props(
+        self,
+        game_id: str,
+        game_data: Dict[str, Any],
+        target_markets: Dict[str, List[str]],
+        players: Optional[List[str]] = None,
+        targets: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Obtiene props completas del partido incluyendo player props y game markets.
+        
+        Args:
+            game_id: ID del partido
+            game_data: Datos del partido
+            target_markets: Mapeo de targets a mercados
+            players: Lista de jugadores específicos
+            targets: Lista de targets específicos
+            
+        Returns:
+            Props completas del partido
+        """
+        comprehensive_props = {
+            'props': {},
+            'stats': {
+                'total_props': 0,
+                'PTS_props': 0,
+                'AST_props': 0,
+                'TRB_props': 0,
+                '3P_props': 0,
+                'DD_props': 0,
+                'is_win_props': 0,
+                'total_points_props': 0,
+                'teams_points_props': 0
+            }
+        }
+        
+        # Inicializar estructura por target
+        for target in targets or ['PTS', 'AST', 'TRB', '3P', 'DD', 'is_win', 'total_points', 'teams_points']:
+            comprehensive_props['props'][target] = []
+        
+        # 1. Obtener PLAYER PROPS desde Sportradar
+        player_targets = [t for t in targets if t in ['PTS', 'AST', 'TRB', '3P', 'DD']]
+        if player_targets:
+            try:
+                player_props_data = self.sportradar_api.get_player_props(game_id)
+                if player_props_data.get('success', False):
+                    player_props = self._filter_target_props(
+                        player_props_data, 
+                        {k: v for k, v in target_markets.items() if k in player_targets}, 
+                        players, 
+                        player_targets
+                    )
+                    
+                    # Combinar player props
+                    for target in player_targets:
+                        comprehensive_props['props'][target].extend(player_props['props'].get(target, []))
+                        comprehensive_props['stats'][f'{target}_props'] += player_props['stats'].get(f'{target}_props', 0)
+                        comprehensive_props['stats']['total_props'] += player_props['stats'].get(f'{target}_props', 0)
+                        
+            except Exception as e:
+                logger.warning(f"Error obteniendo player props para {game_id}: {e}")
+        
+        # 2. Obtener GAME MARKETS (team/game props) desde PREMATCH API
+        team_targets = [t for t in targets if t in ['is_win', 'total_points', 'teams_points']]
+        if team_targets:
+            try:
+                # Usar Prematch API (Odds Comparison v2) para obtener game markets
+                prematch_data = self.sportradar_api.get_prematch_odds(game_id)
+                
+                if prematch_data.get('success', False):
+                    markets_data = prematch_data.get('markets', [])
+                    
+                    for market in markets_data:
+                        market_id = market.get('id')
+                        market_name = market.get('name', '').lower()
+                        
+                        # Mapear market_id a nuestros targets usando configuración
+                        target_found = None
+                        
+                        # is_win: Market ID 1 (1x2/moneyline)
+                        if market_id == 1 and 'is_win' in team_targets:
+                            target_found = 'is_win'
+                        
+                        # total_points: Market ID 225 (total_incl_overtime)
+                        elif market_id == 225 and 'total_points' in team_targets:
+                            target_found = 'total_points'
+                        
+                        # teams_points: Market ID 227/228 (home/away totals)
+                        elif market_id in [227, 228] and 'teams_points' in team_targets:
+                            target_found = 'teams_points'
+                        
+                        if target_found:
+                            # Procesar outcomes del market
+                            for outcome in market.get('outcomes', []):
+                                prop = {
+                                    'target': target_found,
+                                    'market': market.get('name', ''),
+                                    'market_id': market_id,
+                                    'outcome': outcome.get('name', ''),
+                                    'line': outcome.get('point') or outcome.get('total'),
+                                    'odds': {
+                                        'decimal': outcome.get('odds_decimal'),
+                                        'american': outcome.get('odds_american'),
+                                        'fractional': outcome.get('odds_fraction')
+                                    },
+                                    'bookmaker': outcome.get('bookmaker', 'sportradar'),
+                                    'last_update': datetime.now().isoformat()
+                                }
+                                
+                                # Agregar información específica del target
+                                if target_found == 'is_win':
+                                    prop['team'] = outcome.get('competitor', outcome.get('team', ''))
+                                elif target_found == 'total_points':
+                                    prop['team'] = 'both'  # Total del partido
+                                elif target_found == 'teams_points':
+                                    # Distinguir entre home (227) y away (228)
+                                    prop['team'] = 'home' if market_id == 227 else 'away'
+                                
+                                comprehensive_props['props'][target_found].append(prop)
+                                comprehensive_props['stats'][f'{target_found}_props'] += 1
+                                comprehensive_props['stats']['total_props'] += 1
+                else:
+                    logger.warning(f"No se pudieron obtener datos de Prematch API para {game_id}")
+                                
+            except Exception as e:
+                logger.warning(f"Error obteniendo game markets desde Prematch API para {game_id}: {e}")
+        
+        return comprehensive_props
     
     def _filter_target_props(
         self,
@@ -706,9 +860,9 @@ class BookmakersDataFetcher:
     def _get_priority_targets(self, phase: str) -> List[str]:
         """Obtiene targets prioritarios según la fase."""
         if phase in ['regular_season', 'playoffs']:
-            return ['PTS', 'AST', 'TRB', '3P']  # Todos los targets
+            return ['PTS', 'AST', 'TRB', '3P', 'DD']  # Todos los targets incluyendo DD
         elif phase == 'preseason':
-            return ['PTS', 'TRB']  # Targets más estables
+            return ['PTS', 'TRB', 'DD']  # Targets más estables incluyendo DD
         else:
             return ['PTS']  # Solo target principal
     

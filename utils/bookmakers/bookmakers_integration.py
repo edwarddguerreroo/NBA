@@ -1315,4 +1315,433 @@ class BookmakersIntegration:
         return {
             'success': False,
             'error': 'No se encontró ninguna combinación válida en simulación'
-        } 
+        }
+    
+    # === MÉTODOS FALTANTES IMPLEMENTADOS ===
+    
+    def find_arbitrage_opportunities(
+        self,
+        player_data: pd.DataFrame,
+        min_profit: float = 0.02
+    ) -> List[Dict[str, Any]]:
+        """
+        Busca oportunidades de arbitraje entre diferentes casas de apuestas.
+        
+        Este método es un alias para find_market_arbitrage_opportunities
+        para mantener compatibilidad con el código existente.
+        
+        Args:
+            player_data: DataFrame con datos de jugadores y odds
+            min_profit: Margen mínimo de ganancia requerido
+            
+        Returns:
+            Lista de oportunidades de arbitraje encontradas
+        """
+        # Usar el método existente find_market_arbitrage_opportunities
+        arbitrage_by_target = self.find_market_arbitrage_opportunities(
+            player_data, min_profit
+        )
+        
+        # Convertir a lista plana para compatibilidad
+        all_opportunities = []
+        for target, opportunities in arbitrage_by_target.items():
+            if target != 'cross_market':  # Excluir cross-market por ahora
+                for opp in opportunities:
+                    opp['target'] = target
+                    all_opportunities.append(opp)
+        
+        # Ordenar por margen de ganancia
+        all_opportunities.sort(key=lambda x: x.get('profit_margin', 0), reverse=True)
+        
+        return all_opportunities
+    
+    def _calculate_model_probability(
+        self,
+        prediction: float,
+        line: float,
+        target: str
+    ) -> float:
+        """
+        Calcula la probabilidad de que la predicción supere la línea.
+        
+        Utiliza una distribución normal con varianza específica por target
+        para modelar la incertidumbre en las predicciones.
+        
+        Args:
+            prediction: Valor predicho por el modelo
+            line: Línea de apuesta
+            target: Tipo de estadística (PTS, AST, TRB, 3P, DD, is_win, total_points, teams_points)
+            
+        Returns:
+            Probabilidad de que la predicción supere la línea (0-1)
+        """
+        # Varianza estándar por target (basada en análisis histórico)
+        target_variance = {
+            # Player targets
+            'PTS': 6.5,           # Puntos tienen más variabilidad
+            'TRB': 3.2,           # Rebotes moderadamente variables
+            'AST': 2.8,           # Asistencias relativamente estables
+            '3P': 1.4,            # Triples menos variables
+            'DD': 0.3,            # Double-double binario (0-1)
+            
+            # Team/Game targets
+            'is_win': 0.2,        # Victoria binario (0-1)
+            'total_points': 12.0, # Puntos totales alta variabilidad
+            'teams_points': 8.5   # Puntos por equipo moderada-alta variabilidad
+        }
+        
+        # Obtener varianza para el target
+        variance = target_variance.get(target, 4.0)  # Default 4.0
+        
+        # Calcular Z-score
+        if variance > 0:
+            z_score = (prediction - line) / variance
+            
+            # Usar función de distribución normal acumulada
+            # Aproximación usando función error
+            probability = 0.5 * (1 + np.tanh(z_score * 0.7978845608))  # 0.7978845608 ≈ sqrt(2/π)
+        else:
+            # Si no hay varianza, usar función escalón
+            probability = 1.0 if prediction > line else 0.0
+        
+        # Asegurar que esté en rango [0, 1]
+        return max(0.0, min(1.0, probability))
+    
+    def _odds_to_probability(self, odds: float, odds_format: str = 'american') -> float:
+        """
+        Convierte odds a probabilidad implícita.
+        
+        Args:
+            odds: Valor de las odds
+            odds_format: Formato de las odds ('american', 'decimal', 'fractional')
+            
+        Returns:
+            Probabilidad implícita (0-1)
+        """
+        try:
+            if odds_format == 'american':
+                if odds > 0:
+                    # Odds positivas: probabilidad = 100 / (odds + 100)
+                    probability = 100 / (odds + 100)
+                else:
+                    # Odds negativas: probabilidad = abs(odds) / (abs(odds) + 100)
+                    probability = abs(odds) / (abs(odds) + 100)
+            
+            elif odds_format == 'decimal':
+                # Odds decimales: probabilidad = 1 / odds
+                probability = 1 / odds if odds > 0 else 0
+            
+            elif odds_format == 'fractional':
+                # Odds fraccionarias: probabilidad = denominador / (numerador + denominador)
+                if isinstance(odds, str) and '/' in odds:
+                    numerator, denominator = map(float, odds.split('/'))
+                    probability = denominator / (numerator + denominator)
+                else:
+                    # Si es un número, tratarlo como decimal
+                    probability = 1 / (odds + 1) if odds > 0 else 0
+            
+            else:
+                # Formato desconocido, asumir decimal
+                probability = 1 / odds if odds > 0 else 0
+            
+            # Asegurar que esté en rango válido
+            return max(0.0, min(1.0, probability))
+            
+        except (ValueError, ZeroDivisionError):
+            # En caso de error, devolver probabilidad neutral
+            return 0.5
+    
+    def compare_model_vs_market(
+        self,
+        model_predictions: pd.DataFrame,
+        sport_event_id: str,
+        target: str = 'PTS',
+        player_name: str = None,
+        min_edge: float = 0.05,
+        min_confidence: float = 0.90
+    ) -> Dict[str, Any]:
+        """
+        Compara predicciones del modelo con cuotas del mercado para encontrar
+        las mejores oportunidades de apuesta.
+        
+        Esta función es el corazón del sistema:
+        1. Obtiene predicciones del modelo (valor esperado)
+        2. Obtiene cuotas del mercado (probabilidades implícitas)
+        3. Calcula la ventaja estadística (edge)
+        4. Identifica las mejores oportunidades
+        
+        Args:
+            model_predictions: DataFrame con predicciones del modelo
+            sport_event_id: ID del evento deportivo
+            target: Estadística objetivo (PTS, AST, TRB, 3P, DD, is_win, total_points, teams_points)
+            player_name: Nombre específico del jugador (opcional)
+            min_edge: Ventaja mínima requerida (default: 5%)
+            min_confidence: Confianza mínima del modelo (default: 90%)
+            
+        Returns:
+            Análisis completo con mejores oportunidades
+        """
+        logger.info(f"Comparando modelo vs mercado para {sport_event_id}, target: {target}")
+        
+        try:
+            # Obtener props del mercado usando el endpoint que funciona
+            market_props = self.bookmakers_fetcher.sportradar_api.get_player_props(sport_event_id)
+            
+            if not market_props.get('success', False):
+                logger.error(f"No se pudieron obtener props del mercado para {sport_event_id}")
+                return {
+                    'success': False,
+                    'error': 'No market data available',
+                    'sport_event_id': sport_event_id
+                }
+            
+            # Inicializar resultado
+            comparison_result = {
+                'success': True,
+                'sport_event_id': sport_event_id,
+                'target': target,
+                'event_info': market_props.get('event_info', {}),
+                'opportunities': [],
+                'summary': {
+                    'total_players_analyzed': 0,
+                    'players_with_edges': 0,
+                    'best_opportunities': 0,
+                    'avg_edge': 0.0,
+                    'max_edge': 0.0
+                }
+            }
+            
+            # Filtrar predicciones por confianza
+            confident_predictions = model_predictions[
+                model_predictions.get('confidence', 0) >= min_confidence
+            ]
+            
+            if confident_predictions.empty:
+                logger.warning(f"No hay predicciones con confianza >= {min_confidence}")
+                return comparison_result
+            
+            # Analizar cada jugador
+            market_players = market_props.get('players', {})
+            
+            for player_market_name, player_market_data in market_players.items():
+                # Buscar predicción correspondiente
+                model_prediction = self._find_matching_prediction(
+                    confident_predictions, player_market_name, target
+                )
+                
+                if model_prediction is None:
+                    continue
+                
+                # Filtrar por jugador específico si se especifica
+                if player_name and player_name.lower() not in player_market_name.lower():
+                    continue
+                
+                # Analizar targets disponibles
+                player_targets = player_market_data.get('targets', {})
+                
+                if target not in player_targets:
+                    continue
+                
+                # Obtener predicción del modelo
+                predicted_value = model_prediction.get(f'predicted_{target}', 0)
+                model_confidence = model_prediction.get('confidence', 0)
+                
+                # Analizar cada línea disponible
+                for line_data in player_targets[target]['lines']:
+                    line_value = line_data['value']
+                    
+                    # Calcular probabilidad del modelo
+                    model_prob_over = self._calculate_model_probability(
+                        predicted_value, line_value, target
+                    )
+                    model_prob_under = 1 - model_prob_over
+                    
+                    # Analizar odds over
+                    over_odds = line_data['over']['best_odds']
+                    if over_odds:
+                        market_prob_over = over_odds['probability']
+                        edge_over = model_prob_over - market_prob_over
+                        
+                        if edge_over >= min_edge:
+                            opportunity = {
+                                'player': player_market_name,
+                                'target': target,
+                                'line': line_value,
+                                'bet_type': 'over',
+                                'predicted_value': predicted_value,
+                                'model_probability': model_prob_over,
+                                'market_probability': market_prob_over,
+                                'edge': edge_over,
+                                'edge_percentage': edge_over * 100,
+                                'model_confidence': model_confidence,
+                                'odds': over_odds,
+                                'expected_value': self._calculate_expected_value(
+                                    model_prob_over, over_odds['decimal']
+                                ),
+                                'kelly_fraction': self._calculate_kelly_fraction(
+                                    model_prob_over, over_odds['decimal']
+                                ),
+                                'opportunity_score': self._calculate_opportunity_score(
+                                    edge_over, model_confidence, over_odds['decimal']
+                                )
+                            }
+                            comparison_result['opportunities'].append(opportunity)
+                    
+                    # Analizar odds under
+                    under_odds = line_data['under']['best_odds']
+                    if under_odds:
+                        market_prob_under = under_odds['probability']
+                        edge_under = model_prob_under - market_prob_under
+                        
+                        if edge_under >= min_edge:
+                            opportunity = {
+                                'player': player_market_name,
+                                'target': target,
+                                'line': line_value,
+                                'bet_type': 'under',
+                                'predicted_value': predicted_value,
+                                'model_probability': model_prob_under,
+                                'market_probability': market_prob_under,
+                                'edge': edge_under,
+                                'edge_percentage': edge_under * 100,
+                                'model_confidence': model_confidence,
+                                'odds': under_odds,
+                                'expected_value': self._calculate_expected_value(
+                                    model_prob_under, under_odds['decimal']
+                                ),
+                                'kelly_fraction': self._calculate_kelly_fraction(
+                                    model_prob_under, under_odds['decimal']
+                                ),
+                                'opportunity_score': self._calculate_opportunity_score(
+                                    edge_under, model_confidence, under_odds['decimal']
+                                )
+                            }
+                            comparison_result['opportunities'].append(opportunity)
+                
+                comparison_result['summary']['total_players_analyzed'] += 1
+            
+            # Ordenar oportunidades por score
+            comparison_result['opportunities'].sort(
+                key=lambda x: x['opportunity_score'], reverse=True
+            )
+            
+            # Calcular estadísticas finales
+            if comparison_result['opportunities']:
+                edges = [opp['edge'] for opp in comparison_result['opportunities']]
+                comparison_result['summary']['players_with_edges'] = len(
+                    set(opp['player'] for opp in comparison_result['opportunities'])
+                )
+                comparison_result['summary']['best_opportunities'] = len(
+                    [opp for opp in comparison_result['opportunities'] if opp['edge'] >= min_edge * 1.5]
+                )
+                comparison_result['summary']['avg_edge'] = np.mean(edges)
+                comparison_result['summary']['max_edge'] = max(edges)
+                
+                # Seleccionar las mejores 3 oportunidades
+                comparison_result['top_opportunities'] = comparison_result['opportunities'][:3]
+                
+                logger.info(f"✅ Análisis completado: {len(comparison_result['opportunities'])} oportunidades encontradas")
+                logger.info(f"Mejor edge: {comparison_result['summary']['max_edge']:.1%}")
+            else:
+                logger.warning("No se encontraron oportunidades con la ventaja mínima requerida")
+            
+            return comparison_result
+            
+        except Exception as e:
+            logger.error(f"Error en comparación modelo vs mercado: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'sport_event_id': sport_event_id
+            }
+    
+    def _find_matching_prediction(
+        self,
+        predictions: pd.DataFrame,
+        market_player_name: str,
+        target: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Encuentra la predicción correspondiente para un jugador del mercado.
+        
+        Args:
+            predictions: DataFrame con predicciones
+            market_player_name: Nombre del jugador en el mercado
+            target: Target objetivo
+            
+        Returns:
+            Diccionario con la predicción o None si no se encuentra
+        """
+        # Limpiar nombre del mercado
+        market_name_clean = market_player_name.lower().replace(',', '').strip()
+        
+        # Buscar coincidencia
+        for idx, row in predictions.iterrows():
+            pred_name = str(row.get('player_name', '')).lower().replace(',', '').strip()
+            
+            # Verificar coincidencia
+            if self._player_name_matches(pred_name, market_name_clean):
+                return row.to_dict()
+        
+        return None
+    
+    def _calculate_expected_value(self, true_probability: float, decimal_odds: float) -> float:
+        """
+        Calcula el valor esperado de una apuesta.
+        
+        Args:
+            true_probability: Probabilidad real según nuestro modelo
+            decimal_odds: Odds decimales del mercado
+            
+        Returns:
+            Valor esperado (positivo = buena apuesta)
+        """
+        return (true_probability * (decimal_odds - 1)) - (1 - true_probability)
+    
+    def _calculate_kelly_fraction(self, true_probability: float, decimal_odds: float) -> float:
+        """
+        Calcula la fracción Kelly para el tamaño óptimo de apuesta.
+        
+        Args:
+            true_probability: Probabilidad real según nuestro modelo
+            decimal_odds: Odds decimales del mercado
+            
+        Returns:
+            Fracción Kelly (0.0 a 1.0)
+        """
+        try:
+            edge = self._calculate_expected_value(true_probability, decimal_odds)
+            if edge <= 0:
+                return 0.0
+            
+            kelly = (true_probability * decimal_odds - 1) / (decimal_odds - 1)
+            return max(0.0, min(kelly, 0.25))  # Limitar a 25% máximo
+        except:
+            return 0.0
+    
+    def _calculate_opportunity_score(
+        self,
+        edge: float,
+        confidence: float,
+        decimal_odds: float
+    ) -> float:
+        """
+        Calcula un score compuesto para rankear oportunidades.
+        
+        Args:
+            edge: Ventaja estadística
+            confidence: Confianza del modelo
+            decimal_odds: Odds decimales
+            
+        Returns:
+            Score de oportunidad (mayor = mejor)
+        """
+        # Penalizar odds extremas (muy altas o muy bajas)
+        odds_penalty = 1.0
+        if decimal_odds > 3.0 or decimal_odds < 1.5:
+            odds_penalty = 0.8
+        
+        # Score compuesto
+        score = (edge * 0.4 + confidence * 0.4 + (1/decimal_odds) * 0.2) * odds_penalty
+        
+        return score

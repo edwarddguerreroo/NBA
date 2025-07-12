@@ -100,16 +100,7 @@ DEFAULT_CONFIG = {
             'total_assists': 'sr:market:922',  # Asistencias totales (incluidas horas extras) → AST
             'total_rebounds': 'sr:market:923',  # Rebotes totales (incluye tiempo extra) → TRB
             'total_3pt_field_goals': 'sr:market:924',  # Total de goles de campo de 3 puntos → 3P
-            'total_steals': 'sr:market:8000',  # Robos totales (incluidas horas extras)
-            'total_blocks': 'sr:market:8001',  # Total de bloques (incl. horas extras)
-            'total_turnovers': 'sr:market:8002',  # Rotación total (incluidas horas extras)
-            'points_plus_rebounds': 'sr:market:8003',  # Total de puntos más rebotes
-            'points_plus_assists': 'sr:market:8004',  # Total de puntos más asistencias
-            'rebounds_plus_assists': 'sr:market:8005',  # Rebotes totales más asistencias
-            'points_assists_rebounds': 'sr:market:8006',  # Total de puntos más asistencias más rebotes
-            'blocks_plus_steals': 'sr:market:8007',  # Total de bloqueos más robos
             'double_double': 'sr:market:8008',  # Doble doble (incluye horas extras)
-            'triple_double': 'sr:market:8009'  # Triple doble (incluye tiempo extra)
         },
         
         # Mapeo de targets del sistema a mercados de Sportradar
@@ -119,7 +110,8 @@ DEFAULT_CONFIG = {
             'AST': 'total_assists', 
             'TRB': 'total_rebounds',
             '3P': 'total_3pt_field_goals',
-            'double_double': 'double_double',
+            'DD': 'double_double',  # Usar DD como alias estándar
+            'double_double': 'double_double',  # Mantener compatibilidad
             
             # Targets de equipos (Prematch API)
             'is_win': '1x2',
@@ -177,7 +169,8 @@ DEFAULT_CONFIG = {
             'AST': ['total_assists', 'player_assists', 'assists'],
             'TRB': ['total_rebounds', 'player_rebounds', 'rebounds'],
             '3P': ['total_3pt_field_goals', 'player_threes', 'three_pointers', 'threes'],
-            'double_double': ['double_double', 'dd']
+            'DD': ['double_double', 'dd'],  # Usar DD como alias estándar
+            'double_double': ['double_double', 'dd']  # Mantener compatibilidad
         }
     },
     'betting': {
@@ -313,9 +306,13 @@ class BookmakersConfig:
         if not self.config['sportradar']['api_key']:
             logger.warning("API key de Sportradar no configurada. Algunas funciones no estarán disponibles.")
         
-        # Validar API key de Player Props
+        # Validar API key de Player Props - usar la misma de Sportradar si no está configurada
         if not self.config['player_props_v2']['api_key']:
-            logger.warning("API key de Player Props v2 no configurada. Funciones de player props no estarán disponibles.")
+            if self.config['sportradar']['api_key']:
+                self.config['player_props_v2']['api_key'] = self.config['sportradar']['api_key']
+                logger.info("API key de Player Props v2 configurada usando la misma de Sportradar")
+            else:
+                logger.warning("API key de Player Props v2 no configurada. Funciones de player props no estarán disponibles.")
         
         # Validar parámetros de betting
         betting = self.config['betting']

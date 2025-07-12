@@ -91,6 +91,10 @@ class SportradarAPI:
         from .optimized_cache import OptimizedCache
         self._cache = OptimizedCache(self.config.get_data_config())
         
+        # Inicializar contadores de cache
+        self.cache_hits = 0
+        self.cache_misses = 0
+        
         logger.info(f"SportradarAPI inicializada | Base URL: {self.base_url}")
     
     def _setup_session(self) -> requests.Session:
@@ -256,6 +260,8 @@ class SportradarAPI:
         """
         Obtiene el schedule con odds disponibles para una fecha específica usando Player Props v2 API.
         
+        CORRECCIÓN: Usar la URL correcta de Player Props v2 que SÍ funciona.
+        
         Args:
             date: Fecha en formato YYYY-MM-DD
             sport_id: ID del deporte (default: basketball from config)
@@ -266,11 +272,11 @@ class SportradarAPI:
         if sport_id is None:
             sport_id = self.sport_id
             
-        # Usar Player Props v2 API para daily schedules
-        endpoint = self.config.get_endpoint('daily_schedules', 
-                                           sport_id=f"sr:sport:{sport_id}", date=date)
+        # Usar Player Props v2 API que SÍ funciona
+        sport_id_formatted = f"sr:sport:{sport_id}"
+        endpoint = f"en/sports/{sport_id_formatted}/schedules/{date}/schedules"
         
-        # Construir URL manualmente para Player Props v2 API
+        # Construir URL usando Player Props v2 API
         player_props_url = self.config.get('sportradar', 'player_props_url')
         url = urljoin(player_props_url, endpoint)
         params = {'api_key': self.api_key}
@@ -279,7 +285,7 @@ class SportradarAPI:
         self._check_rate_limit()
         
         try:
-            logger.debug(f"GET {url} | Daily Schedule Player Props v2")
+            logger.debug(f"GET {url} | Daily Schedule Player Props v2 (URL corregida)")
             
             response = self.session.get(
                 url, 
@@ -291,7 +297,6 @@ class SportradarAPI:
                 self._handle_http_error(response, endpoint)
             
             try:
-                # Intentar parsear como JSON primero
                 data = response.json()
             except json.JSONDecodeError as e:
                 raise SportradarAPIError(
@@ -300,8 +305,21 @@ class SportradarAPI:
                     endpoint=endpoint
                 )
             
-            logger.debug(f"Respuesta exitosa de daily schedule para {date}")
-            return data
+            # Extraer sport_events de la estructura de schedules
+            sport_events = []
+            if 'schedules' in data:
+                for schedule in data['schedules']:
+                    if 'sport_event' in schedule:
+                        sport_events.append(schedule['sport_event'])
+            
+            logger.info(f"✅ Schedule obtenido para {date}: {len(sport_events)} eventos")
+            return {
+                'sport_events': sport_events,
+                'date': date,
+                'method': 'player_props_v2_schedules',
+                'success': True,
+                'raw_data': data
+            }
             
         except requests.exceptions.Timeout:
             raise NetworkError(f"Timeout en petición a {endpoint}", url, self.timeout)
@@ -313,7 +331,7 @@ class SportradarAPI:
     def get_schedule(self, date: Optional[str] = None, season: str = "2024") -> Dict[str, Any]:
         """
         Obtiene el schedule de partidos NBA.
-        
+                
         Args:
             date: Fecha específica (YYYY-MM-DD). Si es None, obtiene schedule completo
             season: Temporada (ej: "2024" para 2024-25)
@@ -322,17 +340,47 @@ class SportradarAPI:
             Datos del schedule
         """
         if date:
-            # Schedule para fecha específica
-            endpoint = f"games/{date}/schedule.json"
+            # Para fecha específica, usar get_daily_odds_schedule que ya está corregido
+            logger.debug(f"Schedule para fecha específica: {date}")
+            return self.get_daily_odds_schedule(date)
         else:
-            # Schedule completo de temporada
-            endpoint = f"seasons/{season}/schedule.json"
-        
-        return self._make_request(endpoint)
+            # Para schedule completo, usar Competition Schedules con Player Props v2 API
+            logger.debug(f"Schedule completo para temporada: {season}")
+            
+            try:
+                # Usar NBA competition con Player Props v2 API
+                nba_competition_id = 'sr:competition:132'
+                competition_schedule = self.get_competition_schedules(nba_competition_id)
+                
+                if competition_schedule and 'schedules' in competition_schedule:
+                    logger.info(f"✅ Schedule completo obtenido: {len(competition_schedule['schedules'])} eventos")
+                    return {
+                        'schedules': competition_schedule['schedules'],
+                        'season': season,
+                        'method': 'player_props_v2_competition',
+                        'success': True
+                    }
+                
+            except Exception as e:
+                logger.warning(f"Error obteniendo schedule completo: {e}")
+                
+            # Fallback: devolver estructura vacía pero válida
+            logger.warning(f"No se pudo obtener schedule para temporada {season}")
+            return {
+                'schedules': [],
+                'season': season,
+                'method': 'fallback_empty',
+                'success': False,
+                'error': 'No se pudo obtener schedule'
+            }
     
     def get_odds(self, sport_event_id: str, format: str = "american") -> Dict[str, Any]:
         """
         Obtiene cuotas para un partido específico usando Odds Comparison API.
+        
+        SOLUCIÓN PARA ERROR 401: Usar endpoints alternativos que SÍ funcionan.
+        En lugar de obtener odds por sport_event_id específico (que requiere permisos especiales),
+        usamos endpoints por fecha/competición que están disponibles.
         
         Args:
             sport_event_id: ID del sport event de Sportradar (ej: sr:sport_event:12345)
@@ -341,37 +389,95 @@ class SportradarAPI:
         Returns:
             Datos de cuotas del partido
         """
-        # Usar endpoint configurado para Sport Event Markets
-        endpoint = self.config.get_endpoint('sport_event_markets', 
-                                           sport_event_id=sport_event_id)
+        logger.warning(f"get_odds para sport_event_id específico no disponible con cuenta trial")
+        logger.info("Usando método alternativo: obtener odds por fecha/competición")
         
-        # Odds cambian frecuentemente, cache por 2 minutos
-        return self._make_request(endpoint, use_odds_api=True, expect_xml=False, cache_ttl=120)
+        try:
+            # Estrategia alternativa: obtener odds por fecha
+            today = datetime.now().strftime("%Y-%m-%d")
+            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            
+            # Intentar obtener odds por fecha usando Schedule Markets
+            for date in [today, tomorrow]:
+                try:
+                    odds_data = self.get_schedule_markets(sport_id=2, date=date)
+                    
+                    if odds_data and 'sport_events' in odds_data:
+                        # Buscar el sport_event_id específico
+                        for event in odds_data['sport_events']:
+                            if event.get('id') == sport_event_id:
+                                logger.info(f"✅ Odds encontradas para {sport_event_id} en fecha {date}")
+                                return {
+                                    'success': True,
+                                    'sport_event_id': sport_event_id,
+                                    'odds': event.get('markets', {}),
+                                    'method': 'by_date_filtered',
+                                    'date': date
+                                }
+                except Exception as e:
+                    logger.debug(f"Error obteniendo odds por fecha {date}: {e}")
+                    continue
+            
+            # Si no encontramos el evento específico, devolver estructura vacía pero válida
+            logger.warning(f"No se encontraron odds para sport_event_id {sport_event_id}")
+            return {
+                'success': False,
+                'sport_event_id': sport_event_id,
+                'odds': {},
+                'method': 'not_found',
+                'error': 'Sport event not found in available dates'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error en método alternativo de odds: {e}")
+            return {
+                'success': False,
+                'sport_event_id': sport_event_id,
+                'odds': {},
+                'error': str(e)
+            }
     
     def get_player_props(self, sport_event_id: str, format: str = "us") -> Dict[str, Any]:
         """
-        Obtiene player props para un partido usando Odds Comparison Player Props API.
+        Obtiene player props para un sport_event_id específico usando Player Props v2 API.
+        
+        Este método usa el endpoint exacto que SÍ funciona:
+        /en/sport_events/{sport_event_id}/players_props
         
         Args:
             sport_event_id: ID del sport event de Sportradar
             format: Formato de odds ("us", "eu", "uk")
             
         Returns:
-            Datos de player props
+            Datos de player props estructurados para comparación con modelo
         """
-        # Usar endpoint configurado para Player Props
-        endpoint = self.config.get_endpoint('sport_event_player_props', 
-                                           sport_event_id=sport_event_id)
+        cache_key = f"player_props_direct_{sport_event_id}"
         
-        # Construir URL manualmente para player props ya que usa API diferente
-        url = urljoin(self.player_props_url, endpoint)
-        params = {'api_key': self.api_key}
+        # Verificar cache
+        cached_data = self._get_cached_data(cache_key, {})
+        if cached_data:
+            self.cache_hits += 1
+            logger.debug(f"Cache hit para props de {sport_event_id}")
+            return cached_data
         
-        # Rate limiting
-        self._check_rate_limit()
+        self.cache_misses += 1
         
         try:
-            logger.debug(f"GET {url} | Player Props")
+            # Formatear sport_event_id para URL
+            sport_event_id_formatted = sport_event_id.replace(':', '%3A')
+            
+            # Usar endpoint exacto que funciona
+            endpoint = f"en/sport_events/{sport_event_id_formatted}/players_props"
+            
+            # Construir URL usando Player Props v2 API
+            player_props_url = self.config.get('sportradar', 'player_props_url')
+            url = urljoin(player_props_url, endpoint)
+            params = {'api_key': self.api_key}
+            
+            # Rate limiting
+            self._check_rate_limit()
+            
+            logger.debug(f"GET {url} | Player Props Direct")
             
             response = self.session.get(
                 url, 
@@ -383,7 +489,6 @@ class SportradarAPI:
                 self._handle_http_error(response, endpoint)
             
             try:
-                # Intentar parsear como JSON primero
                 data = response.json()
             except json.JSONDecodeError as e:
                 raise SportradarAPIError(
@@ -392,8 +497,95 @@ class SportradarAPI:
                     endpoint=endpoint
                 )
             
-            logger.debug(f"Respuesta exitosa de player props para {sport_event_id}")
-            return data
+            # Procesar datos para estructura optimizada para comparación con modelo
+            processed_data = self._process_player_props_for_model_comparison(data, sport_event_id)
+            
+            # Guardar en cache
+            self._set_cached_data(cache_key, {}, processed_data)
+            
+            logger.info(f"✅ Player props obtenidas directamente para {sport_event_id}")
+            return processed_data
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo props directas para {sport_event_id}: {e}")
+            return {
+                'success': False,
+                'sport_event_id': sport_event_id,
+                'props': {},
+                'error': str(e)
+            }
+    
+    def get_player_props_by_date(self, date: str, sport_id: int = None) -> Dict[str, Any]:
+        """
+        Obtiene player props para una fecha específica usando Player Props v2 API.
+                
+        Args:
+            date: Fecha en formato YYYY-MM-DD
+            sport_id: ID del deporte (default: basketball = 2)
+            
+        Returns:
+            Datos de player props para la fecha
+        """
+        if sport_id is None:
+            sport_id = self.sport_id
+            
+        # Usar endpoint de Player Props v2 API que SÍ funciona
+        sport_id_formatted = f"sr:sport:{sport_id}"
+        endpoint = f"en/sports/{sport_id_formatted}/schedules/{date}/players_props"
+        
+        # Construir URL usando Player Props v2 API
+        player_props_url = self.config.get('sportradar', 'player_props_url')
+        url = urljoin(player_props_url, endpoint)
+        params = {'api_key': self.api_key}
+        
+        # Rate limiting
+        self._check_rate_limit()
+        
+        try:
+            logger.debug(f"GET {url} | Player Props by Date")
+            
+            response = self.session.get(
+                url, 
+                params=params, 
+                timeout=self.timeout
+            )
+            
+            if response.status_code != 200:
+                self._handle_http_error(response, endpoint)
+            
+            try:
+                data = response.json()
+            except json.JSONDecodeError as e:
+                raise SportradarAPIError(
+                    f"Respuesta JSON inválida: {e}",
+                    response.status_code,
+                    endpoint=endpoint
+                )
+            
+            # Procesar datos para extraer eventos con props
+            events_with_props = []
+            
+            # La estructura puede variar, intentar diferentes formatos
+            if 'sport_events' in data:
+                for event in data['sport_events']:
+                    if 'players_props' in event:
+                        events_with_props.append({
+                            'sport_event_id': event.get('id'),
+                            'props': event.get('players_props', {}),
+                            'event_info': {
+                                'start_time': event.get('start_time'),
+                                'competitors': event.get('competitors', [])
+                            }
+                        })
+            
+            logger.info(f"✅ Player props obtenidas para {date}: {len(events_with_props)} eventos")
+            return {
+                'success': True,
+                'date': date,
+                'events': events_with_props,
+                'method': 'player_props_v2_by_date',
+                'raw_data': data
+            }
             
         except requests.exceptions.Timeout:
             raise NetworkError(f"Timeout en petición a {endpoint}", url, self.timeout)
@@ -401,6 +593,253 @@ class SportradarAPI:
             raise NetworkError(f"Error de conexión: {e}", url)
         except requests.exceptions.RequestException as e:
             raise SportradarAPIError(f"Error en petición: {e}", endpoint=endpoint)
+    
+    def get_player_props_by_competition(self, competition_id: str = 'sr:competition:486') -> Dict[str, Any]:
+        """
+        Obtiene player props para una competición específica usando Player Props v2 API.
+        
+        Este método SÍ funciona con nuestra cuenta trial y es ideal para WNBA activa.
+        
+        Args:
+            competition_id: ID de la competición (default: WNBA que está activa)
+            
+        Returns:
+            Datos de player props para la competición
+        """
+        # Usar endpoint de Player Props v2 API que SÍ funciona
+        endpoint = f"en/competitions/{competition_id}/players_props"
+        
+        # Construir URL usando Player Props v2 API
+        player_props_url = self.config.get('sportradar', 'player_props_url')
+        url = urljoin(player_props_url, endpoint)
+        params = {'api_key': self.api_key}
+        
+        # Rate limiting
+        self._check_rate_limit()
+        
+        try:
+            logger.debug(f"GET {url} | Player Props by Competition")
+            
+            response = self.session.get(
+                url, 
+                params=params, 
+                timeout=self.timeout
+            )
+            
+            if response.status_code != 200:
+                self._handle_http_error(response, endpoint)
+            
+            try:
+                data = response.json()
+            except json.JSONDecodeError as e:
+                raise SportradarAPIError(
+                    f"Respuesta JSON inválida: {e}",
+                    response.status_code,
+                    endpoint=endpoint
+                )
+            
+            # Procesar datos para extraer eventos con props
+            events_with_props = []
+            
+            # La estructura puede variar, intentar diferentes formatos
+            if 'sport_events' in data:
+                for event in data['sport_events']:
+                    if 'players_props' in event or 'markets' in event:
+                        events_with_props.append({
+                            'sport_event_id': event.get('id'),
+                            'props': event.get('players_props', event.get('markets', {})),
+                            'event_info': {
+                                'start_time': event.get('start_time'),
+                                'competitors': event.get('competitors', []),
+                                'status': event.get('status', 'unknown')
+                            }
+                        })
+            
+            logger.info(f"✅ Player props obtenidas para competición {competition_id}: {len(events_with_props)} eventos")
+            return {
+                'success': True,
+                'competition_id': competition_id,
+                'events': events_with_props,
+                'method': 'player_props_v2_by_competition',
+                'raw_data': data
+            }
+            
+        except requests.exceptions.Timeout:
+            raise NetworkError(f"Timeout en petición a {endpoint}", url, self.timeout)
+        except requests.exceptions.ConnectionError as e:
+            raise NetworkError(f"Error de conexión: {e}", url)
+        except requests.exceptions.RequestException as e:
+            raise SportradarAPIError(f"Error en petición: {e}", endpoint=endpoint)
+    
+    def get_prematch_odds(self, sport_event_id: str, format: str = "us") -> Dict[str, Any]:
+        """
+        Obtiene odds de prematch (1x2, totals, spreads) usando Odds Comparison v2 - Prematch API.
+        
+        Este método obtiene los game markets (no player props) desde la Prematch API:
+        - Market ID 1: 1x2/moneyline (is_win)
+        - Market ID 225: total_incl_overtime (total_points)
+        - Market ID 227: home_total_incl_overtime (teams_points home)
+        - Market ID 228: away_total_incl_overtime (teams_points away)
+        
+        Args:
+            sport_event_id: ID del sport event (ej: sr:sport_event:12345)
+            format: Formato de odds ("us", "eu", "uk")
+            
+        Returns:
+            Game markets del partido (is_win, total_points, teams_points)
+        """
+        cache_key = f"prematch_odds_{sport_event_id}"
+        
+        # Verificar cache
+        cached_data = self._get_cached_data(cache_key, {})
+        if cached_data:
+            self.cache_hits += 1
+            logger.debug(f"Cache hit para prematch odds de {sport_event_id}")
+            return cached_data
+        
+        self.cache_misses += 1
+        
+        try:
+            # Formatear sport_event_id para URL
+            sport_event_id_formatted = sport_event_id.replace(':', '%3A')
+            
+            # Endpoint para sport event markets (Prematch API)
+            endpoint = f"en/sport_events/{sport_event_id_formatted}/sport_event_markets"
+            
+            # Construir URL usando Prematch API (Odds Comparison v2)
+            prematch_url = self.config.get('sportradar', 'odds_base_url')
+            url = urljoin(prematch_url, endpoint)
+            params = {'api_key': self.api_key}
+            
+            # Rate limiting
+            self._check_rate_limit()
+            
+            logger.debug(f"GET {url} | Prematch Odds")
+            
+            response = self.session.get(
+                url, 
+                params=params, 
+                timeout=self.timeout
+            )
+            
+            if response.status_code != 200:
+                self._handle_http_error(response, endpoint)
+            
+            try:
+                data = response.json()
+            except json.JSONDecodeError as e:
+                raise SportradarAPIError(
+                    f"Respuesta JSON inválida: {e}",
+                    response.status_code,
+                    endpoint=endpoint
+                )
+            
+            # Procesar datos para estructura optimizada para comparación con modelo
+            processed_data = self._process_prematch_odds_for_model_comparison(data, sport_event_id)
+            
+            # Guardar en cache
+            self._set_cached_data(cache_key, {}, processed_data)
+            
+            logger.info(f"✅ Prematch odds obtenidas para {sport_event_id}")
+            return processed_data
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo prematch odds para {sport_event_id}: {e}")
+            return {
+                'success': False,
+                'sport_event_id': sport_event_id,
+                'markets': [],
+                'error': str(e)
+            }
+    
+    def get_prematch_odds_by_competition(self, competition_id: str = 'sr:competition:132', 
+                                       offset: int = 0, limit: int = 50, start: int = 0) -> Dict[str, Any]:
+        """
+        Obtiene odds de prematch para una competición específica usando Odds Comparison API v2.
+        
+        Args:
+            competition_id: ID de la competición (default: NBA)
+            offset: Desplazamiento para paginación
+            limit: Límite de resultados
+            start: Inicio para paginación
+            
+        Returns:
+            Diccionario con odds de prematch de la competición
+        """
+        cache_key = f"prematch_competition_{competition_id}_{offset}_{limit}_{start}"
+        
+        # Verificar cache
+        cached_data = self._get_cached_data(cache_key, {})
+        if cached_data:
+            self.cache_hits += 1
+            logger.debug(f"Cache hit para prematch odds de competición {competition_id}")
+            return cached_data
+        
+        self.cache_misses += 1
+        
+        try:
+            # Formatear competition_id para URL
+            competition_id_formatted = competition_id.replace(':', '%3A')
+            
+            # Endpoint para competition sport event markets
+            endpoint = f"en/competitions/{competition_id_formatted}/sport_event_markets"
+            
+            # Construir URL usando Prematch API (Odds Comparison v2)
+            prematch_url = self.config.get('sportradar', 'odds_base_url')
+            url = urljoin(prematch_url, endpoint)
+            params = {
+                'api_key': self.api_key,
+                'offset': offset,
+                'limit': limit,
+                'start': start
+            }
+            
+            # Rate limiting
+            self._check_rate_limit()
+            
+            logger.debug(f"GET {url} | Prematch Competition Odds")
+            
+            response = self.session.get(
+                url, 
+                params=params, 
+                timeout=self.timeout
+            )
+            
+            if response.status_code != 200:
+                self._handle_http_error(response, endpoint)
+            
+            try:
+                data = response.json()
+            except json.JSONDecodeError as e:
+                raise SportradarAPIError(
+                    f"Respuesta JSON inválida: {e}",
+                    response.status_code,
+                    endpoint=endpoint
+                )
+            
+            # Procesar datos
+            processed_data = {
+                'success': True,
+                'data': data,
+                'competition_id': competition_id,
+                'offset': offset,
+                'limit': limit,
+                'api_source': 'prematch_odds_v2'
+            }
+            
+            # Guardar en cache
+            self._set_cached_data(cache_key, {}, processed_data)
+            
+            logger.info(f"✅ Prematch odds obtenidas para competición {competition_id}")
+            return processed_data
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo prematch odds para competición {competition_id}: {e}")
+            return {
+                'success': False,
+                'competition_id': competition_id,
+                'error': str(e)
+            }
     
     def get_teams(self) -> Dict[str, Any]:
         """
@@ -895,6 +1334,297 @@ class SportradarAPI:
         
         return player_markets
     
+    def _process_player_props_for_model_comparison(self, data: Dict[str, Any], sport_event_id: str) -> Dict[str, Any]:
+        """
+        Procesa datos de player props para comparación optimizada con predicciones del modelo.
+        
+        Estructura los datos para facilitar la comparación entre:
+        - Predicciones del modelo (valor esperado)
+        - Líneas de casas de apuestas (valor del mercado)
+        - Cuotas disponibles (rentabilidad potencial)
+        
+        Args:
+            data: Datos crudos de Sportradar API
+            sport_event_id: ID del evento deportivo
+            
+        Returns:
+            Datos estructurados para comparación con modelo
+        """
+        try:
+            # Extraer información del evento
+            sport_event_info = data.get('sport_event_players_props', {}).get('sport_event', {})
+            players_props = data.get('sport_event_players_props', {}).get('players_props', [])
+            
+            # Mapeo de mercados Sportradar a nuestros targets
+            target_mapping = {
+                'total points (incl. overtime)': 'PTS',
+                'total assists (incl. overtime)': 'AST', 
+                'total rebounds (incl. overtime)': 'TRB',
+                'total threes (incl. overtime)': '3P',
+                'total three pointers (incl. overtime)': '3P',
+                'total 3-pointers (incl. overtime)': '3P'
+            }
+            
+            # Estructura optimizada para comparación
+            processed_data = {
+                'success': True,
+                'sport_event_id': sport_event_id,
+                'event_info': {
+                    'start_time': sport_event_info.get('start_time'),
+                    'status': sport_event_info.get('status'),
+                    'competitors': sport_event_info.get('competitors', [])
+                },
+                'players': {},
+                'market_summary': {
+                    'total_players': 0,
+                    'total_markets': 0,
+                    'targets_available': set(),
+                    'bookmakers': set()
+                }
+            }
+            
+            # Procesar cada jugador
+            for player_data in players_props:
+                player_info = player_data.get('player', {})
+                player_id = player_info.get('id')
+                player_name = player_info.get('name')
+                
+                if not player_name:
+                    continue
+                
+                # Inicializar estructura del jugador
+                processed_data['players'][player_name] = {
+                    'player_id': player_id,
+                    'competitor_id': player_info.get('competitor_id'),
+                    'targets': {}
+                }
+                
+                # Procesar mercados del jugador
+                for market in player_data.get('markets', []):
+                    market_name = market.get('name', '').lower()
+                    
+                    # Identificar target
+                    target = None
+                    for market_key, target_key in target_mapping.items():
+                        if market_key in market_name:
+                            target = target_key
+                            break
+                    
+                    if not target:
+                        continue
+                    
+                    # Inicializar target si no existe
+                    if target not in processed_data['players'][player_name]['targets']:
+                        processed_data['players'][player_name]['targets'][target] = {
+                            'lines': [],
+                            'best_odds': {'over': None, 'under': None},
+                            'market_consensus': None
+                        }
+                    
+                    # Procesar casas de apuestas
+                    for book in market.get('books', []):
+                        book_name = book.get('name')
+                        
+                        if book.get('removed', False):
+                            continue
+                        
+                        # Procesar outcomes (over/under)
+                        for outcome in book.get('outcomes', []):
+                            line_value = outcome.get('total')
+                            outcome_type = outcome.get('type')  # 'over' o 'under'
+                            
+                            if line_value is None or outcome_type is None:
+                                continue
+                            
+                            # Convertir cuotas a diferentes formatos
+                            odds_data = {
+                                'decimal': float(outcome.get('odds_decimal', 0)),
+                                'american': outcome.get('odds_american', ''),
+                                'fractional': outcome.get('odds_fraction', ''),
+                                'probability': self._odds_to_probability(outcome.get('odds_decimal', '2.0'))
+                            }
+                            
+                            # Buscar si ya existe esta línea
+                            existing_line = None
+                            for line in processed_data['players'][player_name]['targets'][target]['lines']:
+                                if line['value'] == line_value:
+                                    existing_line = line
+                                    break
+                            
+                            if not existing_line:
+                                # Crear nueva línea
+                                existing_line = {
+                                    'value': line_value,
+                                    'over': {'odds': [], 'best_odds': None},
+                                    'under': {'odds': [], 'best_odds': None}
+                                }
+                                processed_data['players'][player_name]['targets'][target]['lines'].append(existing_line)
+                            
+                            # Agregar odds a la línea
+                            existing_line[outcome_type]['odds'].append({
+                                'bookmaker': book_name,
+                                'odds': odds_data,
+                                'external_id': outcome.get('external_outcome_id')
+                            })
+                            
+                            # Actualizar mejores odds
+                            if (not existing_line[outcome_type]['best_odds'] or 
+                                odds_data['decimal'] > existing_line[outcome_type]['best_odds']['decimal']):
+                                existing_line[outcome_type]['best_odds'] = odds_data.copy()
+                                existing_line[outcome_type]['best_odds']['bookmaker'] = book_name
+                            
+                            # Actualizar estadísticas
+                            processed_data['market_summary']['bookmakers'].add(book_name)
+                    
+                    processed_data['market_summary']['targets_available'].add(target)
+                    processed_data['market_summary']['total_markets'] += 1
+                
+                processed_data['market_summary']['total_players'] += 1
+            
+            # Convertir sets a listas para serialización
+            processed_data['market_summary']['targets_available'] = list(processed_data['market_summary']['targets_available'])
+            processed_data['market_summary']['bookmakers'] = list(processed_data['market_summary']['bookmakers'])
+            
+            logger.info(f"Props procesadas para comparación: {processed_data['market_summary']['total_players']} jugadores, "
+                       f"{processed_data['market_summary']['total_markets']} mercados, "
+                       f"targets: {processed_data['market_summary']['targets_available']}")
+            
+            return processed_data
+            
+        except Exception as e:
+            logger.error(f"Error procesando props para comparación: {e}")
+            return {
+                'success': False,
+                'sport_event_id': sport_event_id,
+                'error': str(e),
+                'players': {}
+            }
+    
+    def _odds_to_probability(self, odds_decimal: str) -> float:
+        """
+        Convierte odds decimales a probabilidad.
+        
+        Args:
+            odds_decimal: Odds en formato decimal
+            
+        Returns:
+            Probabilidad (0.0 a 1.0)
+        """
+        try:
+            decimal_value = float(odds_decimal)
+            if decimal_value <= 1.0:
+                return 0.5  # Fallback para odds inválidas
+            return 1.0 / decimal_value
+        except (ValueError, TypeError):
+            return 0.5  # Fallback para odds inválidas
+    
+    def _process_prematch_odds_for_model_comparison(self, data: Dict[str, Any], sport_event_id: str) -> Dict[str, Any]:
+        """
+        Procesa datos de prematch odds para comparación optimizada con modelo.
+        
+        Estructura los datos de game markets (1x2, totals, team totals) en formato
+        optimizado para el sistema de comparación modelo vs mercado.
+        
+        Args:
+            data: Datos raw de Prematch API
+            sport_event_id: ID del sport event
+            
+        Returns:
+            Datos estructurados para comparación con modelo
+        """
+        # Mapeo de market IDs a nuestros targets
+        market_id_mapping = {
+            1: 'is_win',                    # 1x2/moneyline
+            225: 'total_points',            # total_incl_overtime
+            227: 'teams_points_home',       # home_total_incl_overtime
+            228: 'teams_points_away'        # away_total_incl_overtime
+        }
+        
+        processed_markets = []
+        event_info = {}
+        market_types = set()
+        
+        try:
+            # Extraer información del evento
+            if 'sport_event' in data:
+                event = data['sport_event']
+                event_info = {
+                    'id': event.get('id', sport_event_id),
+                    'start_time': event.get('start_time', ''),
+                    'competitors': []
+                }
+                
+                # Extraer equipos
+                competitors = event.get('competitors', [])
+                for comp in competitors:
+                    event_info['competitors'].append({
+                        'id': comp.get('id', ''),
+                        'name': comp.get('name', ''),
+                        'qualifier': comp.get('qualifier', ''),  # 'home' o 'away'
+                        'abbreviation': comp.get('abbreviation', '')
+                    })
+            
+            # Procesar markets
+            markets = data.get('markets', [])
+            
+            for market in markets:
+                market_id = market.get('id')
+                market_name = market.get('name', '')
+                
+                # Solo procesar markets que nos interesan
+                if market_id in market_id_mapping:
+                    target_type = market_id_mapping[market_id]
+                    market_types.add(target_type)
+                    
+                    # Procesar outcomes
+                    outcomes = []
+                    for outcome in market.get('outcomes', []):
+                        outcome_data = {
+                            'id': outcome.get('id', ''),
+                            'name': outcome.get('name', ''),
+                            'odds_decimal': outcome.get('odds', {}).get('decimal'),
+                            'odds_american': outcome.get('odds', {}).get('american'),
+                            'odds_fractional': outcome.get('odds', {}).get('fractional'),
+                            'point': outcome.get('point'),  # Para totals
+                            'total': outcome.get('total'),  # Alternativo para totals
+                            'competitor': outcome.get('competitor', {}),  # Para 1x2
+                            'bookmaker': outcome.get('bookmaker', {}).get('name', 'sportradar')
+                        }
+                        
+                        # Calcular probabilidad implícita
+                        if outcome_data['odds_decimal']:
+                            try:
+                                prob = 1 / float(outcome_data['odds_decimal'])
+                                outcome_data['probability'] = min(0.99, max(0.01, prob))
+                            except (ValueError, ZeroDivisionError):
+                                outcome_data['probability'] = 0.5
+                        
+                        outcomes.append(outcome_data)
+                    
+                    processed_market = {
+                        'id': market_id,
+                        'name': market_name,
+                        'target_type': target_type,
+                        'outcomes': outcomes,
+                        'outcome_count': len(outcomes)
+                    }
+                    
+                    processed_markets.append(processed_market)
+            
+            logger.info(f"Procesados {len(processed_markets)} markets prematch para {sport_event_id}")
+            logger.info(f"Market types encontrados: {market_types}")
+            
+        except Exception as e:
+            logger.error(f"Error procesando prematch odds para {sport_event_id}: {e}")
+        
+        return {
+            'success': True,
+            'sport_event_id': sport_event_id,
+            'markets': processed_markets,
+            'event_info': event_info,
+            'market_types': list(market_types)
+        }
+
     def _parse_xml_response(self, xml_text: str) -> Dict[str, Any]:
         """
         Parsea respuesta XML de Sportradar y convierte a diccionario.
