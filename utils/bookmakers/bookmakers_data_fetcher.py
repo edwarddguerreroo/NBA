@@ -423,7 +423,7 @@ class BookmakersDataFetcher:
         if targets is None:
             targets = [
                 # Player targets
-                'PTS', 'AST', 'TRB', '3P', 'DD',
+                'PTS', 'AST', 'TRB', '3P', 'DD', 'triple_double',
                 # Team/Game targets  
                 'is_win', 'total_points', 'teams_points'
             ]
@@ -436,6 +436,7 @@ class BookmakersDataFetcher:
             'TRB': ['total rebounds', 'total rebounds (incl. overtime)', 'player rebounds'],
             '3P': ['total threes', 'total three pointers', 'player threes', 'total 3-pointers'],
             'DD': ['double_double', 'double double', 'player double double'],
+            'triple_double': ['triple double', 'triple double (incl. extra overtime)', 'player triple double'],
             
             # Team/Game props
             'is_win': ['1x2', 'moneyline', 'match_winner', 'winner'],
@@ -549,6 +550,7 @@ class BookmakersDataFetcher:
                 'TRB_props': 0,
                 '3P_props': 0,
                 'DD_props': 0,
+                'triple_double_props': 0,
                 'is_win_props': 0,
                 'total_points_props': 0,
                 'teams_points_props': 0
@@ -556,11 +558,12 @@ class BookmakersDataFetcher:
         }
         
         # Inicializar estructura por target
-        for target in targets or ['PTS', 'AST', 'TRB', '3P', 'DD', 'is_win', 'total_points', 'teams_points']:
+        for target in targets or ['PTS', 'AST', 'TRB', '3P', 'DD', 'triple_double', 'is_win', 'total_points', 'teams_points']:
             comprehensive_props['props'][target] = []
         
-        # 1. Obtener PLAYER PROPS desde Sportradar
-        player_targets = [t for t in targets if t in ['PTS', 'AST', 'TRB', '3P', 'DD']]
+        # 1. Obtener PLAYER PROPS desde Sportradar Player Props API
+        # INCLUYE: PTS, AST, TRB, 3P, DD, triple_double (todos son player props)
+        player_targets = [t for t in targets if t in ['PTS', 'AST', 'TRB', '3P', 'DD', 'triple_double']]
         if player_targets:
             try:
                 player_props_data = self.sportradar_api.get_player_props(game_id)
@@ -581,7 +584,8 @@ class BookmakersDataFetcher:
             except Exception as e:
                 logger.warning(f"Error obteniendo player props para {game_id}: {e}")
         
-        # 2. Obtener GAME MARKETS (team/game props) desde PREMATCH API
+        # 2. Obtener GAME MARKETS (solo team/game props) desde PREMATCH API
+        # SOLO INCLUYE: is_win, total_points, teams_points (markets de equipos/juego)
         team_targets = [t for t in targets if t in ['is_win', 'total_points', 'teams_points']]
         if team_targets:
             try:
@@ -598,16 +602,16 @@ class BookmakersDataFetcher:
                         # Mapear market_id a nuestros targets usando configuración
                         target_found = None
                         
-                        # is_win: Market ID 1 (1x2/moneyline)
-                        if market_id == 1 and 'is_win' in team_targets:
+                        # is_win: Market ID 1 o sr:market:1 (1x2/moneyline)
+                        if (market_id == 1 or market_id == 'sr:market:1') and 'is_win' in team_targets:
                             target_found = 'is_win'
                         
-                        # total_points: Market ID 225 (total_incl_overtime)
-                        elif market_id == 225 and 'total_points' in team_targets:
+                        # total_points: Market ID 225 o sr:market:225 (total_incl_overtime)
+                        elif (market_id == 225 or market_id == 'sr:market:225') and 'total_points' in team_targets:
                             target_found = 'total_points'
                         
-                        # teams_points: Market ID 227/228 (home/away totals)
-                        elif market_id in [227, 228] and 'teams_points' in team_targets:
+                        # teams_points: Market ID 227/228 o sr:market:227/228 (home/away totals)
+                        elif (market_id in [227, 228] or market_id in ['sr:market:227', 'sr:market:228']) and 'teams_points' in team_targets:
                             target_found = 'teams_points'
                         
                         if target_found:
@@ -634,8 +638,8 @@ class BookmakersDataFetcher:
                                 elif target_found == 'total_points':
                                     prop['team'] = 'both'  # Total del partido
                                 elif target_found == 'teams_points':
-                                    # Distinguir entre home (227) y away (228)
-                                    prop['team'] = 'home' if market_id == 227 else 'away'
+                                    # Distinguir entre home (227/sr:market:227) y away (228/sr:market:228)
+                                    prop['team'] = 'home' if market_id in [227, 'sr:market:227'] else 'away'
                                 
                                 comprehensive_props['props'][target_found].append(prop)
                                 comprehensive_props['stats'][f'{target_found}_props'] += 1
@@ -674,12 +678,14 @@ class BookmakersDataFetcher:
                 'PTS_props': 0,
                 'AST_props': 0,
                 'TRB_props': 0,
-                '3P_props': 0
+                '3P_props': 0,
+                'DD_props': 0,
+                'triple_double_props': 0
             }
         }
         
         # Inicializar estructura por target
-        for target in targets or ['PTS', 'AST', 'TRB', '3P']:
+        for target in targets or ['PTS', 'AST', 'TRB', '3P', 'DD', 'triple_double']:
             filtered_props['props'][target] = []
         
         # Procesar markets del partido
@@ -705,7 +711,7 @@ class BookmakersDataFetcher:
                     target_found = target
                     break
             
-            if not target_found or target_found not in (targets or ['PTS', 'AST', 'TRB', '3P']):
+            if not target_found or target_found not in (targets or ['PTS', 'AST', 'TRB', '3P', 'DD', 'triple_double']):
                 continue
             
             # Procesar outcomes del market
@@ -860,7 +866,7 @@ class BookmakersDataFetcher:
     def _get_priority_targets(self, phase: str) -> List[str]:
         """Obtiene targets prioritarios según la fase."""
         if phase in ['regular_season', 'playoffs']:
-            return ['PTS', 'AST', 'TRB', '3P', 'DD']  # Todos los targets incluyendo DD
+            return ['PTS', 'AST', 'TRB', '3P', 'DD', 'triple_double']  # Todos los targets incluyendo DD y triple double
         elif phase == 'preseason':
             return ['PTS', 'TRB', 'DD']  # Targets más estables incluyendo DD
         else:

@@ -5,8 +5,8 @@ Sportradar API Client para NBA
 Cliente completo para la API de Sportradar que obtiene:
 - Cuotas de casas de apuestas para partidos NBA
 - Líneas de player props (PTS, AST, TRB, 3P)
+- Líneas de team props (Winner, Total Points, Teams Points)
 - Información de partidos y equipos
-- Datos históricos de cuotas
 
 Documentación API: https://developer.sportradar.com/docs/read/basketball/NBA_v8
 """
@@ -817,14 +817,19 @@ class SportradarAPI:
                     endpoint=endpoint
                 )
             
-            # Procesar datos
+            # CORRECCIÓN: Procesar datos con la estructura real
+            # La respuesta tiene 'competition_sport_event_markets', no 'sport_event_markets'
+            sport_event_markets = data.get('competition_sport_event_markets', [])
+            
             processed_data = {
                 'success': True,
-                'data': data,
+                'sport_event_markets': sport_event_markets,  # Estructura esperada por el sistema
                 'competition_id': competition_id,
                 'offset': offset,
                 'limit': limit,
-                'api_source': 'prematch_odds_v2'
+                'total_events': len(sport_event_markets),
+                'api_source': 'prematch_odds_v2',
+                'raw_data': data  # Mantener datos originales para debug
             }
             
             # Guardar en cache
@@ -1522,8 +1527,8 @@ class SportradarAPI:
         """
         Procesa datos de prematch odds para comparación optimizada con modelo.
         
-        Estructura los datos de game markets (1x2, totals, team totals) en formato
-        optimizado para el sistema de comparación modelo vs mercado.
+        CORRECCIÓN: Procesa la estructura real de la respuesta de Sportradar Prematch API.
+        La respuesta tiene 'markets' directamente, no 'sport_event_markets'.
         
         Args:
             data: Datos raw de Prematch API
@@ -1532,12 +1537,23 @@ class SportradarAPI:
         Returns:
             Datos estructurados para comparación con modelo
         """
-        # Mapeo de market IDs a nuestros targets
+        # Mapeo de market IDs a nuestros targets (formato real de Sportradar)
         market_id_mapping = {
+            # Formato numérico
             1: 'is_win',                    # 1x2/moneyline
             225: 'total_points',            # total_incl_overtime
             227: 'teams_points_home',       # home_total_incl_overtime
-            228: 'teams_points_away'        # away_total_incl_overtime
+            228: 'teams_points_away',       # away_total_incl_overtime
+            
+            # Formato sr:market:X (formato real de la API)
+            'sr:market:1': 'is_win',        # 1x2/moneyline
+            'sr:market:225': 'total_points', # total_incl_overtime
+            'sr:market:227': 'teams_points_home', # home_total_incl_overtime
+            'sr:market:228': 'teams_points_away', # away_total_incl_overtime
+            
+            # Player Props Markets adicionales encontrados
+            'sr:market:8008': 'double_double',  # double double (incl. extra overtime) 
+            'sr:market:8009': 'triple_double'   # triple double (incl. extra overtime)
         }
         
         processed_markets = []
@@ -1564,27 +1580,36 @@ class SportradarAPI:
                         'abbreviation': comp.get('abbreviation', '')
                     })
             
-            # Procesar markets
+            # CORRECCIÓN: Procesar markets de la estructura real
             markets = data.get('markets', [])
+            
+            logger.debug(f"Procesando {len(markets)} markets de Prematch API para {sport_event_id}")
             
             for market in markets:
                 market_id = market.get('id')
                 market_name = market.get('name', '')
+                
+                logger.debug(f"Analizando market: ID={market_id}, Name='{market_name}'")
                 
                 # Solo procesar markets que nos interesan
                 if market_id in market_id_mapping:
                     target_type = market_id_mapping[market_id]
                     market_types.add(target_type)
                     
+                    logger.debug(f"Market {market_id} mapeado a target '{target_type}'")
+                    
                     # Procesar outcomes
                     outcomes = []
                     for outcome in market.get('outcomes', []):
+                        # Estructura correcta de odds según la respuesta real
+                        odds_info = outcome.get('odds', {})
+                        
                         outcome_data = {
                             'id': outcome.get('id', ''),
                             'name': outcome.get('name', ''),
-                            'odds_decimal': outcome.get('odds', {}).get('decimal'),
-                            'odds_american': outcome.get('odds', {}).get('american'),
-                            'odds_fractional': outcome.get('odds', {}).get('fractional'),
+                            'odds_decimal': odds_info.get('decimal'),
+                            'odds_american': odds_info.get('american'),
+                            'odds_fractional': odds_info.get('fractional'),
                             'point': outcome.get('point'),  # Para totals
                             'total': outcome.get('total'),  # Alternativo para totals
                             'competitor': outcome.get('competitor', {}),  # Para 1x2
@@ -1610,19 +1635,26 @@ class SportradarAPI:
                     }
                     
                     processed_markets.append(processed_market)
+                    logger.debug(f"Procesado market {market_id} con {len(outcomes)} outcomes")
+                else:
+                    logger.debug(f"Market {market_id} no está en nuestros targets - ignorado")
             
             logger.info(f"Procesados {len(processed_markets)} markets prematch para {sport_event_id}")
             logger.info(f"Market types encontrados: {market_types}")
             
         except Exception as e:
             logger.error(f"Error procesando prematch odds para {sport_event_id}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
         
         return {
             'success': True,
             'sport_event_id': sport_event_id,
             'markets': processed_markets,
             'event_info': event_info,
-            'market_types': list(market_types)
+            'market_types': list(market_types),
+            'total_markets_in_response': len(data.get('markets', [])),
+            'markets_processed': len(processed_markets)
         }
 
     def _parse_xml_response(self, xml_text: str) -> Dict[str, Any]:

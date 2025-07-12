@@ -1745,3 +1745,263 @@ class BookmakersIntegration:
         score = (edge * 0.4 + confidence * 0.4 + (1/decimal_odds) * 0.2) * odds_penalty
         
         return score
+    
+    def find_player_props_for_prediction(
+        self,
+        player_name: str,
+        target: str,
+        predicted_value: float,
+        sport_event_id: str,
+        confidence: float = 0.90
+    ) -> Dict[str, Any]:
+        """
+        Busca props específicas para una predicción de jugador.
+        
+        EJEMPLO DE USO:
+        player_name = "Domantas Sabonis"
+        target = "PTS" 
+        predicted_value = 25.0
+        sport_event_id = "sr:sport_event:56328141"
+        
+        Args:
+            player_name: Nombre del jugador (ej: "Domantas Sabonis")
+            target: Target a buscar (PTS, AST, TRB, 3P, DD, triple_double)
+            predicted_value: Valor predicho por el modelo (ej: 25.0 puntos)
+            sport_event_id: ID del evento de Sportradar
+            confidence: Confianza de la predicción (0-1)
+            
+        Returns:
+            Diccionario con props encontradas y análisis de oportunidades
+        """
+        logger.info(f"Buscando props para {player_name} - {target}: {predicted_value}")
+        
+        try:
+            # 1. Obtener player props del evento
+            if target in ['PTS', 'AST', 'TRB', '3P', 'DD', 'double_double', 'triple_double']:
+                # Es player prop - usar Player Props API
+                props_data = self.bookmakers_fetcher.sportradar_api.get_player_props(sport_event_id)
+            else:
+                # Es team prop - usar Prematch API
+                props_data = self.bookmakers_fetcher.sportradar_api.get_prematch_odds(sport_event_id)
+            
+            if not props_data.get('success', False):
+                return {
+                    'success': False,
+                    'error': f"No se pudieron obtener props para {sport_event_id}",
+                    'player_name': player_name,
+                    'target': target
+                }
+            
+            # 2. Buscar al jugador específico
+            matching_props = []
+            
+            if target in ['PTS', 'AST', 'TRB', '3P', 'DD', 'double_double', 'triple_double']:
+                # Buscar en player props
+                players = props_data.get('players', {})
+                
+                for prop_player_name, player_data in players.items():
+                    # Matching inteligente de nombres
+                    if self._player_name_matches(player_name, prop_player_name):
+                        logger.info(f"✅ Jugador encontrado: {prop_player_name} (buscado: {player_name})")
+                        
+                        # Buscar el target específico
+                        targets_data = player_data.get('targets', {})
+                        
+                        if target in targets_data:
+                            target_data = targets_data[target]
+                            lines = target_data.get('lines', [])
+                            
+                            logger.info(f"📊 Encontradas {len(lines)} líneas para {target}")
+                            
+                            # Analizar cada línea
+                            for line_data in lines:
+                                line_value = line_data.get('line')
+                                over_odds = line_data.get('over_odds', {})
+                                under_odds = line_data.get('under_odds', {})
+                                
+                                if line_value is not None:
+                                    # Calcular probabilidades y edge
+                                    analysis = self._analyze_prediction_vs_line(
+                                        predicted_value, line_value, over_odds, under_odds, confidence, target
+                                    )
+                                    
+                                    matching_props.append({
+                                        'player_name': prop_player_name,
+                                        'target': target,
+                                        'line': line_value,
+                                        'predicted_value': predicted_value,
+                                        'over_odds': over_odds,
+                                        'under_odds': under_odds,
+                                        'bookmaker': line_data.get('bookmaker', 'sportradar'),
+                                        'analysis': analysis
+                                    })
+                        else:
+                            logger.warning(f"Target {target} no encontrado para {prop_player_name}")
+                
+            else:
+                # Buscar en team props (prematch)
+                markets = props_data.get('markets', [])
+                logger.info(f"Analizando {len(markets)} markets de team props")
+                
+                # Para team props, no hay jugador específico
+                matching_props.append({
+                    'target': target,
+                    'markets_available': len(markets),
+                    'predicted_value': predicted_value,
+                    'note': 'Team props - análisis por market ID'
+                })
+            
+            # 3. Encontrar las mejores oportunidades
+            best_opportunities = []
+            
+            for prop in matching_props:
+                analysis = prop.get('analysis', {})
+                if analysis.get('edge', 0) > 0.05:  # Mínimo 5% de edge
+                    best_opportunities.append(prop)
+            
+            # Ordenar por edge descendente
+            best_opportunities.sort(key=lambda x: x.get('analysis', {}).get('edge', 0), reverse=True)
+            
+            result = {
+                'success': True,
+                'player_name': player_name,
+                'target': target,
+                'predicted_value': predicted_value,
+                'confidence': confidence,
+                'sport_event_id': sport_event_id,
+                'total_props_found': len(matching_props),
+                'opportunities_with_edge': len(best_opportunities),
+                'all_props': matching_props,
+                'best_opportunities': best_opportunities[:5],  # Top 5
+                'recommendation': self._generate_betting_recommendation(best_opportunities, predicted_value, target)
+            }
+            
+            logger.info(f"✅ Análisis completado: {len(matching_props)} props, {len(best_opportunities)} oportunidades")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error buscando props para {player_name}: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'player_name': player_name,
+                'target': target
+            }
+    
+    def _analyze_prediction_vs_line(
+        self,
+        predicted_value: float,
+        line_value: float,
+        over_odds: Dict[str, Any],
+        under_odds: Dict[str, Any],
+        confidence: float,
+        target: str
+    ) -> Dict[str, Any]:
+        """
+        Analiza una predicción vs una línea específica.
+        """
+        # Calcular probabilidad del modelo
+        if target in ['DD', 'double_double', 'triple_double']:
+            # Para props binarias, usar la confianza directamente
+            model_prob_over = confidence if predicted_value > 0.5 else (1 - confidence)
+        else:
+            # Para props numéricas, calcular probabilidad basada en distribución
+            model_prob_over = self._calculate_model_probability(predicted_value, line_value, target)
+        
+        model_prob_under = 1 - model_prob_over
+        
+        # Extraer odds decimales
+        over_decimal = over_odds.get('decimal', 0)
+        under_decimal = under_odds.get('decimal', 0)
+        
+        # Calcular probabilidades implícitas del mercado
+        market_prob_over = 1 / over_decimal if over_decimal > 0 else 0
+        market_prob_under = 1 / under_decimal if under_decimal > 0 else 0
+        
+        # Calcular edges
+        edge_over = model_prob_over - market_prob_over if over_decimal > 0 else 0
+        edge_under = model_prob_under - market_prob_under if under_decimal > 0 else 0
+        
+        # Determinar mejor apuesta
+        best_bet = None
+        if edge_over > 0.05 and edge_over > edge_under:
+            best_bet = {
+                'side': 'over',
+                'line': line_value,
+                'edge': edge_over,
+                'odds': over_odds,
+                'expected_value': (model_prob_over * (over_decimal - 1)) - (1 - model_prob_over)
+            }
+        elif edge_under > 0.05:
+            best_bet = {
+                'side': 'under', 
+                'line': line_value,
+                'edge': edge_under,
+                'odds': under_odds,
+                'expected_value': (model_prob_under * (under_decimal - 1)) - (1 - model_prob_under)
+            }
+        
+        return {
+            'predicted_value': predicted_value,
+            'line_value': line_value,
+            'model_prob_over': round(model_prob_over, 3),
+            'model_prob_under': round(model_prob_under, 3),
+            'market_prob_over': round(market_prob_over, 3),
+            'market_prob_under': round(market_prob_under, 3),
+            'edge_over': round(edge_over, 3),
+            'edge_under': round(edge_under, 3),
+            'edge': round(max(edge_over, edge_under), 3),
+            'best_bet': best_bet,
+            'confidence': confidence
+        }
+    
+    def _generate_betting_recommendation(
+        self,
+        opportunities: List[Dict[str, Any]],
+        predicted_value: float,
+        target: str
+    ) -> Dict[str, Any]:
+        """
+        Genera recomendación de apuesta basada en las oportunidades encontradas.
+        """
+        if not opportunities:
+            return {
+                'action': 'NO_BET',
+                'reason': 'No se encontraron oportunidades con edge suficiente (>5%)',
+                'predicted_value': predicted_value,
+                'target': target
+            }
+        
+        best_opportunity = opportunities[0]
+        analysis = best_opportunity.get('analysis', {})
+        best_bet = analysis.get('best_bet')
+        
+        if not best_bet:
+            return {
+                'action': 'NO_BET',
+                'reason': 'Mejor oportunidad no cumple criterios mínimos',
+                'predicted_value': predicted_value,
+                'target': target
+            }
+        
+        edge = best_bet.get('edge', 0)
+        expected_value = best_bet.get('expected_value', 0)
+        
+        # Calcular stake usando Kelly Criterion
+        kelly_fraction = self._calculate_kelly_fraction(
+            analysis.get('model_prob_over', 0.5),
+            best_bet.get('odds', {}).get('decimal', 2.0)
+        )
+        
+        return {
+            'action': 'BET',
+            'side': best_bet.get('side'),
+            'line': best_bet.get('line'),
+            'bookmaker': best_opportunity.get('bookmaker'),
+            'odds': best_bet.get('odds'),
+            'edge': f"{edge:.1%}",
+            'expected_value': f"{expected_value:.3f}",
+            'kelly_fraction': f"{kelly_fraction:.2%}",
+            'confidence': analysis.get('confidence'),
+            'reasoning': f"Modelo predice {predicted_value} vs línea {best_bet.get('line')}, edge del {edge:.1%}"
+        }
