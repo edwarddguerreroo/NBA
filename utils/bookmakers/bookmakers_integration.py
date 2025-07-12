@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 class BookmakersIntegration:
     """
-    Integra los datos de casas de apuestas con nuestro sistema de selección de características
+    Integra los datos de casas de apuestas con nuestro sistema de predicciones
     para encontrar líneas con alta precisión y buenas odds.
     """
     
@@ -45,7 +45,7 @@ class BookmakersIntegration:
         api_keys: Dict[str, str] = None,
         odds_data_dir: str = "data/bookmakers",
         minimum_edge: float = 0.04,  # 4% de ventaja mínima 
-        confidence_threshold: float = 0.95  # 96% de precisión
+        confidence_threshold: float = 0.95  # 95% de precisión
     ):
         self.bookmakers_fetcher = BookmakersDataFetcher(api_keys, odds_data_dir)
         self.minimum_edge = minimum_edge
@@ -59,9 +59,8 @@ class BookmakersIntegration:
         player_data: pd.DataFrame,
         target: str,
         use_api: bool = False,
-        api_provider: str = 'odds_api',
-        odds_file: str = None,
-        simulate_odds: bool = False
+        api_provider: str = 'sportradar',  
+        odds_file: str = None
     ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         """
         Procesa datos de jugadores incorporando odds de casas de apuestas
@@ -83,7 +82,6 @@ class BookmakersIntegration:
             use_api: Si usar API externa para obtener odds
             api_provider: Proveedor de API para odds
             odds_file: Archivo con datos de odds (si no se usa API)
-            simulate_odds: Si simular odds cuando no hay datos reales
             
         Returns:
             Tuple con (DataFrame con odds añadidas, Análisis de mejores apuestas)
@@ -98,24 +96,25 @@ class BookmakersIntegration:
         # Paso 1: Obtener datos de casas de apuestas
         odds_data = self._fetch_bookmaker_data(target, use_api, api_provider, odds_file)
         
-        # Paso 2: Combinar datos o simular si es necesario
-        if odds_data.get('success', False) and not simulate_odds:
+        # Paso 2: Combinar datos reales -
+        if odds_data.get('success', False):
             # Tenemos datos reales, combinarlos
             player_data_with_odds = self.bookmakers_fetcher.merge_odds_with_player_data(
                 player_data, odds_data, target, line_values
             )
-        elif simulate_odds:
-            # Simular datos para pruebas
-            logger.info(f"Simulando datos de casas de apuestas para {target}")
-            player_data_with_odds = self.bookmakers_fetcher.simulate_bookmaker_data(
-                player_data, target, line_values
-            )
         else:
-            logger.warning(f"No se pudieron obtener datos de casas de apuestas y no se simularon")
-            return player_data, {}
+            # ERROR: No hay datos reales disponibles
+            error_msg = f"No se pudieron obtener datos reales de Sportradar para {target}"
+            logger.error(error_msg)
+            logger.error("El sistema requiere datos reales de la API - no se permiten simulaciones")
+            return player_data, {
+                'success': False,
+                'error': error_msg,
+                'requires_real_data': True
+            }
         
-        # Paso 3: Identificar líneas de alta confianza (96%+)
-        high_confidence_lines = self.features_selector.identify_high_confidence_betting_lines(
+        # Paso 3: Identificar líneas de alta confianza (95%+)
+        high_confidence_lines = self.identify_high_confidence_betting_lines(
             player_data_with_odds, target, min_confidence=self.confidence_threshold
         )
         
@@ -124,22 +123,22 @@ class BookmakersIntegration:
             return player_data_with_odds, {}
         
         # Paso 4: Analizar mercado para estas líneas
-        market_analysis = self.features_selector.analyze_market_inefficiencies(
+        market_analysis = self.analyze_market_inefficiencies(
             player_data_with_odds, target, min_edge=self.minimum_edge
         )
         
         # Paso 5: Buscar arbitraje si es posible
-        arbitrage_opportunities = self.features_selector.find_best_odds_arbitrage(
+        arbitrage_opportunities = self.find_best_odds_arbitrage(
             player_data_with_odds, target
         )
         
         # Paso 6: Analizar movimientos de líneas
-        line_movements = self.features_selector.compare_line_movements(
+        line_movements = self.compare_line_movements(
             player_data_with_odds, target
         )
         
         # Paso 7: Generar estrategia óptima de apuestas
-        betting_strategy = self.features_selector.get_optimal_betting_strategy(
+        betting_strategy = self.get_optimal_betting_strategy(
             player_data_with_odds, target, 
             confidence_threshold=self.confidence_threshold,
             min_edge=self.minimum_edge
@@ -163,17 +162,316 @@ class BookmakersIntegration:
         
         return player_data_with_odds, analysis_results
     
+    def identify_high_confidence_betting_lines(
+        self,
+        df: pd.DataFrame,
+        target: str,
+        min_confidence: float = 0.95
+    ) -> List[Dict[str, Any]]:
+        """
+        Identifica líneas de apuestas con alta confianza basadas en datos históricos.
+        
+        Args:
+            df: DataFrame con datos de jugadores y odds
+            target: Estadística objetivo
+            min_confidence: Confianza mínima requerida
+            
+        Returns:
+            Lista de líneas con alta confianza
+        """
+        high_confidence_lines = []
+        
+        # Buscar columnas de probabilidad histórica
+        prob_columns = [col for col in df.columns if f"{target}_over_" in col and "_prob_" in col]
+        
+        for col in prob_columns:
+            # Extraer información de la línea
+            parts = col.split('_')
+            if len(parts) >= 3:
+                try:
+                    line_value = float(parts[2])
+                    
+                    # Filtrar por confianza
+                    high_conf_rows = df[df[col] >= min_confidence]
+                    
+                    if not high_conf_rows.empty:
+                        high_confidence_lines.append({
+                            'target': target,
+                            'line': line_value,
+                            'confidence_column': col,
+                            'players_count': len(high_conf_rows),
+                            'avg_confidence': high_conf_rows[col].mean(),
+                            'min_confidence': high_conf_rows[col].min(),
+                            'max_confidence': high_conf_rows[col].max()
+                        })
+                except ValueError:
+                    continue
+        
+        # Ordenar por confianza promedio
+        high_confidence_lines.sort(key=lambda x: x['avg_confidence'], reverse=True)
+        
+        return high_confidence_lines
+    
+    def analyze_market_inefficiencies(
+        self,
+        df: pd.DataFrame,
+        target: str,
+        min_edge: float = 0.04
+    ) -> Dict[str, Any]:
+        """
+        Analiza ineficiencias del mercado comparando nuestras predicciones con odds.
+        
+        Args:
+            df: DataFrame con datos y odds
+            target: Estadística objetivo
+            min_edge: Edge mínimo requerido
+            
+        Returns:
+            Análisis de ineficiencias del mercado
+        """
+        inefficiencies = {
+            'target': target,
+            'opportunities': [],
+            'summary': {
+                'total_opportunities': 0,
+                'avg_edge': 0,
+                'max_edge': 0,
+                'bookmakers_analyzed': set()
+            }
+        }
+        
+        # Buscar columnas de odds
+        odds_columns = [col for col in df.columns if f"{target}_over_" in col and "_odds_" in col]
+        
+        for odds_col in odds_columns:
+            # Extraer información
+            parts = odds_col.split('_')
+            if len(parts) >= 5:
+                try:
+                    line_value = float(parts[2])
+                    bookmaker = parts[4]
+                    
+                    # Buscar columna de probabilidad correspondiente
+                    prob_col = f"{target}_over_{line_value}_prob_10"
+                    
+                    if prob_col in df.columns:
+                        # Calcular edge para cada jugador
+                        for idx, row in df.iterrows():
+                            if pd.notna(row[odds_col]) and pd.notna(row[prob_col]):
+                                # Probabilidad implícita de las odds
+                                implied_prob = 1 / row[odds_col]
+                                
+                                # Nuestra probabilidad
+                                our_prob = row[prob_col]
+                                
+                                # Calcular edge
+                                edge = our_prob - implied_prob
+                                
+                                if edge >= min_edge:
+                                    inefficiencies['opportunities'].append({
+                                        'player': row.get('Player', 'Unknown'),
+                                        'line': line_value,
+                                        'bookmaker': bookmaker,
+                                        'our_probability': our_prob,
+                                        'implied_probability': implied_prob,
+                                        'edge': edge,
+                                        'odds': row[odds_col],
+                                        'confidence': row[prob_col]
+                                    })
+                                    
+                                    inefficiencies['summary']['bookmakers_analyzed'].add(bookmaker)
+                
+                except (ValueError, KeyError):
+                    continue
+        
+        # Calcular estadísticas del resumen
+        if inefficiencies['opportunities']:
+            edges = [opp['edge'] for opp in inefficiencies['opportunities']]
+            inefficiencies['summary']['total_opportunities'] = len(edges)
+            inefficiencies['summary']['avg_edge'] = np.mean(edges)
+            inefficiencies['summary']['max_edge'] = np.max(edges)
+        
+        inefficiencies['summary']['bookmakers_analyzed'] = list(inefficiencies['summary']['bookmakers_analyzed'])
+        
+        return inefficiencies
+    
+    def find_best_odds_arbitrage(
+        self,
+        df: pd.DataFrame,
+        target: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Busca oportunidades de arbitraje entre diferentes casas de apuestas.
+        
+        Args:
+            df: DataFrame con odds de múltiples casas
+            target: Estadística objetivo
+            
+        Returns:
+            Lista de oportunidades de arbitraje
+        """
+        arbitrage_opportunities = []
+        
+        # Agrupar odds por línea
+        line_values = self._get_line_values_for_target(target)
+        
+        for line in line_values:
+            # Buscar todas las odds para esta línea
+            over_cols = [col for col in df.columns if f"{target}_over_{line}_odds_" in col]
+            under_cols = [col for col in df.columns if f"{target}_under_{line}_odds_" in col]
+            
+            if len(over_cols) > 1 and len(under_cols) > 1:
+                # Para cada jugador, buscar la mejor combinación
+                for idx, row in df.iterrows():
+                    # Mejores odds para over y under
+                    best_over_odds = 0
+                    best_over_bm = None
+                    best_under_odds = 0
+                    best_under_bm = None
+                    
+                    for col in over_cols:
+                        if pd.notna(row[col]) and row[col] > best_over_odds:
+                            best_over_odds = row[col]
+                            best_over_bm = col.split('_')[-1]
+                    
+                    for col in under_cols:
+                        if pd.notna(row[col]) and row[col] > best_under_odds:
+                            best_under_odds = row[col]
+                            best_under_bm = col.split('_')[-1]
+                    
+                    # Verificar si hay arbitraje
+                    if best_over_odds > 0 and best_under_odds > 0:
+                        total_implied_prob = (1/best_over_odds) + (1/best_under_odds)
+                        
+                        if total_implied_prob < 1.0:  # Oportunidad de arbitraje
+                            profit_margin = 1 - total_implied_prob
+                            
+                            arbitrage_opportunities.append({
+                                'player': row.get('Player', 'Unknown'),
+                                'target': target,
+                                'line': line,
+                                'over_odds': best_over_odds,
+                                'over_bookmaker': best_over_bm,
+                                'under_odds': best_under_odds,
+                                'under_bookmaker': best_under_bm,
+                                'profit_margin': profit_margin,
+                                'total_implied_prob': total_implied_prob
+                            })
+        
+        # Ordenar por margen de ganancia
+        arbitrage_opportunities.sort(key=lambda x: x['profit_margin'], reverse=True)
+        
+        return arbitrage_opportunities
+    
+    def compare_line_movements(
+        self,
+        df: pd.DataFrame,
+        target: str
+    ) -> Dict[str, Any]:
+        """
+        Analiza movimientos de líneas (placeholder - requiere datos históricos).
+        
+        Args:
+            df: DataFrame con datos actuales
+            target: Estadística objetivo
+            
+        Returns:
+            Análisis de movimientos de líneas
+        """
+        return {
+            'target': target,
+            'message': 'Análisis de movimientos de líneas requiere datos históricos',
+            'current_lines': self._get_current_lines_summary(df, target)
+        }
+    
+    def get_optimal_betting_strategy(
+        self,
+        df: pd.DataFrame,
+        target: str,
+        confidence_threshold: float = 0.95,
+        min_edge: float = 0.04
+    ) -> Dict[str, Any]:
+        """
+        Genera estrategia óptima de apuestas usando criterio de Kelly.
+        
+        Args:
+            df: DataFrame con datos y odds
+            target: Estadística objetivo
+            confidence_threshold: Umbral de confianza
+            min_edge: Edge mínimo
+            
+        Returns:
+            Estrategia óptima de apuestas
+        """
+        strategy = {
+            'target': target,
+            'recommendations': [],
+            'summary': {
+                'total_bets': 0,
+                'total_edge': 0,
+                'avg_kelly_fraction': 0,
+                'expected_roi': 0
+            }
+        }
+        
+        # Analizar ineficiencias del mercado
+        inefficiencies = self.analyze_market_inefficiencies(df, target, min_edge)
+        
+        kelly_fractions = []
+        
+        for opportunity in inefficiencies['opportunities']:
+            if opportunity['confidence'] >= confidence_threshold:
+                # Calcular fracción de Kelly
+                p = opportunity['our_probability']  # Probabilidad de ganar
+                b = opportunity['odds'] - 1  # Ganancia neta por unidad apostada
+                q = 1 - p  # Probabilidad de perder
+                
+                # Fórmula de Kelly: f = (bp - q) / b
+                kelly_fraction = (b * p - q) / b
+                
+                # Limitar fracción de Kelly (máximo 25% del bankroll)
+                kelly_fraction = min(kelly_fraction, 0.25)
+                
+                if kelly_fraction > 0:
+                    strategy['recommendations'].append({
+                        'player': opportunity['player'],
+                        'line': opportunity['line'],
+                        'bookmaker': opportunity['bookmaker'],
+                        'bet_type': 'over',
+                        'odds': opportunity['odds'],
+                        'confidence': opportunity['confidence'],
+                        'edge': opportunity['edge'],
+                        'kelly_fraction': kelly_fraction,
+                        'expected_value': kelly_fraction * opportunity['edge']
+                    })
+                    
+                    kelly_fractions.append(kelly_fraction)
+        
+        # Calcular estadísticas del resumen
+        if strategy['recommendations']:
+            strategy['summary']['total_bets'] = len(strategy['recommendations'])
+            strategy['summary']['total_edge'] = sum(r['edge'] for r in strategy['recommendations'])
+            strategy['summary']['avg_kelly_fraction'] = np.mean(kelly_fractions)
+            strategy['summary']['expected_roi'] = sum(r['expected_value'] for r in strategy['recommendations'])
+        
+        # Ordenar por valor esperado
+        strategy['recommendations'].sort(key=lambda x: x['expected_value'], reverse=True)
+        
+        return strategy
+    
     def _fetch_bookmaker_data(
         self,
         target: str,
         use_api: bool = False,
-        api_provider: str = 'odds_api',
+        api_provider: str = 'sportradar',
         odds_file: str = None
     ) -> Dict[str, Any]:
         """
-        Obtiene datos de odds para el target indicado
+        Obtiene datos de odds para el target indicado.
+        SOLO DATOS REALES - NO SIMULACIÓN.
         """
         if use_api:
+            logger.info(f"Obteniendo datos reales de {api_provider} para {target}")
             # Configurar mercados según el target
             markets = ['player_props']
             
@@ -184,6 +482,7 @@ class BookmakersIntegration:
                 api_provider=api_provider
             )
         elif odds_file:
+            logger.info(f"Cargando datos reales desde archivo: {odds_file}")
             # Determinar formato
             file_format = odds_file.split('.')[-1].lower()
             if file_format in ['xls', 'xlsx']:
@@ -197,7 +496,39 @@ class BookmakersIntegration:
             )
         else:
             # Sin fuente de datos
-            return {'success': False, 'error': 'No se especificó fuente de datos de odds'}
+            error_msg = 'No se especificó fuente de datos de odds - se requieren datos reales'
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+    
+    def _get_current_lines_summary(self, df: pd.DataFrame, target: str) -> Dict[str, Any]:
+        """Obtiene resumen de líneas actuales."""
+        summary = {
+            'target': target,
+            'lines_available': [],
+            'bookmakers': set()
+        }
+        
+        # Buscar todas las líneas disponibles
+        odds_columns = [col for col in df.columns if f"{target}_over_" in col and "_odds_" in col]
+        
+        for col in odds_columns:
+            parts = col.split('_')
+            if len(parts) >= 5:
+                try:
+                    line_value = float(parts[2])
+                    bookmaker = parts[4]
+                    
+                    if line_value not in summary['lines_available']:
+                        summary['lines_available'].append(line_value)
+                    
+                    summary['bookmakers'].add(bookmaker)
+                except ValueError:
+                    continue
+        
+        summary['lines_available'].sort()
+        summary['bookmakers'] = list(summary['bookmakers'])
+        
+        return summary
     
     def _get_line_values_for_target(self, target: str) -> List[float]:
         """
@@ -459,8 +790,8 @@ class BookmakersIntegration:
         # Para cada estadística objetivo
         for target in targets:
             # Usar método de búsqueda de arbitraje
-            arbitrage_opportunities = self.features_selector.find_best_odds_arbitrage(
-                player_data, target, min_profit=min_profit
+            arbitrage_opportunities = self.find_best_odds_arbitrage(
+                player_data, target
             )
             
             if arbitrage_opportunities:
@@ -470,7 +801,7 @@ class BookmakersIntegration:
                 logger.info(f"Encontradas {len(arbitrage_opportunities)} oportunidades de arbitraje para {target}")
                 for i, arb in enumerate(arbitrage_opportunities[:2]):
                     logger.info(f"Top {i+1} ({target}): Línea {arb['line']} - "
-                               f"Profit: {arb['profit_pct']:.2%} - "
+                               f"Profit: {arb['profit_margin']:.2%} - "
                                f"{arb['over_bookmaker']} vs {arb['under_bookmaker']}")
         
         # Buscar también arbitraje entre mercados correlacionados
@@ -525,12 +856,12 @@ class BookmakersIntegration:
         
         for target in targets:
             # Obtener estrategia óptima para este target
-            betting_strategy = self.features_selector.get_optimal_betting_strategy(
+            betting_strategy = self.get_optimal_betting_strategy(
                 player_data, target, confidence_threshold=min_confidence
             )
             
             # Extraer apuestas de valor
-            for line, bet_info in betting_strategy.get('value_bets', {}).items():
+            for bet_info in betting_strategy.get('recommendations', []):
                 if bet_info.get('edge', 0) >= min_edge:
                     # Calcular Kelly fraction
                     kelly_fraction = bet_info.get('kelly_fraction', 0)
@@ -539,8 +870,9 @@ class BookmakersIntegration:
                     if kelly_fraction > 0:
                         all_bets.append({
                             'target': target,
-                            'line': line,
-                            'prediction': bet_info['prediction'],
+                            'line': bet_info.get('line', 0),
+                            'player': bet_info.get('player', 'Unknown'),
+                            'bookmaker': bet_info.get('bookmaker', 'Unknown'),
                             'confidence': bet_info['confidence'],
                             'edge': bet_info['edge'],
                             'kelly_fraction': kelly_fraction,
@@ -681,12 +1013,15 @@ class BookmakersIntegration:
             )
             
             if not sportradar_data.get('success', False):
-                logger.warning("Error obteniendo cuotas reales, usando simulación")
-                # Fallback a simulación
-                simulated_odds = self.bookmakers_fetcher.simulate_bookmaker_data(
-                    high_confidence_predictions, target
-                )
-                return self._process_simulated_best_bet(simulated_odds, target)
+                error_msg = "Error obteniendo cuotas reales de Sportradar"
+                logger.error(error_msg)
+                logger.error("El sistema requiere datos reales de la API - no se permiten simulaciones")
+                return {
+                    'success': False,
+                    'error': error_msg,
+                    'requires_real_data': True,
+                    'sportradar_error': sportradar_data.get('error', 'Unknown error')
+                }
             
             logger.info(f"Cuotas obtenidas: {sportradar_data['games_with_odds']} juegos")
             

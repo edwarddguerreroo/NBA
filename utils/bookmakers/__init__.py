@@ -65,6 +65,6 @@ DEFAULT_CONFIG = {
     'data': {
         'cache_enabled': True,
         'cache_duration_hours': 1,
-        'simulate_when_no_data': True
+        'simulate_when_no_data': False  # DESHABILITADO - Solo datos reales
     }
 }

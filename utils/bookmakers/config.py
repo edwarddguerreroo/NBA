@@ -138,7 +138,7 @@ DEFAULT_CONFIG = {
         'cache_cleanup_interval_hours': 24,
         'cache_max_entries': 10000,
         'cache_stats_enabled': True,
-        'simulate_when_no_data': True,
+        'simulate_when_no_data': False,  # DESHABILITADO - Solo datos reales
         'simulation_variance': 0.15,    # 15% varianza en simulación
         'min_historical_games': 5       # Mínimo de juegos para análisis
     },
@@ -207,8 +207,7 @@ class BookmakersConfig:
     def _load_from_environment(self):
         """Carga configuración desde variables de entorno."""
         env_mappings = {
-            'SPORTRADAR_API_KEY': ['sportradar', 'api_key'],
-            'API_SPORTRADAR': ['sportradar', 'api_key'],  # Soporte para ambos formatos
+            'SPORTRADAR_API': ['sportradar', 'api_key'],  # ÚNICA variable de entorno
             'SPORTRADAR_BASE_URL': ['sportradar', 'base_url'],
             'BETTING_MIN_EDGE': ['betting', 'minimum_edge'],
             'BETTING_CONFIDENCE_THRESHOLD': ['betting', 'confidence_threshold'],

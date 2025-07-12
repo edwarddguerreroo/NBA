@@ -93,8 +93,7 @@ class BookmakersDataFetcher:
         sportradar_key = (
             self.api_keys.get('sportradar') or 
             self.config.get('sportradar', 'api_key') or
-            os.getenv('API_SPORTRADAR') or
-            os.getenv('SPORTRADAR_API_KEY')
+            os.getenv('SPORTRADAR_API')  
         )
         self.sportradar_api = None
         
@@ -106,11 +105,17 @@ class BookmakersDataFetcher:
                 )
                 logger.info("Sportradar API inicializada como proveedor principal")
                 logger.info(f"API Key configurada: {'*' * (len(sportradar_key) - 4)}{sportradar_key[-4:]}")
+                
+                # Validar que la API funciona (modo no crítico para APIs de trial)
+                self._validate_sportradar_connection(critical=False)
+                
             except Exception as e:
                 logger.error(f"Error inicializando Sportradar API: {e}")
+                raise SportradarAPIError(f"No se pudo inicializar Sportradar API: {e}")
         else:
-            logger.warning("Sportradar API key no encontrada. Funcionalidad limitada.")
-            logger.warning("Configura la variable de entorno API_SPORTRADAR o SPORTRADAR_API_KEY")
+            error_msg = "Sportradar API key no encontrada. El sistema requiere datos reales."
+            logger.error(error_msg)
+            raise SportradarAPIError(error_msg)
         
         # Métricas de uso
         self.api_calls_made = 0
@@ -130,6 +135,37 @@ class BookmakersDataFetcher:
             'pinnacle': 'Pinnacle',
             
         }
+
+    def _validate_sportradar_connection(self, critical: bool = True):
+        """
+        Valida que la conexión con Sportradar funcione correctamente.
+        
+        Args:
+            critical: Si es True, falla si no hay conexión. Si es False, solo advierte.
+        """
+        try:
+            logger.info("Validando conexión con Sportradar API...")
+            test_result = self.sportradar_api.test_connection()
+            
+            if test_result.get('success', False):
+                logger.info("✅ Conexión con Sportradar API validada correctamente")
+            else:
+                error_msg = f"⚠️  Problema en conexión con Sportradar: {test_result.get('error', 'Unknown error')}"
+                if critical:
+                    logger.error(error_msg)
+                    raise SportradarAPIError(error_msg)
+                else:
+                    logger.warning(error_msg)
+                    logger.warning("Continuando con API configurada - puede funcionar para peticiones reales")
+                
+        except Exception as e:
+            error_msg = f"⚠️  Problema en validación de Sportradar API: {e}"
+            if critical:
+                logger.error(error_msg)
+                raise SportradarAPIError(error_msg)
+            else:
+                logger.warning(error_msg)
+                logger.warning("Continuando con API configurada - puede funcionar para peticiones reales")
 
     # === MÉTODOS SPORTRADAR (PROVEEDOR PRINCIPAL) ===
     
@@ -372,6 +408,11 @@ class BookmakersDataFetcher:
                         date=date,
                         include_props=True
                     )
+                    
+                    # Asegurar que el formato sea consistente
+                    if odds_data.get('success', False):
+                        # Convertir al formato esperado por el sistema
+                        odds_data = self._convert_sportradar_to_standard_format(odds_data)
                 else:
                     logger.error(f"Deporte no soportado en Sportradar: {sport}")
                     return {'success': False, 'error': f"Deporte no soportado: {sport}"}
@@ -1170,4 +1211,115 @@ class BookmakersDataFetcher:
     
     def __repr__(self) -> str:
         """Representación detallada del fetcher."""
-        return self.__str__() 
+        return self.__str__()
+    
+    def _convert_sportradar_to_standard_format(self, sportradar_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Convierte datos de Sportradar al formato estándar esperado por el sistema.
+        
+        Args:
+            sportradar_data: Datos en formato Sportradar
+            
+        Returns:
+            Datos en formato estándar
+        """
+        try:
+            # Estructura estándar para el sistema
+            standard_data = {
+                'success': True,
+                'source': 'sportradar',
+                'data': [],
+                'last_update': datetime.now().isoformat(),
+                'games_processed': 0
+            }
+            
+            # Procesar cada juego
+            for game_id, game_data in sportradar_data.get('games', {}).items():
+                # Extraer información básica del juego
+                game_info = {
+                    'id': game_id,
+                    'commence_time': game_data.get('scheduled'),
+                    'home_team': game_data.get('home_team'),
+                    'away_team': game_data.get('away_team'),
+                    'sport_key': 'basketball_nba',
+                    'sport_title': 'NBA',
+                    'bookmakers': []
+                }
+                
+                # Procesar odds del juego
+                odds_data = game_data.get('odds', {})
+                
+                # Crear estructura de bookmaker genérica
+                bookmaker_data = {
+                    'key': 'sportradar',
+                    'title': 'Sportradar',
+                    'last_update': datetime.now().isoformat(),
+                    'markets': []
+                }
+                
+                # Procesar game markets (moneyline, totals, etc.)
+                game_markets = odds_data.get('game_markets', {})
+                for market_type, market_data in game_markets.items():
+                    market_info = {
+                        'key': market_type,
+                        'last_update': datetime.now().isoformat(),
+                        'outcomes': []
+                    }
+                    
+                    # Procesar outcomes del market
+                    for outcome in market_data.get('outcomes', []):
+                        outcome_info = {
+                            'name': outcome.get('name'),
+                            'price': outcome.get('price'),
+                            'point': outcome.get('point')
+                        }
+                        market_info['outcomes'].append(outcome_info)
+                    
+                    bookmaker_data['markets'].append(market_info)
+                
+                # Procesar player props
+                player_props = odds_data.get('player_props', {})
+                for prop_type, props_data in player_props.items():
+                    for player_name, player_data in props_data.items():
+                        market_info = {
+                            'key': f'player_{prop_type}',
+                            'last_update': datetime.now().isoformat(),
+                            'outcomes': []
+                        }
+                        
+                        # Procesar líneas del jugador
+                        for line_data in player_data.get('lines', []):
+                            # Over outcome
+                            over_outcome = {
+                                'name': f"{player_name} Over",
+                                'price': line_data.get('over_odds'),
+                                'point': line_data.get('line'),
+                                'player': player_name
+                            }
+                            market_info['outcomes'].append(over_outcome)
+                            
+                            # Under outcome
+                            under_outcome = {
+                                'name': f"{player_name} Under",
+                                'price': line_data.get('under_odds'),
+                                'point': line_data.get('line'),
+                                'player': player_name
+                            }
+                            market_info['outcomes'].append(under_outcome)
+                        
+                        bookmaker_data['markets'].append(market_info)
+                
+                game_info['bookmakers'].append(bookmaker_data)
+                standard_data['data'].append(game_info)
+                standard_data['games_processed'] += 1
+            
+            logger.info(f"Convertidos {standard_data['games_processed']} juegos de Sportradar a formato estándar")
+            return standard_data
+            
+        except Exception as e:
+            logger.error(f"Error convirtiendo datos de Sportradar: {e}")
+            return {
+                'success': False,
+                'error': f"Error en conversión: {e}",
+                'source': 'sportradar'
+            } 
