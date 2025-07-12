@@ -2510,7 +2510,7 @@ class IsWinModel:
         """Guardar modelo entrenado como objeto directo"""
         
         if save_path is None:
-            save_path = "trained_models/is_win_model.joblib"
+            save_path = ".joblib/is_win_model.joblib"
         
         if self.stacking_model is None:
             raise ValueError("Modelo no entrenado. Ejecutar train() primero.")
@@ -2530,13 +2530,13 @@ class IsWinModel:
         return save_path
     
     @staticmethod
-    def load_model(model_path: str = "trained_models/is_win_model.joblib"):
+    def load_model(model_path: str = ".joblib/is_win_model.joblib"):
         """Cargar modelo entrenado (compatible con ambos formatos)"""
         
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Modelo no encontrado en: {model_path}")
         
-        logger.info(f"📂 Cargando modelo desde: {model_path}")
+        logger.info(f"Cargando modelo desde: {model_path}")
         
         # Cargar datos del modelo
         model_data = joblib.load(model_path)
@@ -2554,7 +2554,6 @@ class IsWinModel:
             model.training_results = {}
             model.feature_importance = {}
             model.bayesian_results = {}
-            logger.info(f"✅ Modelo Is Win (objeto directo) cargado desde: {model_path}")
         else:
             # Formato diccionario (legacy)
             model.stacking_model = model_data['stacking_model']
@@ -2569,9 +2568,6 @@ class IsWinModel:
             metadata = model_data.get('model_metadata', {})
             created_at = metadata.get('created_at', 'Desconocido')
             device = metadata.get('device', 'Desconocido')
-            
-            logger.info(f"✅ Modelo Is Win (formato legacy) cargado | Creado: {created_at} | "
-                       f"Dispositivo: {device} | Modelos: {len(model.models)}")
         
         return model
     

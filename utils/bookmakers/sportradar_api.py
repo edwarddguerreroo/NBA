@@ -22,8 +22,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .config import get_config
-from .exceptions import (
+from .config.config import get_config
+from .config.exceptions import (
     SportradarAPIError, 
     RateLimitError, 
     AuthenticationError, 
@@ -88,7 +88,7 @@ class SportradarAPI:
         self.session = self._setup_session()
         
         # Cache optimizado
-        from .optimized_cache import OptimizedCache
+        from .config.optimized_cache import OptimizedCache
         self._cache = OptimizedCache(self.config.get_data_config())
         
         # Inicializar contadores de cache

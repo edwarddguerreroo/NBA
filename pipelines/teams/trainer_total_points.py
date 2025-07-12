@@ -756,11 +756,11 @@ MODELOS BASE:
         """
         logger.info("Guardando resultados del modelo")
         
-        # Guardar solo el modelo sklearn en trained_models/ (para ensemble)
-        model_path = os.path.join('trained_models', 'total_points_model.joblib')
+        # Guardar solo el modelo sklearn en .joblib/ (para ensemble)
+        model_path = os.path.join('.joblib', 'total_points_model.joblib')
         try:
             # Crear directorio si no existe
-            os.makedirs('trained_models', exist_ok=True)
+            os.makedirs('.joblib', exist_ok=True)
             
             # Obtener el mejor modelo sklearn (no el diccionario completo)
             if hasattr(self.model, 'ensemble_models') and 'stacking' in self.model.ensemble_models:

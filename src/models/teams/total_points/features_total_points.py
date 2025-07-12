@@ -23,7 +23,7 @@ warnings.filterwarnings('ignore')
 # Configurar logging
 logger = logging.getLogger(__name__)
 
-class TotalPointsFeatureEngine:
+class TotalPointsFeatureEngineer:
     """
     Motor de ingeniería de características para predicción de puntos totales.
     Combina perspectivas de equipo y jugadores para máxima precisión.

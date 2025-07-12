@@ -239,6 +239,14 @@ class PointsFeatureEngineer:
         # COMPILAR FEATURES FINALES
         essential_features = self._compile_essential_features(df)
         
+        # APLICAR FILTROS DE RUIDO (CRÍTICO PARA COMPATIBILIDAD CON MODELOS)
+        logger.info("Aplicando filtros de ruido para eliminar features problemáticas...")
+        essential_features = self._apply_noise_filters(df, essential_features)
+        
+        # APLICAR FILTRO DE LEAKAGE (CRÍTICO PARA INTEGRIDAD DEL MODELO)
+        logger.info("Aplicando filtros de data leakage...")
+        essential_features = self._apply_leakage_filter(df, essential_features)
+        
         # APLICAR FILTRO DE CORRELACIÓN
         logger.info("Aplicando filtro de correlación optimizado...")
         essential_features = self._apply_correlation_regularization(df, essential_features)

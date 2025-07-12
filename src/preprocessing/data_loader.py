@@ -180,6 +180,11 @@ class NBADataLoader:
             df['has_double_double'] = df['double_double']
             logger.info("Alias has_double_double creado desde double_double")
         
+        # Crear alias DD para compatibilidad con modelos
+        if 'double_double' in df.columns and 'DD' not in df.columns:
+            df['DD'] = df['double_double']
+            logger.info("Alias DD creado desde double_double")
+        
         return df
     
     def _preprocess_biometrics(self, df):

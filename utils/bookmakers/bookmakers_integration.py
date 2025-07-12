@@ -29,7 +29,7 @@ import logging
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 from utils.bookmakers.bookmakers_data_fetcher import BookmakersDataFetcher
-from utils.bookmakers.exceptions import DataValidationError
+from .config.exceptions import DataValidationError
 from datetime import datetime
 
 logger = logging.getLogger(__name__)

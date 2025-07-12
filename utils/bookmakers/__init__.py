@@ -17,8 +17,8 @@ Características principales:
 from .sportradar_api import SportradarAPI
 from .bookmakers_data_fetcher import BookmakersDataFetcher
 from .bookmakers_integration import BookmakersIntegration
-from .config import BookmakersConfig
-from .exceptions import (
+from .config.config import BookmakersConfig
+from .config.exceptions import (
     BookmakersAPIError,
     SportradarAPIError,
     InsufficientDataError,

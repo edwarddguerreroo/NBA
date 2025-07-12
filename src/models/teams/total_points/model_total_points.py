@@ -93,7 +93,7 @@ except ImportError:
     OPTUNA_AVAILABLE = False
 
 # Local imports
-from .features_total_points import TotalPointsFeatureEngine
+from .features_total_points import TotalPointsFeatureEngineer
 
 # Configuration - Filtrar warnings específicos
 warnings.filterwarnings('ignore')
@@ -872,7 +872,7 @@ class NBATotalPointsPredictor:
         self.random_state = random_state
 
         # Componentes del modelo
-        self.feature_engineer = TotalPointsFeatureEngine()
+        self.feature_engineer = TotalPointsFeatureEngineer()
         self.models = {}
         self.optimized_models = {}
         self.ensemble_models = {}

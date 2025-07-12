@@ -605,9 +605,9 @@ class XGBoost3PTTrainer:
         """
         print("Guardando resultados")
         
-        # Guardar modelo entrenado en trained_models/
-        model_path = os.path.join('trained_models', "3pt_model.joblib")
-        os.makedirs('trained_models', exist_ok=True)
+        # Guardar modelo entrenado en .joblib/
+        model_path = os.path.join('.joblib', "3pt_model.joblib")
+        os.makedirs('.joblib', exist_ok=True)
         self.model.save_model(model_path)
         
         # Guardar métricas en JSON

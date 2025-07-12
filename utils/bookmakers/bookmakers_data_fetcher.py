@@ -23,8 +23,8 @@ import os
 from pathlib import Path
 
 from .sportradar_api import SportradarAPI
-from .config import get_config
-from .exceptions import (
+from .config.config import get_config
+from .config.exceptions import (
     BookmakersAPIError,
     SportradarAPIError,
     InsufficientDataError,
@@ -133,9 +133,9 @@ class BookmakersDataFetcher:
             test_result = self.sportradar_api.test_connection()
             
             if test_result.get('success', False):
-                logger.info("✅ Conexión con Sportradar API validada correctamente")
+                logger.info("Conexión con Sportradar API validada correctamente")
             else:
-                error_msg = f"⚠️  Problema en conexión con Sportradar: {test_result.get('error', 'Unknown error')}"
+                error_msg = f"Problema en conexión con Sportradar: {test_result.get('error', 'Unknown error')}"
                 if critical:
                     logger.error(error_msg)
                     raise SportradarAPIError(error_msg)
@@ -144,7 +144,7 @@ class BookmakersDataFetcher:
                     logger.warning("Continuando con API configurada - puede funcionar para peticiones reales")
                 
         except Exception as e:
-            error_msg = f"⚠️  Problema en validación de Sportradar API: {e}"
+            error_msg = f"Problema en validación de Sportradar API: {e}"
             if critical:
                 logger.error(error_msg)
                 raise SportradarAPIError(error_msg)
