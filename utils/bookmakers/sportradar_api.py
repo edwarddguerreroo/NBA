@@ -448,17 +448,23 @@ class SportradarAPI:
         # Deportes cambian raramente, cache por 24 horas
         return self._make_request(endpoint, use_odds_api=True, expect_xml=False, cache_ttl=86400)
     
-    def get_sport_competitions(self, sport_id: int) -> Dict[str, Any]:
+    def get_sport_competitions(self, sport_id: int = None) -> Dict[str, Any]:
         """
         Obtiene lista de competiciones para un deporte específico.
         
         Args:
-            sport_id: ID del deporte
+            sport_id: ID del deporte (default: basketball = 2)
             
         Returns:
             Lista de competiciones
         """
-        endpoint = f"en/sports/{sport_id}/competitions"
+        if sport_id is None:
+            sport_id = 2  # Basketball
+        
+        # Usar formato correcto sr:sport:X
+        sport_id_formatted = f"sr:sport:{sport_id}"
+        endpoint = self.config.get_endpoint('sport_competitions', sport_id=sport_id_formatted)
+        
         return self._make_request(endpoint, use_odds_api=True, expect_xml=False)
     
     def get_competition_schedules(self, competition_id: str, offset: int = 0, 
@@ -467,7 +473,7 @@ class SportradarAPI:
         Obtiene schedules para una competición específica.
         
         Args:
-            competition_id: ID de la competición (ej: sr:competition:17)
+            competition_id: ID de la competición (ej: sr:competition:132 para NBA)
             offset: Offset para paginación
             limit: Límite de resultados
             start: Inicio para paginación
@@ -475,12 +481,40 @@ class SportradarAPI:
         Returns:
             Schedules de la competición
         """
-        endpoint = f"en/competitions/{competition_id}/schedules"
+        endpoint = self.config.get_endpoint('competition_schedules', competition_id=competition_id)
         params = {
             'offset': offset,
             'limit': limit,
             'start': start
         }
+        return self._make_request(endpoint, params=params, use_odds_api=True, expect_xml=False)
+    
+    def get_schedule_markets(self, sport_id: int = None, date: str = None, 
+                            limit: int = 5) -> Dict[str, Any]:
+        """
+        Obtiene markets para una fecha específica usando el formato correcto.
+        
+        Args:
+            sport_id: ID del deporte (default: basketball = 2)
+            date: Fecha en formato YYYY-MM-DD
+            limit: Límite de resultados
+            
+        Returns:
+            Markets para la fecha especificada
+        """
+        if sport_id is None:
+            sport_id = 2  # Basketball
+        if date is None:
+            date = datetime.now().strftime("%Y-%m-%d")
+        
+        # Usar formato correcto sr:sport:X
+        sport_id_formatted = f"sr:sport:{sport_id}"
+        endpoint = self.config.get_endpoint('schedule_markets', 
+                                           sport_id=sport_id_formatted, 
+                                           date=date)
+        
+        params = {'limit': limit}
+        
         return self._make_request(endpoint, params=params, use_odds_api=True, expect_xml=False)
     
     # === MÉTODOS DE ANÁLISIS AVANZADO ===
@@ -1254,22 +1288,23 @@ class SportradarAPI:
     
     def test_connection(self) -> Dict[str, Any]:
         """
-        Prueba la conexión con la API.
+        Prueba la conexión con la API usando endpoints que funcionan.
         
         Returns:
             Resultado del test
         """
         try:
             start_time = time.time()
-            teams = self.get_teams()
+            # Usar endpoint que sabemos que funciona: sports
+            sports = self.get_sports()
             response_time = time.time() - start_time
             
             return {
                 'success': True,
                 'response_time': response_time,
                 'api_accessible': True,
-                'teams_count': len(teams.get('conferences', [])),
-                'message': "Conexión exitosa con Sportradar API"
+                'sports_count': len(sports.get('sports', [])),
+                'message': "Conexión exitosa con Sportradar Odds Comparison API"
             }
         except Exception as e:
             return {

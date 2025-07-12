@@ -5,7 +5,7 @@ Actualizada según documentación oficial de Sportradar.
 
 import os
 from configparser import ConfigParser
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
 import json
 
@@ -24,10 +24,10 @@ DEFAULT_CONFIG = {
     'sportradar': {
         # URLs base corregidas según documentación oficial
         'base_url': 'https://api.sportradar.com/basketball/trial/v8/en',
-        'odds_base_url': 'https://api.sportradar.com/oddscomparison-prematch/trial/v2',
-        'player_props_url': 'https://api.sportradar.com/oddscomparison-player-props/trial/v2',
-        'live_odds_url': 'https://api.sportradar.com/oddscomparison-live-odds/trial/v2',
-        'regular_odds_url': 'https://api.sportradar.com/oddscomparison-trial/v1',
+        'odds_base_url': 'https://api.sportradar.com/oddscomparison-prematch/trial/v2/',
+        'player_props_url': 'https://api.sportradar.com/oddscomparison-player-props/trial/v2/',
+        'live_odds_url': 'https://api.sportradar.com/oddscomparison-live-odds/trial/v2/',
+        'regular_odds_url': 'https://api.sportradar.com/oddscomparison-trial/v1/',
         
         # API Key
         'api_key': '',
@@ -58,35 +58,33 @@ DEFAULT_CONFIG = {
         'default_format': 'json',  # JSON por defecto, XML disponible
         'default_language': 'en',
         
-        # Endpoints según documentación oficial - SIN extensión, usar Accept: application/json
+        # Endpoints según documentación oficial - Odds Comparison v2 - Prematch
         'endpoints': {
             # Libros/casas de apuestas
             'books': 'en/books',
-            # Player props por competición
-            'competition_player_props': 'en/competitions/{competition_id}/player_props',
-            # Calendario de player props por competición
-            'competition_schedule': 'en/competitions/{competition_id}/schedule',
-            # Player props por evento
-            'sport_event_player_props': 'en/sport_events/{sport_event_id}/player_props',
-            # Player props por fecha
-            'date_player_props': 'en/sports/{sport_id}/schedule/{date}/player_props',
-            # Calendario por fecha
-            'date_schedule': 'en/sports/{sport_id}/schedule/{date}/schedule',
-            # Changelog
-            'player_props_changelog': 'en/player_props_changelog',
             # Deportes
             'sports': 'en/sports',
-            # Competiciones
+            # Competiciones por deporte
             'sport_competitions': 'en/sports/{sport_id}/competitions',
-            # Categorías
+            # Categorías por deporte
             'sport_categories': 'en/sports/{sport_id}/categories',
-            # Stages
-            'sport_stages': 'en/sports/{sport_id}/stages',
-            # Mapping
-            'competition_mappings': 'en/mappings/competitions',
-            'competitor_mappings': 'en/mappings/competitors',
-            'player_mappings': 'en/mappings/players',
-            'sport_event_mappings': 'en/mappings/sport_events'
+            
+            # Sport Event Markets - Odds para eventos específicos
+            'sport_event_markets': 'en/sport_events/{sport_event_id}/sport_event_markets',
+            # Competition Markets - Odds por competición
+            'competition_markets': 'en/competitions/{competition_id}/sport_event_markets',
+            # Schedule Markets - Odds por fecha
+            'schedule_markets': 'en/sports/{sport_id}/schedules/{date}/sport_event_markets',
+            
+            # Schedules - Calendarios
+            'competition_schedules': 'en/competitions/{competition_id}/schedules',
+            'sport_schedules': 'en/sports/{sport_id}/schedules/{date}/schedules',
+            
+            # Mappings
+            'competition_mappings': 'en/competitions/mappings',
+            'competitor_mappings': 'en/competitors/mappings',
+            'player_mappings': 'en/players/mappings',
+            'sport_event_mappings': 'en/sport_events/mappings'
         },
         
         # Market IDs para NBA según documentación oficial
@@ -97,12 +95,21 @@ DEFAULT_CONFIG = {
             'home_total_incl_overtime': 227,  # Home total → teams_points
             'away_total_incl_overtime': 228,  # Away total → teams_points
             
-            # Player Props Markets (Player Props API)
-            'total_points': 'sr:market:921',  # Total points (incl. overtime) → PTS
-            'total_assists': 'sr:market:922',  # Total assists (incl. overtime) → AST
-            'total_rebounds': 'sr:market:923',  # Total rebounds (incl. overtime) → TRB
-            'total_3pt_field_goals': 'sr:market:924',  # Total 3-point field goals → 3P
-            'double_double': 'sr:market:8008'  # Double double → double_double
+            # Player Props Markets (Player Props API) - IDs oficiales
+            'total_points': 'sr:market:921',  # Puntos totales (incluye horas extras) → PTS
+            'total_assists': 'sr:market:922',  # Asistencias totales (incluidas horas extras) → AST
+            'total_rebounds': 'sr:market:923',  # Rebotes totales (incluye tiempo extra) → TRB
+            'total_3pt_field_goals': 'sr:market:924',  # Total de goles de campo de 3 puntos → 3P
+            'total_steals': 'sr:market:8000',  # Robos totales (incluidas horas extras)
+            'total_blocks': 'sr:market:8001',  # Total de bloques (incl. horas extras)
+            'total_turnovers': 'sr:market:8002',  # Rotación total (incluidas horas extras)
+            'points_plus_rebounds': 'sr:market:8003',  # Total de puntos más rebotes
+            'points_plus_assists': 'sr:market:8004',  # Total de puntos más asistencias
+            'rebounds_plus_assists': 'sr:market:8005',  # Rebotes totales más asistencias
+            'points_assists_rebounds': 'sr:market:8006',  # Total de puntos más asistencias más rebotes
+            'blocks_plus_steals': 'sr:market:8007',  # Total de bloqueos más robos
+            'double_double': 'sr:market:8008',  # Doble doble (incluye horas extras)
+            'triple_double': 'sr:market:8009'  # Triple doble (incluye tiempo extra)
         },
         
         # Mapeo de targets del sistema a mercados de Sportradar
@@ -118,6 +125,59 @@ DEFAULT_CONFIG = {
             'is_win': '1x2',
             'total_points': 'total_incl_overtime',
             'teams_points': ['home_total_incl_overtime', 'away_total_incl_overtime']
+        }
+    },
+    
+    # Player Props API v2 - Configuración especializada para player props
+    'player_props_v2': {
+        'base_url': 'https://api.sportradar.com/oddscomparison-player-props/trial/v2/',
+        'api_key': '',  # Se carga desde entorno
+        'timeout': 30,
+        'retry_attempts': 3,
+        'retry_delay': 1,
+        
+        # Rate limiting específico para Player Props API
+        'rate_limit_calls': 5,
+        'rate_limit_period': 1,
+        
+        # Cache optimizado para player props
+        'cache_duration': 300,  # 5 minutos
+        'cache_enabled': True,
+        
+        # Endpoints específicos para Player Props API
+        'endpoints': {
+            # Básicos
+            'sports': 'en/sports',
+            'books': 'en/books',
+            'sport_competitions': 'en/sports/{sport_id}/competitions',
+            'sport_categories': 'en/sports/{sport_id}/categories',
+            'sport_stages': 'en/sports/{sport_id}/stages',
+            
+            # Schedules
+            'competition_schedules': 'en/competitions/{competition_id}/schedules',
+            'sport_schedules': 'en/sports/{sport_id}/schedules/{date}/schedules',
+            
+            # Player Props específicos
+            'competition_player_props': 'en/competitions/{competition_id}/players_props',
+            'event_player_props': 'en/sport_events/{event_id}/players_props',
+            'schedule_player_props': 'en/sports/{sport_id}/schedules/{date}/players_props',
+            'players_props_changelog': 'en/players_props_changelog'
+        },
+        
+        # Competiciones NBA para Player Props
+        'nba_competition_ids': {
+            'nba': 'sr:competition:132',  # NBA (temporada baja - player_props: false)
+            'wnba': 'sr:competition:486',  # WNBA (activa - player_props: true)
+            'ncaa': 'sr:competition:648'   # NCAA (player_props: false)
+        },
+        
+        # Mapeo de targets a mercados específicos de Player Props
+        'target_to_market': {
+            'PTS': ['total_points', 'player_points', 'points'],
+            'AST': ['total_assists', 'player_assists', 'assists'],
+            'TRB': ['total_rebounds', 'player_rebounds', 'rebounds'],
+            '3P': ['total_3pt_field_goals', 'player_threes', 'three_pointers', 'threes'],
+            'double_double': ['double_double', 'dd']
         }
     },
     'betting': {
@@ -207,8 +267,9 @@ class BookmakersConfig:
     def _load_from_environment(self):
         """Carga configuración desde variables de entorno."""
         env_mappings = {
-            'SPORTRADAR_API': ['sportradar', 'api_key'],  # ÚNICA variable de entorno
+            'SPORTRADAR_API': ['sportradar', 'api_key'], 
             'SPORTRADAR_BASE_URL': ['sportradar', 'base_url'],
+            'SPORTRADAR_PLAYER_PROPS_API': ['player_props_v2', 'api_key'],  # Nueva API key para Player Props
             'BETTING_MIN_EDGE': ['betting', 'minimum_edge'],
             'BETTING_CONFIDENCE_THRESHOLD': ['betting', 'confidence_threshold'],
             'BETTING_MAX_KELLY': ['betting', 'max_kelly_fraction'],
@@ -251,6 +312,10 @@ class BookmakersConfig:
         # Validar API key de Sportradar
         if not self.config['sportradar']['api_key']:
             logger.warning("API key de Sportradar no configurada. Algunas funciones no estarán disponibles.")
+        
+        # Validar API key de Player Props
+        if not self.config['player_props_v2']['api_key']:
+            logger.warning("API key de Player Props v2 no configurada. Funciones de player props no estarán disponibles.")
         
         # Validar parámetros de betting
         betting = self.config['betting']
@@ -331,42 +396,65 @@ class BookmakersConfig:
         """Obtiene configuración específica de datos."""
         return self.config['data'].copy()
     
-    def is_api_configured(self) -> bool:
-        """Verifica si la API está configurada correctamente."""
-        return bool(self.config['sportradar']['api_key'])
+    def is_api_configured(self, api_type: str = 'sportradar') -> bool:
+        """
+        Verifica si la API está configurada correctamente.
+        
+        Args:
+            api_type: Tipo de API ('sportradar', 'player_props_v2', 'both')
+            
+        Returns:
+            True si la API está configurada
+        """
+        if api_type == 'sportradar':
+            return bool(self.config['sportradar']['api_key'])
+        elif api_type == 'player_props_v2':
+            return bool(self.config['player_props_v2']['api_key'])
+        elif api_type == 'both':
+            return (bool(self.config['sportradar']['api_key']) and 
+                   bool(self.config['player_props_v2']['api_key']))
+        else:
+            return bool(self.config['sportradar']['api_key'])
     
     def get_api_url(self, api_type: str = 'prematch') -> str:
         """
         Obtiene URL base para tipo de API específico.
         
         Args:
-            api_type: Tipo de API ('prematch', 'player_props', 'live_odds', 'basketball')
+            api_type: Tipo de API ('prematch', 'player_props_v2', 'live_odds', 'basketball')
             
         Returns:
             URL base para el tipo de API
         """
-        url_map = {
-            'prematch': 'odds_base_url',
-            'player_props': 'player_props_url', 
-            'live_odds': 'live_odds_url',
-            'basketball': 'base_url'
-        }
-        
-        url_key = url_map.get(api_type, 'odds_base_url')
-        return self.config['sportradar'][url_key]
+        if api_type == 'player_props_v2':
+            return self.config['player_props_v2']['base_url']
+        elif api_type == 'prematch':
+            return self.config['sportradar']['odds_base_url']
+        elif api_type == 'live_odds':
+            return self.config['sportradar']['live_odds_url']
+        elif api_type == 'basketball':
+            return self.config['sportradar']['base_url']
+        else:
+            # Default to prematch
+            return self.config['sportradar']['odds_base_url']
     
-    def get_endpoint(self, endpoint_name: str, **kwargs) -> str:
+    def get_endpoint(self, endpoint_name: str, api_type: str = 'sportradar', **kwargs) -> str:
         """
         Obtiene endpoint formateado con parámetros.
         
         Args:
             endpoint_name: Nombre del endpoint
+            api_type: Tipo de API ('sportradar', 'player_props_v2')
             **kwargs: Parámetros para formatear endpoint
             
         Returns:
             Endpoint formateado
         """
-        endpoints = self.config['sportradar']['endpoints']
+        if api_type == 'player_props_v2':
+            endpoints = self.config['player_props_v2']['endpoints']
+        else:
+            endpoints = self.config['sportradar']['endpoints']
+            
         endpoint_template = endpoints.get(endpoint_name, '')
         
         try:
@@ -419,11 +507,47 @@ class BookmakersConfig:
         sport_key = f"{sport}_sport_id"
         return int(self.config['sportradar'].get(sport_key, 2))  # Default basketball = 2
     
+    def get_player_props_config(self) -> Dict[str, Any]:
+        """Obtiene configuración específica de Player Props API."""
+        return self.config['player_props_v2'].copy()
+    
+    def get_nba_competition_id(self, competition_key: str = 'nba') -> str:
+        """
+        Obtiene ID de competición NBA para Player Props API.
+        
+        Args:
+            competition_key: Clave de competición ('nba', 'wnba', 'ncaa')
+            
+        Returns:
+            ID de competición
+        """
+        return self.config['player_props_v2']['nba_competition_ids'].get(competition_key, 'sr:competition:132')
+    
+    def get_player_props_target_markets(self, target: str) -> List[str]:
+        """
+        Obtiene mercados de Player Props API para un target específico.
+        
+        Args:
+            target: Target del sistema (PTS, AST, TRB, 3P, double_double)
+            
+        Returns:
+            Lista de nombres de mercados para Player Props API
+        """
+        target_mapping = self.config['player_props_v2']['target_to_market']
+        markets = target_mapping.get(target, [])
+        
+        # Asegurar que siempre devuelva una lista
+        if isinstance(markets, str):
+            return [markets]
+        return markets if isinstance(markets, list) else []
+    
     def __str__(self) -> str:
         """Representación string de la configuración (sin API keys)."""
         safe_config = self.config.copy()
         if 'api_key' in safe_config.get('sportradar', {}):
             safe_config['sportradar']['api_key'] = '***'
+        if 'api_key' in safe_config.get('player_props_v2', {}):
+            safe_config['player_props_v2']['api_key'] = '***'
         return json.dumps(safe_config, indent=2)
 
 

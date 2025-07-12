@@ -468,7 +468,6 @@ class BookmakersIntegration:
     ) -> Dict[str, Any]:
         """
         Obtiene datos de odds para el target indicado.
-        SOLO DATOS REALES - NO SIMULACIÓN.
         """
         if use_api:
             logger.info(f"Obteniendo datos reales de {api_provider} para {target}")
