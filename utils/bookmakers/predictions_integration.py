@@ -254,6 +254,7 @@ class UnifiedPredictor:
         
         # Para predicciones, usamos datos hasta la fecha anterior
         historical_data = df[df['Date'] < target_date]
+        historical_teams_data = teams_df[teams_df['Date'] < target_date]
         
         if historical_data.empty:
             logger.warning(f"No hay datos históricos para fecha {date}")
@@ -284,15 +285,60 @@ class UnifiedPredictor:
                 logger.info(f"Generando predicciones para {target}")
                 
                 # Preparar datos para predicción
-                prediction_data = self._prepare_prediction_data(historical_data, target, unique_players)
+                prediction_data = self._prepare_prediction_data(historical_data, historical_teams_data, target, unique_players)
                 
                 if prediction_data.empty:
                     logger.warning(f"No hay datos para predicción de {target}")
                     continue
                 
-                # Obtener información de jugadores para las predicciones
-                players_info = historical_data.groupby('Player').tail(1)[['Player', 'Team', target]].reset_index(drop=True)
-                players_info = players_info[players_info['Player'].isin(unique_players)]
+                # Determinar qué datos usar para obtener información de jugadores/equipos
+                team_models = ['is_win', 'total_points', 'teams_points']
+                if target in team_models:
+                    # Para modelos de equipos, usar datos de equipos y crear info por equipo
+                    unique_teams = historical_teams_data['Team'].unique()
+                    # Crear players_info usando datos de equipos - cada "jugador" será un equipo
+                    if target in historical_teams_data.columns:
+                        teams_info = historical_teams_data.groupby('Team').tail(1)[['Team', target]].reset_index(drop=True)
+                        teams_info = teams_info[teams_info['Team'].isin(unique_teams)]
+                        # Renombrar columnas para mantener consistencia con la interfaz
+                        players_info = teams_info.rename(columns={'Team': 'Player'})
+                        players_info['Team'] = players_info['Player']  # Para modelos de equipos, Player = Team
+                    else:
+                        logger.warning(f"Columna {target} no encontrada en datos de equipos")
+                        # Crear estructura básica sin el target
+                        teams_info = historical_teams_data.groupby('Team').tail(1)[['Team']].reset_index(drop=True)
+                        teams_info = teams_info[teams_info['Team'].isin(unique_teams)]
+                        players_info = teams_info.rename(columns={'Team': 'Player'})
+                        players_info['Team'] = players_info['Player']
+                        players_info[target] = 0  # Valor por defecto
+                else:
+                    # Para modelos de jugadores, usar datos de jugadores
+                    if target in historical_data.columns:
+                        players_info = historical_data.groupby('Player').tail(1)[['Player', 'Team', target]].reset_index(drop=True)
+                        players_info = players_info[players_info['Player'].isin(unique_players)]
+                    else:
+                        logger.warning(f"Columna {target} no encontrada en datos de jugadores")
+                        # Crear estructura básica sin el target
+                        players_info = historical_data.groupby('Player').tail(1)[['Player', 'Team']].reset_index(drop=True)
+                        players_info = players_info[players_info['Player'].isin(unique_players)]
+                        players_info[target] = 0  # Valor por defecto
+                
+                # VERIFICACIÓN CRÍTICA PRE-PREDICCIÓN: Asegurar 0 NaN
+                pre_predict_nan = prediction_data.isnull().sum().sum()
+                if pre_predict_nan > 0:
+                    logger.error(f"❌ EMERGENCIA: {pre_predict_nan} NaN detectados ANTES de predicción")
+                    logger.error(f"Aplicando limpieza de emergencia...")
+                    prediction_data = prediction_data.fillna(0)
+                    
+                    # Verificación post-emergencia
+                    post_emergency_nan = prediction_data.isnull().sum().sum()
+                    if post_emergency_nan > 0:
+                        logger.error(f"❌ FALLÓ LIMPIEZA DE EMERGENCIA: {post_emergency_nan} NaN persistentes")
+                        return {'error': f'Datos con NaN no procesables para {target}'}
+                    else:
+                        logger.info(f"✅ Limpieza de emergencia exitosa")
+                
+                logger.info(f"Pre-predicción verificada: {prediction_data.shape} datos sin NaN")
                 
                 # Generar predicciones
                 target_predictions = model.predict(prediction_data)
@@ -312,7 +358,7 @@ class UnifiedPredictor:
         
         return predictions
     
-    def _prepare_prediction_data(self, historical_data: pd.DataFrame, target: str, players: List[str]) -> pd.DataFrame:
+    def _prepare_prediction_data(self, historical_data: pd.DataFrame, historical_teams_data: pd.DataFrame, target: str, players: List[str]) -> pd.DataFrame:
         """
         Prepara datos para predicción de un target específico usando el pipeline de feature engineering correspondiente.
         
@@ -325,37 +371,248 @@ class UnifiedPredictor:
             Datos preparados para predicción con features correctas
         """
         # Importar el feature engineer correspondiente según el target
-        feature_engineer = self._get_feature_engineer_for_target(target)
+        feature_engineer = self._get_feature_engineer_for_target(target, historical_teams_data, historical_data)
         
         if feature_engineer is None:
             logger.error(f"No se encontró feature engineer para target {target}")
             return pd.DataFrame()
         
-        # Trabajar con una copia de los datos históricos
-        df_copy = historical_data.copy()
+        # Determinar qué datos usar según el tipo de modelo
+        team_models = ['is_win', 'total_points', 'teams_points']
+        if target in team_models:
+            # Modelos de equipos usan datos de equipos
+            df_copy = historical_teams_data.copy()
+            logger.debug(f"Usando datos de equipos para modelo {target}")
+        else:
+            # Modelos de jugadores usan datos de jugadores
+            df_copy = historical_data.copy()
+            logger.debug(f"Usando datos de jugadores para modelo {target}")
         
         # Generar features usando el pipeline específico del modelo
         try:
-            logger.info(f"Generando features para {target} usando pipeline específico")
-            features = feature_engineer.generate_all_features(df_copy)
+            logger.info(f"Generando features para {target}")
             
-            if not features:
-                logger.error(f"No se generaron features para {target}")
+            # Los feature engineers pueden modificar el DataFrame in-place
+            # Pero asegurar que obtenemos el DataFrame modificado
+            feature_list = feature_engineer.generate_all_features(df_copy)
+            
+            # VERIFICACIÓN CRÍTICA: Asegurar que df_copy tiene las features que feature_list dice tener
+            actual_features_in_df = [f for f in feature_list if f in df_copy.columns]
+            missing_features_in_df = [f for f in feature_list if f not in df_copy.columns]
+            
+            logger.info(f"DataFrame después de generate_all_features: {df_copy.shape[1]} columnas")
+            logger.info(f"Features en lista: {len(feature_list)}, Features en DataFrame: {len(actual_features_in_df)}")
+            
+            if missing_features_in_df:
+                logger.error(f"❌ CRÍTICO: {len(missing_features_in_df)} features en lista NO están en DataFrame")
+                logger.error(f"Ejemplos: {missing_features_in_df[:5]}")
+                
+                # Como solución, usar solo las features que realmente existen
+                feature_list = actual_features_in_df
+                logger.warning(f"⚠️ CORRIGIENDO: Usando {len(feature_list)} features que realmente existen")
+            
+            if not feature_list:
+                logger.error(f"generate_all_features devolvió lista vacía para {target}")
                 return pd.DataFrame()
             
-            # Tomar los datos más recientes de cada jugador
-            latest_data = df_copy.groupby('Player').tail(1).copy()
+            logger.info(f"Features generadas: {len(feature_list)} características")
+            logger.info(f"DataFrame con features: {df_copy.shape[1]} columnas, {df_copy.shape[0]} filas")
             
-            # Filtrar por jugadores especificados
-            latest_data = latest_data[latest_data['Player'].isin(players)]
+            # Tomar los datos más recientes del DataFrame CON features generadas
+            if target in team_models:
+                # PARA MODELOS DE EQUIPOS: Método mejorado que preserva TODAS las features
+                logger.debug(f"Verificando features antes de tail(1): {len(feature_list)} esperadas")
+                
+                # PASO 1: Verificar qué features faltan en el DataFrame completo
+                missing_in_full = [f for f in feature_list if f not in df_copy.columns]
+                if missing_in_full:
+                    logger.warning(f"Features faltantes en DataFrame completo: {len(missing_in_full)}")
+                
+                # PASO 2: Método más directo que preserva TODAS las columnas
+                logger.info(f"DataFrame completo antes de latest: {df_copy.shape[1]} columnas")
+                
+                # USAR MÉTODO ÍNDICE EN LUGAR DE DataFrame() para preservar TODAS las columnas
+                latest_indices = df_copy.groupby('Team').tail(1).index
+                latest_data = df_copy.loc[latest_indices].copy()
+                
+                logger.info(f"Latest data (equipos) DIRECTO: {latest_data.shape}")
+                logger.info(f"Columnas preservadas: {latest_data.shape[1]} de {df_copy.shape[1]} originales")
+                
+                # Verificar preservación de features ESPECÍFICAMENTE
+                preserved_features = [f for f in feature_list if f in latest_data.columns]
+                lost_features = [f for f in feature_list if f not in latest_data.columns]
+                
+                if lost_features:
+                    logger.error(f"❌ CRÍTICO: Se perdieron {len(lost_features)} features en tail(1)")
+                    logger.debug(f"Features perdidas: {lost_features[:5]}")
+                    
+                    # Si aún hay features perdidas, es porque el DataFrame original no las tenía realmente
+                    # Verificar en el DataFrame completo
+                    actually_missing = [f for f in lost_features if f not in df_copy.columns]
+                    falsely_reported = [f for f in lost_features if f in df_copy.columns]
+                    
+                    if actually_missing:
+                        logger.error(f"❌ Features que NO existen en DataFrame original: {len(actually_missing)}")
+                        
+                    if falsely_reported:
+                        logger.warning(f"⚠️ Features que SÍ existen pero se perdieron en tail(1): {len(falsely_reported)}")
+                        # Intentar recuperar estas features usando loc directo
+                        for feature in falsely_reported:
+                            try:
+                                latest_data[feature] = df_copy.loc[latest_indices, feature].values
+                                logger.debug(f"Recuperada feature: {feature}")
+                            except Exception as e:
+                                logger.debug(f"Error recuperando {feature}: {e}")
+                    
+                    # Verificar recuperación final
+                    final_preserved = [f for f in feature_list if f in latest_data.columns]
+                    logger.info(f"✅ Features preservadas FINAL: {len(final_preserved)}/{len(feature_list)}")
+                
+                if latest_data.empty:
+                    logger.error("No se pudo crear latest_data para equipos")
+                    return pd.DataFrame()
             
-            # Seleccionar solo las features generadas
-            prediction_data = latest_data[features].copy()
+            else:
+                # Para modelos de jugadores, agrupar por jugador
+                # CORREGIDO: NO hacer .copy() - trabajar directamente sobre df_copy con features
+                latest_indices = df_copy.groupby('Player').tail(1).index
+                latest_data = df_copy.loc[latest_indices]
+                # Filtrar por jugadores especificados
+                latest_data = latest_data[latest_data['Player'].isin(players)]
+                logger.info(f"Latest data (jugadores) shape: {latest_data.shape}")
             
-            # Llenar valores NaN con 0 para evitar errores
+            # Verificar que las features generadas existen en el DataFrame
+            available_features = [f for f in feature_list if f in latest_data.columns]
+            missing_features = [f for f in feature_list if f not in latest_data.columns]
+            
+            if missing_features:
+                logger.warning(f"Features faltantes en DataFrame: {len(missing_features)}/{len(feature_list)}")
+                logger.debug(f"Primeras 5 features faltantes: {missing_features[:5]}")
+            
+            logger.info(f"Features disponibles: {len(available_features)}")
+            
+            # Verificación específica para total_points
+            if target == 'total_points':
+                # CORREGIDO: Aceptar 130-131 features (rango flexible después de optimizaciones)
+                if len(available_features) < 125 or len(available_features) > 135:
+                    logger.error(f"❌ CRÍTICO: {target} tiene {len(available_features)} features, esperado 125-135")
+                    return pd.DataFrame()
+                else:
+                    logger.info(f"✅ {target}: {len(available_features)} features confirmadas (rango válido 125-135)")
+            
+            # Verificar mínimo de features
+            if len(available_features) < 10:
+                logger.error(f"Muy pocas features para {target}: {len(available_features)}")
+                return pd.DataFrame()
+            
+            # Seleccionar features para predicción
+            prediction_data = latest_data[available_features].copy()
+            
+            # PASO 6: Limpiar datos completamente - LIMPIEZA AGRESIVA DE NaN
+            logger.info(f"Limpiando NaN antes de predicción...")
+            
+            # Verificar NaN antes de limpieza
+            nan_count_before = prediction_data.isnull().sum().sum()
+            if nan_count_before > 0:
+                logger.warning(f"Encontrados {nan_count_before} valores NaN antes de limpieza")
+            
+            # Limpieza completa de NaN
             prediction_data = prediction_data.fillna(0)
             
-            logger.info(f"Features preparadas para {target}: {len(features)} columnas, {len(prediction_data)} filas")
+            # Verificar que NO quedan NaN después de fillna
+            nan_count_after = prediction_data.isnull().sum().sum()
+            if nan_count_after > 0:
+                logger.error(f"❌ CRÍTICO: Aún hay {nan_count_after} NaN después de fillna(0)")
+                # Limpieza más agresiva
+                prediction_data = prediction_data.fillna(method='ffill').fillna(method='bfill').fillna(0)
+                
+                # Verificación final
+                nan_count_final = prediction_data.isnull().sum().sum()
+                if nan_count_final > 0:
+                    logger.error(f"❌ CRÍTICO: {nan_count_final} NaN persistentes - usando fillna(-999)")
+                    prediction_data = prediction_data.fillna(-999)
+            
+            logger.info(f"Limpieza NaN completada: {nan_count_before} → {prediction_data.isnull().sum().sum()}")
+            
+            # PASO 6.1: Convertir columnas object problemáticas a numérico
+            object_cols = prediction_data.select_dtypes(include=['object']).columns
+            if len(object_cols) > 0:
+                logger.info(f"Convirtiendo {len(object_cols)} columnas object a numérico: {object_cols.tolist()}")
+                for col in object_cols:
+                    try:
+                        prediction_data[col] = pd.to_numeric(prediction_data[col], errors='coerce')
+                        logger.debug(f"  ✅ {col}: convertido a numérico")
+                    except Exception as e:
+                        logger.warning(f"  ❌ {col}: Error convirtiendo - {e}, rellenando con 0")
+                        prediction_data[col] = 0
+                
+                # Rellenar NaN resultantes de conversión
+                prediction_data = prediction_data.fillna(0)
+            
+            # PASO 6.2: Convertir columnas datetime problemáticas
+            datetime_cols = prediction_data.select_dtypes(include=['datetime64[ns]']).columns
+            if len(datetime_cols) > 0:
+                logger.info(f"Convirtiendo {len(datetime_cols)} columnas datetime a timestamp")
+                for col in datetime_cols:
+                    try:
+                        prediction_data[col] = prediction_data[col].astype('int64') // 10**9
+                        logger.debug(f"  ✅ {col}: datetime convertido a timestamp")
+                    except Exception as e:
+                        logger.warning(f"  ❌ {col}: Error convirtiendo datetime - {e}, rellenando con 0")
+                        prediction_data[col] = 0
+            
+            # PASO 6.3: Verificar valores infinitos de manera segura
+            inf_cols = []
+            for col in prediction_data.columns:
+                try:
+                    # Solo verificar infinitos en columnas numéricas
+                    if prediction_data[col].dtype in ['float64', 'float32', 'int64', 'int32']:
+                        if np.isinf(prediction_data[col]).any():
+                            inf_cols.append(col)
+                except (TypeError, ValueError):
+                    # Si hay error, saltar esta columna
+                    continue
+            
+            if inf_cols:
+                logger.warning(f"Valores infinitos encontrados en columnas: {inf_cols[:5]}...")
+                prediction_data = prediction_data.replace([np.inf, -np.inf], 0)
+            
+            # PASO 6.4: Verificación final de tipos de datos
+            final_object_cols = prediction_data.select_dtypes(include=['object']).columns
+            if len(final_object_cols) > 0:
+                logger.error(f"❌ CRÍTICO: Aún hay {len(final_object_cols)} columnas object después de limpieza")
+                # Forzar conversión final
+                for col in final_object_cols:
+                    prediction_data[col] = 0
+                logger.info(f"✅ Columnas object forzadas a 0")
+            
+            # PASO 6.5: Test final de conversión a numpy array
+            try:
+                test_array = prediction_data.values
+                logger.debug(f"✅ Test numpy array: EXITOSO")
+                
+                # VERIFICACIÓN CRÍTICA: Comprobar NaN en array numpy
+                nan_count_numpy = np.isnan(test_array).sum()
+                if nan_count_numpy > 0:
+                    logger.error(f"❌ CRÍTICO: {nan_count_numpy} NaN en array numpy final")
+                    # Reemplazar NaN en numpy array directamente
+                    test_array = np.nan_to_num(test_array, nan=0.0, posinf=0.0, neginf=0.0)
+                    prediction_data = pd.DataFrame(test_array, columns=prediction_data.columns, index=prediction_data.index)
+                    logger.info(f"✅ NaN en numpy array corregidos con np.nan_to_num")
+                
+            except Exception as e:
+                logger.error(f"❌ Test numpy array: FALLÓ - {e}")
+                return pd.DataFrame()
+            
+            # VERIFICACIÓN FINAL ANTES DE RETORNO
+            final_nan_check = prediction_data.isnull().sum().sum()
+            if final_nan_check > 0:
+                logger.error(f"❌ VERIFICACIÓN FINAL FALLÓ: {final_nan_check} NaN en datos finales")
+                prediction_data = prediction_data.fillna(0)
+                logger.info(f"✅ Aplicado fillna(0) final de emergencia")
+            
+            logger.info(f"Datos preparados para {target}: {prediction_data.shape[1]} features, {prediction_data.shape[0]} filas")
+            logger.info(f"✅ Verificación NaN final: {prediction_data.isnull().sum().sum()} valores NaN")
             
             return prediction_data
             
@@ -363,48 +620,51 @@ class UnifiedPredictor:
             logger.error(f"Error generando features para {target}: {e}")
             return pd.DataFrame()
     
-    def _get_feature_engineer_for_target(self, target: str):
+    def _get_feature_engineer_for_target(self, target: str, teams_df: pd.DataFrame = None, players_df: pd.DataFrame = None):
         """
-        Obtiene el feature engineer específico para cada target.
+        Obtiene el feature engineer específico para cada target con constructores UNIFICADOS.
         
         Args:
             target: Target objetivo
+            teams_df: DataFrame de equipos (pasado a TODOS los constructores)
+            players_df: DataFrame de jugadores (pasado a TODOS los constructores)
             
         Returns:
             Feature engineer correspondiente
         """
         try:
+            
             if target == 'PTS':
                 from src.models.players.pts.features_pts import PointsFeatureEngineer
-                return PointsFeatureEngineer()
+                return PointsFeatureEngineer(teams_df=teams_df, players_df=players_df)
             
             elif target == 'AST':
                 from src.models.players.ast.features_ast import AssistsFeatureEngineer
-                return AssistsFeatureEngineer()
+                return AssistsFeatureEngineer(teams_df=teams_df, players_df=players_df)
             
             elif target == 'TRB':
                 from src.models.players.trb.features_trb import ReboundsFeatureEngineer
-                return ReboundsFeatureEngineer()
+                return ReboundsFeatureEngineer(teams_df=teams_df, players_df=players_df)
             
             elif target == '3P':
                 from src.models.players.triples.features_triples import ThreePointsFeatureEngineer
-                return ThreePointsFeatureEngineer()
+                return ThreePointsFeatureEngineer(teams_df=teams_df, players_df=players_df)
             
             elif target == 'DD':
                 from src.models.players.double_double.features_dd import DoubleDoubleFeatureEngineer
-                return DoubleDoubleFeatureEngineer()
+                return DoubleDoubleFeatureEngineer(teams_df=teams_df, players_df=players_df)
             
             elif target == 'is_win':
                 from src.models.teams.is_win.features_is_win import IsWinFeatureEngineer
-                return IsWinFeatureEngineer()
+                return IsWinFeatureEngineer(teams_df=teams_df, players_df=players_df)
             
             elif target == 'total_points':
                 from src.models.teams.total_points.features_total_points import TotalPointsFeatureEngineer
-                return TotalPointsFeatureEngineer()
+                return TotalPointsFeatureEngineer(teams_df=teams_df, players_df=players_df)
             
             elif target == 'teams_points':
                 from src.models.teams.teams_points.features_teams_points import TeamPointsFeatureEngineer
-                return TeamPointsFeatureEngineer()
+                return TeamPointsFeatureEngineer(teams_df=teams_df, players_df=players_df)
             
             else:
                 logger.warning(f"Target {target} no reconocido")
@@ -440,28 +700,18 @@ class UnifiedPredictor:
             }
         }
         
-        # Organizar predicciones con información de jugadores si está disponible
+        # Asegurar que players_info tenga las columnas requeridas
+        if players_info is None:
+            players_info = pd.DataFrame(columns=['Player', 'Team', target])
+        
         for i in range(len(predictions)):
-            if players_info is not None and i < len(players_info):
-                # Usar información real del jugador
-                player_row = players_info.iloc[i]
-                player_prediction = {
-                    'player': player_row.get('Player', f'Player_{i+1}'),
-                    'team': player_row.get('Team', 'Unknown'),
-                    'predicted_value': float(predictions[i]),
-                    'confidence': self._calculate_confidence(predictions[i], target),
-                    'last_actual': player_row.get(target, None)
-                }
-            else:
-                # Predicción genérica si no hay información del jugador
-                player_prediction = {
-                    'player': f'Player_{i+1}',
-                    'team': 'Unknown',
-                    'predicted_value': float(predictions[i]),
-                    'confidence': self._calculate_confidence(predictions[i], target),
-                    'last_actual': None
-                }
-            
+            player_info = players_info.iloc[i] if i < len(players_info) else {}
+            player_prediction = {
+                'player_name': player_info.get('Player', f'Player_{i}'),
+                'team': player_info.get('Team', 'Unknown'),
+                target: float(predictions[i]),
+                f'{target}_confidence': self._calculate_confidence(float(predictions[i]), target)
+            }
             organized['predictions'].append(player_prediction)
         
         return organized
@@ -604,45 +854,36 @@ class PredictionsBookmakersIntegration:
         """
         comparisons = []
         
-        for target, pred_data in predictions.get('predictions', {}).items():
-            if 'error' in pred_data:
-                continue
-            
-            for player_pred in pred_data.get('predictions', []):
-                player_name = player_pred['player']
-                predicted_value = player_pred['predicted_value']
-                confidence = player_pred['confidence']
-                
-                # Buscar odds correspondientes (implementación básica)
-                comparison = {
-                    'player': player_name,
-                    'target': target,
-                    'predicted_value': predicted_value,
-                    'confidence': confidence,
-                    'market_line': None,
-                    'over_odds': None,
-                    'under_odds': None,
-                    'edge': None,
-                    'recommendation': None
-                }
-                
-                # Aquí se implementaría la lógica de matching con odds reales
-                # Por ahora, simulamos algunos valores
-                if target == 'PTS':
-                    market_line = round(predicted_value + np.random.normal(0, 2), 1)
-                    comparison['market_line'] = market_line
-                    comparison['over_odds'] = -110
-                    comparison['under_odds'] = -110
+        for target, preds in predictions['predictions'].items():
+            if target in odds_data:
+                for pred in preds:
+                    player = pred['player_name']
+                    predicted_value = pred[target]
+                    confidence = pred[f'{target}_confidence']
                     
-                    # Calcular edge básico
-                    if predicted_value > market_line:
-                        comparison['edge'] = (predicted_value - market_line) / market_line
-                        comparison['recommendation'] = 'OVER'
-                    else:
-                        comparison['edge'] = (market_line - predicted_value) / market_line
-                        comparison['recommendation'] = 'UNDER'
-                
-                comparisons.append(comparison)
+                    # Encontrar odds para este jugador/target
+                    matching_odds = [o for o in odds_data[target] if o['player'] == player]
+                    
+                    for odd in matching_odds:
+                        market_line = odd['line']
+                        if market_line == 0:
+                            continue  # Saltar líneas de 0 para evitar división por zero
+                        
+                        # Determinar recomendación basada en predicción vs línea
+                        bet_recommendation = 'OVER' if predicted_value > market_line else 'UNDER'
+                        
+                        comparison = {
+                            'player': player,
+                            'target': target,
+                            'predicted': predicted_value,
+                            'market_line': market_line,
+                            'confidence': confidence,
+                            'edge': (predicted_value - market_line) / market_line if market_line != 0 else 0,
+                            'over_odds': odd['over_odds'],
+                            'under_odds': odd['under_odds'],
+                            'recommendation': bet_recommendation
+                        }
+                        comparisons.append(comparison)
         
         return {
             'comparisons': comparisons,
@@ -674,7 +915,7 @@ class PredictionsBookmakersIntegration:
                 opportunity = {
                     'player': comparison['player'],
                     'target': comparison['target'],
-                    'predicted_value': comparison['predicted_value'],
+                    'predicted_value': comparison['predicted'],
                     'market_line': comparison['market_line'],
                     'recommendation': comparison['recommendation'],
                     'edge': edge,

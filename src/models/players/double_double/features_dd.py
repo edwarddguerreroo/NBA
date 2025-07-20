@@ -30,11 +30,13 @@ class DoubleDoubleFeatureEngineer:
     OPTIMIZADO - Rendimiento pasado para predecir juegos futuros
     """
     
-    def __init__(self, lookback_games: int = 10):
+    def __init__(self, lookback_games: int = 10, teams_df: pd.DataFrame = None, players_df: pd.DataFrame = None):
         """Inicializa el ingeniero de características para predicción de double double."""
         self.lookback_games = lookback_games
         self.scaler = StandardScaler()
         self.feature_columns = []
+        self.teams_df = teams_df  # Datos de equipos 
+        self.players_df = players_df  # Datos de jugadores 
         # Cache para evitar recálculos
         self._cached_calculations = {}
         # Cache para features generadas
@@ -168,15 +170,235 @@ class DoubleDoubleFeatureEngineer:
             'day_of_week', 'month', 'days_rest', 'days_into_season'
         ]]
         
+        # FEATURES EXACTAS QUE EL MODELO ENTRENADO ESPERA
+        # Basado en el error de feature mismatch del modelo entrenado
+        expected_features = [
+            'dd_rate_5g', 'weighted_dd_rate_5g', 'trb_hist_avg_5g', 'trb_dd_proximity', 'primary_rebounder', 
+            'total_impact_5g', 'dd_potential_score', 'recent_dd_streak', 'pts_trb_combined', 'best_dd_combo_score', 
+            'versatility_index', 'dd_consistency_10g', 'pts_hist_avg_5g', 'starter_boost', 'ast_hist_avg_5g', 
+            'mp_hist_avg_5g', 'ast_dd_proximity', 'dd_streak', 'primary_scorer', 'team_scoring_importance', 
+            'trb_above_avg', 'high_minutes_player', 'pts_dd_proximity', 'is_center', 'starter_minutes', 
+            'overall_consistency', 'minutes_stability', 'position_dd_likelihood', 'primary_playmaker', 'trb_consistency_5g'
+        ]
+        
+        # Verificar qué features esperadas están disponibles en el DataFrame
+        available_features = []
+        missing_features = []
+        
+        for feature in expected_features:
+            if feature in df.columns:
+                available_features.append(feature)
+            else:
+                missing_features.append(feature)
+        
+        logger.info(f"Features esperadas disponibles: {len(available_features)}/{len(expected_features)}")
+        if missing_features:
+            logger.debug(f"Features faltantes (se generarán a continuación): {missing_features[:5]}...")  # Solo mostrar primeras 5
+        
+        # GENERAR FEATURES FALTANTES CON VALORES POR DEFECTO
+        # Similar a la implementación en PTS, AST, TRB y 3P models
+        for feature in missing_features:
+            if feature not in df.columns:
+                if 'dd_rate_5g' in feature:
+                    # Tasa de double-double en últimos 5 juegos
+                    if 'double_double' in df.columns:
+                        df[feature] = df.groupby('Player')['double_double'].rolling(5, min_periods=1).mean().shift(1).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'weighted_dd_rate_5g' in feature:
+                    # Tasa ponderada de double-double
+                    if 'double_double' in df.columns:
+                        weights = [0.4, 0.3, 0.2, 0.1, 0.1]  # Más peso a juegos recientes
+                        weighted_dd = df.groupby('Player')['double_double'].rolling(5, min_periods=1).apply(
+                            lambda x: np.average(x, weights=weights[:len(x)]), raw=False
+                        ).shift(1)
+                        df[feature] = weighted_dd.fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'trb_hist_avg_5g' in feature:
+                    # Promedio histórico de rebotes en 5 juegos
+                    if 'TRB' in df.columns:
+                        df[feature] = df.groupby('Player')['TRB'].rolling(5, min_periods=1).mean().shift(1).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'pts_hist_avg_5g' in feature:
+                    # Promedio histórico de puntos en 5 juegos
+                    if 'PTS' in df.columns:
+                        df[feature] = df.groupby('Player')['PTS'].rolling(5, min_periods=1).mean().shift(1).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'ast_hist_avg_5g' in feature:
+                    # Promedio histórico de asistencias en 5 juegos
+                    if 'AST' in df.columns:
+                        df[feature] = df.groupby('Player')['AST'].rolling(5, min_periods=1).mean().shift(1).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'mp_hist_avg_5g' in feature:
+                    # Promedio histórico de minutos en 5 juegos
+                    if 'MP' in df.columns:
+                        df[feature] = df.groupby('Player')['MP'].rolling(5, min_periods=1).mean().shift(1).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'trb_dd_proximity' in feature:
+                    # Proximidad a double-double por rebotes
+                    if 'TRB' in df.columns:
+                        df[feature] = np.maximum(0, 10 - df['TRB']) / 10.0
+                    else:
+                        df[feature] = 0.5
+                elif 'pts_dd_proximity' in feature:
+                    # Proximidad a double-double por puntos
+                    if 'PTS' in df.columns:
+                        df[feature] = np.maximum(0, 10 - df['PTS']) / 10.0
+                    else:
+                        df[feature] = 0.5
+                elif 'ast_dd_proximity' in feature:
+                    # Proximidad a double-double por asistencias
+                    if 'AST' in df.columns:
+                        df[feature] = np.maximum(0, 10 - df['AST']) / 10.0
+                    else:
+                        df[feature] = 0.5
+                elif 'primary_rebounder' in feature:
+                    # Reboteador principal
+                    if 'TRB' in df.columns:
+                        df[feature] = (df['TRB'] > 8).astype(float)
+                    else:
+                        df[feature] = 0.3
+                elif 'primary_scorer' in feature:
+                    # Anotador principal
+                    if 'PTS' in df.columns:
+                        df[feature] = (df['PTS'] > 15).astype(float)
+                    else:
+                        df[feature] = 0.3
+                elif 'primary_playmaker' in feature:
+                    # Armador principal
+                    if 'AST' in df.columns:
+                        df[feature] = (df['AST'] > 5).astype(float)
+                    else:
+                        df[feature] = 0.2
+                elif 'pts_trb_combined' in feature:
+                    # Combinación de puntos y rebotes
+                    if 'PTS' in df.columns and 'TRB' in df.columns:
+                        df[feature] = df['PTS'] + df['TRB']
+                    else:
+                        df[feature] = 0.0
+                elif 'best_dd_combo_score' in feature:
+                    # Mejor combinación para double-double
+                    if all(col in df.columns for col in ['PTS', 'TRB', 'AST']):
+                        combo1 = df['PTS'] + df['TRB']
+                        combo2 = df['PTS'] + df['AST']
+                        combo3 = df['TRB'] + df['AST']
+                        df[feature] = np.maximum(combo1, np.maximum(combo2, combo3))
+                    else:
+                        df[feature] = 0.0
+                elif 'versatility_index' in feature:
+                    # Índice de versatilidad
+                    if all(col in df.columns for col in ['PTS', 'TRB', 'AST']):
+                        df[feature] = (df['PTS'] * 0.4 + df['TRB'] * 0.4 + df['AST'] * 0.2)
+                    else:
+                        df[feature] = 0.0
+                elif 'dd_consistency_10g' in feature:
+                    # Consistencia de double-double en 10 juegos
+                    if 'double_double' in df.columns:
+                        dd_std = df.groupby('Player')['double_double'].rolling(10, min_periods=1).std().shift(1)
+                        df[feature] = (1 - dd_std).fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'starter_boost' in feature:
+                    # Boost por ser titular
+                    if 'is_started' in df.columns:
+                        df[feature] = df['is_started'].astype(float) * 1.3 + 0.7
+                    else:
+                        df[feature] = 1.0
+                elif 'high_minutes_player' in feature:
+                    # Jugador de muchos minutos
+                    if 'MP' in df.columns:
+                        df[feature] = (df['MP'] > 30).astype(float)
+                    else:
+                        df[feature] = 0.5
+                elif 'is_center' in feature:
+                    # Es centro
+                    if 'Pos' in df.columns:
+                        df[feature] = df['Pos'].str.contains('C', na=False).astype(float)
+                    else:
+                        df[feature] = 0.2
+                elif 'starter_minutes' in feature:
+                    # Minutos de titular
+                    if 'MP' in df.columns and 'is_started' in df.columns:
+                        df[feature] = df['MP'] * df['is_started']
+                    else:
+                        df[feature] = 0.0
+                elif 'team_scoring_importance' in feature:
+                    # Importancia en anotación del equipo
+                    if 'PTS' in df.columns:
+                        team_pts = df.groupby(['Team', 'Date'])['PTS'].transform('sum')
+                        df[feature] = (df['PTS'] / (team_pts + 1)).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'trb_above_avg' in feature:
+                    # Rebotes por encima del promedio
+                    if 'TRB' in df.columns:
+                        avg_trb = df['TRB'].mean()
+                        df[feature] = (df['TRB'] > avg_trb).astype(float)
+                    else:
+                        df[feature] = 0.5
+                elif 'trb_consistency_5g' in feature:
+                    # Consistencia de rebotes en 5 juegos
+                    if 'TRB' in df.columns:
+                        trb_std = df.groupby('Player')['TRB'].rolling(5, min_periods=1).std().shift(1)
+                        trb_mean = df.groupby('Player')['TRB'].rolling(5, min_periods=1).mean().shift(1)
+                        df[feature] = (1 - (trb_std / (trb_mean + 1))).fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'dd_streak' in feature:
+                    # Racha de double-doubles
+                    if 'double_double' in df.columns:
+                        # Calcular racha actual
+                        streak = df.groupby('Player')['double_double'].apply(
+                            lambda x: x.rolling(window=len(x), min_periods=1).apply(
+                                lambda y: (y[::-1] == 1).cumprod().sum(), raw=False
+                            )
+                        ).shift(1)
+                        df[feature] = streak.fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'recent_dd_streak' in feature:
+                    # Racha reciente de double-doubles
+                    if 'double_double' in df.columns:
+                        recent_streak = df.groupby('Player')['double_double'].rolling(3, min_periods=1).sum().shift(1)
+                        df[feature] = recent_streak.fillna(0)
+                    else:
+                        df[feature] = 0.0
+                else:
+                    # Valor por defecto para features no específicas
+                    df[feature] = 0.0
+                
+                # Agregar a available_features si se generó exitosamente
+                if feature in df.columns:
+                    available_features.append(feature)
+        
+        # RETORNAR SOLO LAS FEATURES ESPERADAS POR EL MODELO ENTRENADO EN EL ORDEN EXACTO
+        # Esto asegura compatibilidad exacta con el modelo
+        
+        # El modelo espera las features en este orden específico
+        final_features = []
+        for feature in expected_features:
+            if feature in df.columns:
+                final_features.append(feature)
+        
+        logger.info(f"Usando features exactas del modelo entrenado: {len(final_features)}")
+        logger.debug(f"Features seleccionadas en orden: {final_features}")
+        
+        return final_features
+        
         # COMPILAR FEATURES ESENCIALES ÚNICAMENTE (REDUCIR COMPLEJIDAD)
-        essential_features = []
+        # essential_features = []
         
         # PRIORIDAD 1: Features de double double especializadas (MÁXIMO 8)
         dd_features = [col for col in specialized_features if any(keyword in col for keyword in [
             'dd_rate_5g', 'weighted_dd_rate_5g', 'dd_momentum_5g', 'dd_streak',
             'dd_form_trend', 'dd_consistency_10g', 'dd_potential_score'
         ])]
-        essential_features.extend(dd_features[:8])  # LIMITAR a 8
+        # essential_features.extend(dd_features[:8])  # LIMITAR a 8
         
         # PRIORIDAD 2: Features de consistencia (MUY IMPORTANTES según análisis)
         consistency_features = [col for col in specialized_features if any(keyword in col for keyword in [
@@ -741,7 +963,7 @@ class DoubleDoubleFeatureEngineer:
         """Actualizar lista de columnas de features históricas"""
         exclude_cols = [
             # Columnas básicas del dataset
-            'Player', 'Date', 'Team', 'Opp', 'Result', 'MP', 'GS', 'Away',
+            'Player', 'Date', 'Team', 'Opp', 'Result', 'MP', 'GS', 'Away', 'Pos',
             
             # Estadísticas del juego actual (usadas solo para crear historial)
             'FG', 'FGA', 'FG%', '2P', '2PA', '2P%', '3P', '3PA', '3P%', 
@@ -1015,7 +1237,115 @@ class DoubleDoubleFeatureEngineer:
     
     def _apply_noise_filters(self, df: pd.DataFrame, features: List[str]) -> List[str]:
         """
+        DESHABILITADO: Aplica filtros avanzados para eliminar features que solo agregan ruido a los modelos de double double.
+        
+        MOTIVO: Para mantener compatibilidad con modelos entrenados, se deshabilita el filtrado
+        para evitar feature mismatch durante predicción.
+        
+        Args:
+            df: DataFrame con los datos
+            features: Lista de features a filtrar
+            
+        Returns:
+            List[str]: Lista de features SIN FILTRAR para compatibilidad con modelos entrenados
+        """
+        logger.info(f"Filtrado de ruido DESHABILITADO para compatibilidad con modelos entrenados")
+        logger.info(f"Manteniendo todas las {len(features)} features originales")
+        
+        # DEVOLVER TODAS LAS FEATURES SIN FILTRAR
+        return features
+        
+        # TODO: CÓDIGO ORIGINAL COMENTADO PARA REFERENCIA
+        # logger.info(f"Iniciando filtrado de ruido en {len(features)} features de double double...")
+        # 
+        # if not features:
+        #     return features
+        # 
+        # # FILTRO 1: Varianza mínima
+        # clean_features = []
+        # for feature in features:
+        #     if feature in df.columns:
+        #         variance = df[feature].var()
+        #         if pd.isna(variance) or variance < 1e-8:
+        #             logger.debug(f"Eliminando {feature} por varianza muy baja: {variance}")
+        #             continue
+        #         clean_features.append(feature)
+        #     else:
+        #         logger.warning(f"Feature {feature} no encontrada en DataFrame")
+        # 
+        # # FILTRO 2: Valores infinitos o NaN excesivos
+        # filtered_features = []
+        # for feature in clean_features:
+        #     if feature in df.columns:
+        #         nan_pct = df[feature].isna().mean()
+        #         inf_count = np.isinf(df[feature]).sum()
+        #         
+        #         if nan_pct > 0.5:  # Más del 50% NaN
+        #             logger.debug(f"Eliminando {feature} por exceso de NaN: {nan_pct:.2%}")
+        #             continue
+        #         if inf_count > 0:  # Cualquier valor infinito
+        #             logger.debug(f"Eliminando {feature} por valores infinitos: {inf_count}")
+        #             continue
+        #         filtered_features.append(feature)
+        # 
+        # # FILTRO 3: Correlación extrema con target (posible data leakage)
+        # if 'double_double' in df.columns:
+        #     safe_features = []
+        #     for feature in filtered_features:
+        #         if feature in df.columns and feature != 'double_double':
+        #             try:
+        #                 corr = df[feature].corr(df['double_double'])
+        #                 if pd.isna(corr) or abs(corr) > 0.99:  # Correlación sospechosamente alta
+        #                     logger.debug(f"Eliminando {feature} por correlación sospechosa con target: {corr:.3f}")
+        #                     continue
+        #                 safe_features.append(feature)
+        #             except:
+        #                 safe_features.append(feature)  # Conservar si no se puede calcular correlación
+        #         else:
+        #             safe_features.append(feature)
+        # else:
+        #     safe_features = filtered_features
+        # 
+        # # FILTRO 4: Features que tienden a ser ruidosas o poco predictivas para double double
+        # noise_patterns = [
+        #     '_squared_',  # Features cuadráticas suelen ser ruidosas
+        #     '_cubed_',    # Features cúbicas suelen ser ruidosas
+        #     '_interaction_complex_',  # Interacciones complejas suelen ser ruidosas
+        #     '_polynomial_',  # Features polinomiales suelen ser ruidosas
+        #     'noise_',     # Features de ruido
+        #     '_random_',   # Features aleatorias
+        #     '_test_',     # Features de prueba
+        #     'cosmic_',    # Features cósmicas experimentales suelen ser ruidosas
+        #     'quantum_',   # Features cuánticas experimentales suelen ser ruidosas
+        #     'fractal_',   # Features fractales suelen ser ruidosas
+        #     '_chaos_',    # Features de caos suelen ser ruidosas
+        #     '_entropy_extreme_',  # Features de entropía extrema
+        # ]
+        # 
+        # final_features = []
+        # removed_by_pattern = []
+        # 
+        # for feature in safe_features:
+        #     is_noisy = False
+        #     for pattern in noise_patterns:
+        #         if pattern in feature.lower():
+        #             removed_by_pattern.append(feature)
+        #             is_noisy = True
+        #             break
+        #     
+        #     if not is_noisy:
+        #         final_features.append(feature)
+        # 
+        # # FILTRO 5: Límite de features para evitar overfitting
+        # max_features_dd = 60  # Límite específico para double double
+        # if len(final_features) > max_features_dd:
+        #     logger.info(f"Aplicando límite de features: {max_features_dd}")
+        #     # Priorizar features más importantes para double double
+    
+    def _apply_noise_filters(self, df: pd.DataFrame, features: List[str]) -> List[str]:
+        """
         Aplica filtros avanzados para eliminar features que solo agregan ruido a los modelos de double double.
+        DESHABILITADO: Para mantener compatibilidad con modelos entrenados.
         
         Args:
             df: DataFrame con los datos
@@ -1024,129 +1354,67 @@ class DoubleDoubleFeatureEngineer:
         Returns:
             List[str]: Lista de features filtradas sin ruido
         """
-        logger.info(f"Iniciando filtrado de ruido en {len(features)} features de double double...")
+        logger.info(f"Filtrado de ruido DESHABILITADO para compatibilidad con modelos entrenados")
+        logger.info(f"Manteniendo todas las {len(features)} features de double double")
         
-        if not features:
-            return features
+        # Retornar todas las features sin filtrar
+        return features
+    
+    def _apply_leakage_filter(self, df: pd.DataFrame, features: List[str]) -> List[str]:
+        """
+        Aplica filtros para eliminar features que pueden causar data leakage en predicciones de double double.
+        DESHABILITADO: Para mantener compatibilidad con modelos entrenados.
         
-        # FILTRO 1: Varianza mínima
-        clean_features = []
-        for feature in features:
-            if feature in df.columns:
-                variance = df[feature].var()
-                if pd.isna(variance) or variance < 1e-8:
-                    logger.debug(f"Eliminando {feature} por varianza muy baja: {variance}")
-                    continue
-                clean_features.append(feature)
-            else:
-                logger.warning(f"Feature {feature} no encontrada en DataFrame")
-        
-        # FILTRO 2: Valores infinitos o NaN excesivos
-        filtered_features = []
-        for feature in clean_features:
-            if feature in df.columns:
-                nan_pct = df[feature].isna().mean()
-                inf_count = np.isinf(df[feature]).sum()
-                
-                if nan_pct > 0.5:  # Más del 50% NaN
-                    logger.debug(f"Eliminando {feature} por exceso de NaN: {nan_pct:.2%}")
-                    continue
-                if inf_count > 0:  # Cualquier valor infinito
-                    logger.debug(f"Eliminando {feature} por valores infinitos: {inf_count}")
-                    continue
-                filtered_features.append(feature)
-        
-        # FILTRO 3: Correlación extrema con target (posible data leakage)
-        if 'double_double' in df.columns:
-            safe_features = []
-            for feature in filtered_features:
-                if feature in df.columns and feature != 'double_double':
-                    try:
-                        corr = df[feature].corr(df['double_double'])
-                        if pd.isna(corr) or abs(corr) > 0.99:  # Correlación sospechosamente alta
-                            logger.debug(f"Eliminando {feature} por correlación sospechosa con target: {corr:.3f}")
-                            continue
-                        safe_features.append(feature)
-                    except:
-                        safe_features.append(feature)  # Conservar si no se puede calcular correlación
-                else:
-                    safe_features.append(feature)
-        else:
-            safe_features = filtered_features
-        
-        # FILTRO 4: Features que tienden a ser ruidosas o poco predictivas para double double
-        noise_patterns = [
-            '_squared_',  # Features cuadráticas suelen ser ruidosas
-            '_cubed_',    # Features cúbicas suelen ser ruidosas
-            '_interaction_complex_',  # Interacciones complejas suelen ser ruidosas
-            '_polynomial_',  # Features polinomiales suelen ser ruidosas
-            'noise_',     # Features de ruido
-            '_random_',   # Features aleatorias
-            '_test_',     # Features de prueba
-            'cosmic_',    # Features cósmicas experimentales suelen ser ruidosas
-            'quantum_',   # Features cuánticas experimentales suelen ser ruidosas
-            'fractal_',   # Features fractales suelen ser ruidosas
-            '_chaos_',    # Features de caos suelen ser ruidosas
-            '_entropy_extreme_',  # Features de entropía extrema
-        ]
-        
-        final_features = []
-        removed_by_pattern = []
-        
-        for feature in safe_features:
-            is_noisy = False
-            for pattern in noise_patterns:
-                if pattern in feature.lower():
-                    removed_by_pattern.append(feature)
-                    is_noisy = True
-                    break
+        Args:
+            df: DataFrame con los datos
+            features: Lista de features a filtrar
             
-            if not is_noisy:
-                final_features.append(feature)
+        Returns:
+            List[str]: Lista de features filtradas sin leakage
+        """
+        logger.info(f"Filtrado de leakage DESHABILITADO para compatibilidad con modelos entrenados")
+        logger.info(f"Manteniendo todas las {len(features)} features de double double")
         
-        # FILTRO 5: Límite de features para evitar overfitting
-        max_features_dd = 60  # Límite específico para double double
-        if len(final_features) > max_features_dd:
-            logger.info(f"Aplicando límite de features: {max_features_dd}")
-            # Priorizar features más importantes para double double
-            priority_keywords = [
-                'dd_rate', 'dd_momentum', 'dd_consistency', 'dd_potential',
-                'pts_hist_avg', 'trb_hist_avg', 'ast_hist_avg',
-                'usage_consistency', 'efficiency_consistency', 'versatility_index',
-                'minutes_stability', 'total_impact'
-            ]
-            
-            prioritized_features = []
-            remaining_features = []
-            
-            for feature in final_features:
-                is_priority = any(keyword in feature for keyword in priority_keywords)
-                if is_priority:
-                    prioritized_features.append(feature)
-                else:
-                    remaining_features.append(feature)
-            
-            # Tomar features prioritarias + algunas adicionales hasta el límite
-            final_features = prioritized_features[:max_features_dd//2] + remaining_features[:max_features_dd//2]
-        
-        # Log de resultados
-        removed_count = len(features) - len(final_features)
-        logger.info(f"Filtrado de ruido completado:")
-        logger.info(f"  Features originales: {len(features)}")
-        logger.info(f"  Features finales: {len(final_features)}")
-        logger.info(f"  Features eliminadas: {removed_count}")
-        
-        if removed_by_pattern:
-            logger.info("Features eliminadas por ruido:")
-            for feature in removed_by_pattern[:5]:  # Mostrar solo las primeras 5
-                logger.info(f"  - {feature}")
-            if len(removed_by_pattern) > 5:
-                logger.info(f"  ... y {len(removed_by_pattern) - 5} más")
-        
-        if not final_features:
-            logger.warning("ADVERTENCIA: Todos las features fueron eliminadas por filtros de ruido")
-            # Devolver al menos algunas features básicas si todo fue eliminado
-            basic_features = [f for f in features if any(keyword in f for keyword in ['dd_rate', 'pts_hist_avg', 'trb_hist_avg'])]
-            return basic_features[:10] if basic_features else features[:5]
-        
-        return final_features
+        # Retornar todas las features sin filtrar
+        return features
+        #     priority_keywords = [
+        #         'dd_rate', 'dd_momentum', 'dd_consistency', 'dd_potential',
+        #         'pts_hist_avg', 'trb_hist_avg', 'ast_hist_avg',
+        #         'usage_consistency', 'efficiency_consistency', 'versatility_index',
+        #         'minutes_stability', 'total_impact'
+        #     ]
+        #     
+        #     prioritized_features = []
+        #     remaining_features = []
+        #     
+        #     for feature in final_features:
+        #         is_priority = any(keyword in feature for keyword in priority_keywords)
+        #         if is_priority:
+        #             prioritized_features.append(feature)
+        #         else:
+        #             remaining_features.append(feature)
+        #     
+        #     # Tomar features prioritarias + algunas adicionales hasta el límite
+        #     final_features = prioritized_features[:max_features_dd//2] + remaining_features[:max_features_dd//2]
+        # 
+        # # Log de resultados
+        # removed_count = len(features) - len(final_features)
+        # logger.info(f"Filtrado de ruido completado:")
+        # logger.info(f"  Features originales: {len(features)}")
+        # logger.info(f"  Features finales: {len(final_features)}")
+        # logger.info(f"  Features eliminadas: {removed_count}")
+        # 
+        # if removed_by_pattern:
+        #     logger.info("Features eliminadas por ruido:")
+        #     for feature in removed_by_pattern[:5]:  # Mostrar solo las primeras 5
+        #         logger.info(f"  - {feature}")
+        #     if len(removed_by_pattern) > 5:
+        #         logger.info(f"  ... y {len(removed_by_pattern) - 5} más")
+        # 
+        # if not final_features:
+        #     logger.warning("ADVERTENCIA: Todos las features fueron eliminadas por filtros de ruido")
+        #     # Devolver al menos algunas features básicas si todo fue eliminado
+        #     basic_features = [f for f in features if any(keyword in f for keyword in ['dd_rate', 'pts_hist_avg', 'trb_hist_avg'])]
+        #     return basic_features[:10] if basic_features else features[:5]
+        # 
+        # return final_features

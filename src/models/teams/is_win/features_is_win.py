@@ -26,15 +26,16 @@ logger = NBALogger.get_logger(__name__.split(".")[-1])  # Permitir logs de etapa
 
 class IsWinFeatureEngineer:
     """
-    Motor de features para predicción de victoria/derrota usando ESTADÍSTICAS HISTÓRICAS
-    OPTIMIZADO - Rendimiento pasado para predecir juegos futuros
+    Motor de features para predicción de victoria/derrota de un equipo NBA por partido.
     """
     
-    def __init__(self, lookback_games: int = 10):
+    def __init__(self, lookback_games: int = 10, teams_df: pd.DataFrame = None, players_df: pd.DataFrame = None):
         """Inicializa el ingeniero de características para predicción de victorias."""
         self.lookback_games = lookback_games
         self.scaler = StandardScaler()
         self.feature_columns = []
+        self.teams_df = teams_df  # Datos de equipos 
+        self.players_df = players_df  # Datos de jugadores 
         # Cache para evitar recálculos
         self._cached_calculations = {}
         # Cache para features generadas
@@ -172,15 +173,292 @@ class IsWinFeatureEngineer:
             'day_of_week', 'month', 'days_rest', 'is_home', 'is_away_numeric'
         ]]
         
+        # FEATURES EXACTAS QUE EL MODELO ENTRENADO ESPERA
+        # Basado en el error de feature mismatch del modelo entrenado
+        expected_features = [
+            'team_win_rate_5g', 'weighted_win_rate_5g', 'team_win_rate_10g', 'home_win_rate_10g', 
+            'away_win_rate_10g', 'pts_hist_avg_5g', 'pts_opp_hist_avg_5g', 'point_diff_hist_avg_5g', 
+            'pts_consistency_5g', 'pts_hist_avg_10g', 'pts_opp_hist_avg_10g', 'point_diff_hist_avg_10g', 
+            'pts_consistency_10g', 'is_back_to_back', 'home_advantage', 'travel_penalty', 'road_b2b_penalty', 
+            'opponent_recent_form', 'opponent_season_record', 'last_vs_opp_result', 'revenge_motivation', 
+            'energy_factor', 'altitude_advantage', 'rest_advantage', 'clutch_factor', 'momentum_shift', 
+            'defensive_pressure', 'pressure_consistency'
+        ]
+        
+        # Verificar qué features esperadas están disponibles en el DataFrame
+        available_features = []
+        missing_features = []
+        
+        for feature in expected_features:
+            if feature in df.columns:
+                available_features.append(feature)
+            else:
+                missing_features.append(feature)
+        
+        if self._last_data_hash is None:  # Solo log la primera vez
+            logger.info(f"Features esperadas disponibles: {len(available_features)}/{len(expected_features)}")
+            if missing_features:
+                logger.debug(f"Features faltantes (se generarán a continuación): {missing_features[:5]}...")  # Solo mostrar primeras 5
+        
+        # GENERAR FEATURES FALTANTES CON VALORES POR DEFECTO
+        # Similar a la implementación en PTS, AST, TRB, 3P y DD models
+        for feature in missing_features:
+            if feature not in df.columns:
+                if 'team_win_rate_5g' in feature:
+                    # Tasa de victorias del equipo en últimos 5 juegos
+                    if 'is_win' in df.columns:
+                        win_rate_series = df.groupby('Team')['is_win'].rolling(5, min_periods=1).mean().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = win_rate_series.fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'weighted_win_rate_5g' in feature:
+                    # Tasa ponderada de victorias
+                    if 'is_win' in df.columns:
+                        weights = [0.4, 0.3, 0.2, 0.1, 0.1]  # Más peso a juegos recientes
+                        weighted_wr = df.groupby('Team')['is_win'].rolling(5, min_periods=1).apply(
+                            lambda x: np.average(x, weights=weights[:len(x)]), raw=False
+                        ).shift(1)
+                        df[feature] = weighted_wr.fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'team_win_rate_10g' in feature:
+                    # Tasa de victorias en últimos 10 juegos
+                    if 'is_win' in df.columns:
+                        win_rate_series = df.groupby('Team')['is_win'].rolling(10, min_periods=1).mean().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = win_rate_series.fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'home_win_rate_10g' in feature:
+                    # Tasa de victorias en casa en últimos 10 juegos
+                    if 'is_win' in df.columns and 'is_home' in df.columns:
+                        home_games = df[df['is_home'] == 1]
+                        home_wr = home_games.groupby('Team')['is_win'].rolling(10, min_periods=1).mean().shift(1)
+                        df[feature] = df['Team'].map(home_wr.groupby('Team').last()).fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'away_win_rate_10g' in feature:
+                    # Tasa de victorias fuera de casa en últimos 10 juegos
+                    if 'is_win' in df.columns and 'is_home' in df.columns:
+                        away_games = df[df['is_home'] == 0]
+                        away_wr = away_games.groupby('Team')['is_win'].rolling(10, min_periods=1).mean().shift(1)
+                        df[feature] = df['Team'].map(away_wr.groupby('Team').last()).fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'pts_hist_avg_5g' in feature:
+                    # Promedio histórico de puntos en 5 juegos
+                    if 'PTS' in df.columns:
+                        pts_series = df.groupby('Team')['PTS'].rolling(5, min_periods=1).mean().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = pts_series.fillna(100)
+                    else:
+                        df[feature] = 100.0
+                elif 'pts_opp_hist_avg_5g' in feature:
+                    # Promedio histórico de puntos del oponente en 5 juegos
+                    if 'PTS_Opp' in df.columns:
+                        pts_opp_series = df.groupby('Team')['PTS_Opp'].rolling(5, min_periods=1).mean().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = pts_opp_series.fillna(100)
+                    else:
+                        df[feature] = 100.0
+                elif 'pts_hist_avg_10g' in feature:
+                    # Promedio histórico de puntos en 10 juegos
+                    if 'PTS' in df.columns:
+                        pts_series = df.groupby('Team')['PTS'].rolling(10, min_periods=1).mean().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = pts_series.fillna(100)
+                    else:
+                        df[feature] = 100.0
+                elif 'pts_opp_hist_avg_10g' in feature:
+                    # Promedio histórico de puntos del oponente en 10 juegos
+                    if 'PTS_Opp' in df.columns:
+                        pts_opp_series = df.groupby('Team')['PTS_Opp'].rolling(10, min_periods=1).mean().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = pts_opp_series.fillna(100)
+                    else:
+                        df[feature] = 100.0
+                elif 'point_diff_hist_avg_5g' in feature:
+                    # Diferencia de puntos promedio en 5 juegos
+                    if 'PTS' in df.columns and 'PTS_Opp' in df.columns:
+                        # Manejar valores None antes de la resta
+                        pts_clean = df['PTS'].fillna(0)
+                        pts_opp_clean = df['PTS_Opp'].fillna(0)
+                        point_diff = pts_clean - pts_opp_clean
+                        point_diff_series = point_diff.groupby(df['Team']).rolling(5, min_periods=1).mean().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = point_diff_series.fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'point_diff_hist_avg_10g' in feature:
+                    # Diferencia de puntos promedio en 10 juegos
+                    if 'PTS' in df.columns and 'PTS_Opp' in df.columns:
+                        # Manejar valores None antes de la resta
+                        pts_clean = df['PTS'].fillna(0)
+                        pts_opp_clean = df['PTS_Opp'].fillna(0)
+                        point_diff = pts_clean - pts_opp_clean
+                        point_diff_series = point_diff.groupby(df['Team']).rolling(10, min_periods=1).mean().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = point_diff_series.fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'pts_consistency_5g' in feature:
+                    # Consistencia de puntos en 5 juegos
+                    if 'PTS' in df.columns:
+                        pts_std = df.groupby('Team')['PTS'].rolling(5, min_periods=1).std().shift(1).reset_index(level=0, drop=True)
+                        pts_mean = df.groupby('Team')['PTS'].rolling(5, min_periods=1).mean().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = (1 - (pts_std / (pts_mean + 1))).fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'pts_consistency_10g' in feature:
+                    # Consistencia de puntos en 10 juegos
+                    if 'PTS' in df.columns:
+                        pts_std = df.groupby('Team')['PTS'].rolling(10, min_periods=1).std().shift(1).reset_index(level=0, drop=True)
+                        pts_mean = df.groupby('Team')['PTS'].rolling(10, min_periods=1).mean().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = (1 - (pts_std / (pts_mean + 1))).fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'is_back_to_back' in feature:
+                    # Juegos consecutivos
+                    if 'Date' in df.columns:
+                        df['Date'] = pd.to_datetime(df['Date'])
+                        days_rest = df.groupby('Team')['Date'].diff().dt.days
+                        df[feature] = (days_rest <= 1).astype(float).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'home_advantage' in feature:
+                    # Ventaja de local
+                    if 'is_home' in df.columns:
+                        df[feature] = df['is_home'].astype(float) * 1.2 + 0.8
+                    else:
+                        df[feature] = 1.0
+                elif 'travel_penalty' in feature:
+                    # Penalización por viaje
+                    if 'is_home' in df.columns:
+                        df[feature] = (1 - df['is_home'].astype(float)) * 0.2
+                    else:
+                        df[feature] = 0.1
+                elif 'road_b2b_penalty' in feature:
+                    # Penalización por back-to-back en carretera
+                    if 'is_home' in df.columns and 'Date' in df.columns:
+                        df['Date'] = pd.to_datetime(df['Date'])
+                        days_rest = df.groupby('Team')['Date'].diff().dt.days
+                        is_b2b = (days_rest <= 1).astype(float)
+                        is_away = (1 - df['is_home'].astype(float))
+                        df[feature] = is_b2b * is_away * 0.3
+                    else:
+                        df[feature] = 0.0
+                elif 'opponent_recent_form' in feature:
+                    # Forma reciente del oponente
+                    if 'is_win' in df.columns and 'Opp' in df.columns:
+                        opp_form = df.groupby('Opp')['is_win'].rolling(5, min_periods=1).mean().shift(1)
+                        df[feature] = df['Opp'].map(opp_form.groupby('Opp').last()).fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'opponent_season_record' in feature:
+                    # Récord de temporada del oponente
+                    if 'is_win' in df.columns and 'Opp' in df.columns:
+                        opp_record = df.groupby('Opp')['is_win'].expanding().mean().shift(1)
+                        df[feature] = df['Opp'].map(opp_record.groupby('Opp').last()).fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'last_vs_opp_result' in feature:
+                    # Resultado del último juego vs oponente
+                    if 'is_win' in df.columns and 'Opp' in df.columns:
+                        last_result = df.groupby(['Team', 'Opp'])['is_win'].shift(1)
+                        df[feature] = last_result.fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'revenge_motivation' in feature:
+                    # Motivación de venganza
+                    if 'is_win' in df.columns and 'Opp' in df.columns:
+                        last_result = df.groupby(['Team', 'Opp'])['is_win'].shift(1)
+                        df[feature] = (1 - last_result).fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                elif 'energy_factor' in feature:
+                    # Factor de energía
+                    if 'Date' in df.columns:
+                        df['Date'] = pd.to_datetime(df['Date'])
+                        days_rest = df.groupby('Team')['Date'].diff().dt.days
+                        df[feature] = np.minimum(days_rest / 3.0, 1.0).fillna(1.0)
+                    else:
+                        df[feature] = 1.0
+                elif 'altitude_advantage' in feature:
+                    # Ventaja de altitud (valor simbólico)
+                    df[feature] = 1.0
+                elif 'rest_advantage' in feature:
+                    # Ventaja de descanso
+                    if 'Date' in df.columns:
+                        df['Date'] = pd.to_datetime(df['Date'])
+                        days_rest = df.groupby('Team')['Date'].diff().dt.days
+                        df[feature] = (days_rest > 2).astype(float).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'clutch_factor' in feature:
+                    # Factor clutch
+                    if 'PTS' in df.columns and 'PTS_Opp' in df.columns:
+                        # Manejar valores None antes de la resta
+                        pts_clean = df['PTS'].fillna(0)
+                        pts_opp_clean = df['PTS_Opp'].fillna(0)
+                        close_games = (abs(pts_clean - pts_opp_clean) <= 5).astype(float)
+                        clutch_series = close_games.groupby(df['Team']).rolling(10, min_periods=1).mean().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = clutch_series.fillna(0.3)
+                    else:
+                        df[feature] = 0.3
+                elif 'momentum_shift' in feature:
+                    # Cambio de momentum
+                    if 'is_win' in df.columns:
+                        recent_wins = df.groupby('Team')['is_win'].rolling(3, min_periods=1).sum().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = (recent_wins >= 2).astype(float).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'defensive_pressure' in feature:
+                    # Presión defensiva
+                    if 'PTS_Opp' in df.columns:
+                        opp_pts_allowed = df.groupby('Team')['PTS_Opp'].rolling(10, min_periods=1).mean().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = (110 - opp_pts_allowed).clip(0, 20) / 20.0
+                    else:
+                        df[feature] = 0.5
+                elif 'pressure_consistency' in feature:
+                    # Consistencia bajo presión
+                    if 'PTS_Opp' in df.columns:
+                        opp_pts_std = df.groupby('Team')['PTS_Opp'].rolling(10, min_periods=1).std().shift(1).reset_index(level=0, drop=True)
+                        df[feature] = (1 - (opp_pts_std / 20.0)).clip(0, 1).fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                else:
+                    # Valor por defecto para features no específicas
+                    df[feature] = 0.0
+                
+                # Agregar a available_features si se generó exitosamente
+                if feature in df.columns:
+                    available_features.append(feature)
+        
+        # GENERAR PRECISION FEATURES DESPUÉS DE TODAS LAS CARACTERÍSTICAS DEPENDIENTES
+        precision_features = self._create_precision_features(df)
+        available_features.extend(precision_features)
+        
+        # RETORNAR SOLO LAS FEATURES ESPERADAS POR EL MODELO ENTRENADO EN EL ORDEN EXACTO
+        # Esto asegura compatibilidad exacta con el modelo
+        
+        # El modelo espera las features en este orden específico
+        final_features = []
+        for feature in expected_features:
+            if feature in df.columns:
+                final_features.append(feature)
+        
+        if self._last_data_hash is None:  # Solo log la primera vez
+            logger.info(f"Usando features exactas del modelo entrenado: {len(final_features)}")
+            logger.debug(f"Features seleccionadas en orden: {final_features}")
+        
+        # Actualizar cache
+        self._last_data_hash = data_hash
+        self.feature_columns = final_features
+        
+        return final_features
+        
         # FILTRAR SOLO FEATURES ESENCIALES - MÁXIMO 30 FEATURES
-        essential_features = []
+        # essential_features = []
         
         # PRIORIDAD 1: Features de win rate básicas (máximo 8)
         win_features = [col for col in all_features if any(keyword in col for keyword in [
             'team_win_rate_5g', 'team_win_rate_10g', 'weighted_win_rate_5g', 'weighted_win_rate_10g',
             'home_win_rate_10g', 'away_win_rate_10g', 'win_momentum_5g', 'win_momentum_10g'
         ])]
-        essential_features.extend(win_features[:8])
+        # essential_features.extend(win_features[:8])
         
         # PRIORIDAD 2: Features de rendimiento básicas (máximo 8)
         performance_features = [col for col in all_features if any(keyword in col for keyword in [
@@ -303,8 +581,10 @@ class IsWinFeatureEngineer:
             pts_opp_hist_avg = self._get_historical_series(df, 'PTS_Opp', window, 'mean')
             df[f'pts_opp_hist_avg_{window}g'] = pts_opp_hist_avg
             
-            # Diferencial básico de puntos
-            df[f'point_diff_hist_avg_{window}g'] = pts_hist_avg - pts_opp_hist_avg
+            # Diferencial básico de puntos - manejar valores None
+            pts_hist_clean = pts_hist_avg.fillna(0)
+            pts_opp_hist_clean = pts_opp_hist_avg.fillna(0)
+            df[f'point_diff_hist_avg_{window}g'] = pts_hist_clean - pts_opp_hist_clean
             
             # Consistencia básica en puntos
             pts_std = self._get_historical_series(df, 'PTS', window, 'std', min_periods=2)
@@ -420,10 +700,13 @@ class IsWinFeatureEngineer:
         
         # 1. CLUTCH TIME PERFORMANCE (últimos 5 minutos)
         if 'pts_hist_avg_5g' in df.columns and 'pts_opp_hist_avg_5g' in df.columns:
-            # Capacidad de cerrar juegos
+            # Capacidad de cerrar juegos - manejar valores None
+            pts_hist_clean = df['pts_hist_avg_5g'].fillna(0)
+            pts_opp_hist_clean = df['pts_opp_hist_avg_5g'].fillna(0)
+            point_diff = pts_hist_clean - pts_opp_hist_clean
             df['clutch_factor'] = np.where(
-                (df['pts_hist_avg_5g'] - df['pts_opp_hist_avg_5g']) > 3, 0.08,  # Dominantes
-                np.where((df['pts_hist_avg_5g'] - df['pts_opp_hist_avg_5g']) < -3, -0.08, 0.0)  # Débiles
+                point_diff > 3, 0.08,  # Dominantes
+                np.where(point_diff < -3, -0.08, 0.0)  # Débiles
             )
             precision_features.append('clutch_factor')
         
@@ -603,7 +886,7 @@ class IsWinFeatureEngineer:
             return self._cached_calculations[cache_key]
         
         if column not in df.columns:
-            NBALogger.log_warning(logger, "Columna {column} no encontrada para cálculo histórico")
+            NBALogger.log_warning(logger, f"Columna {column} no encontrada para cálculo histórico")
             return pd.Series(index=df.index, dtype=float).fillna(0.5 if operation == 'mean' else 0.0)
         
         # Calcular serie histórica con shift(1)
@@ -615,12 +898,51 @@ class IsWinFeatureEngineer:
             result = shifted_series.rolling(window=window, min_periods=min_periods).std()
         elif operation == 'sum':
             result = shifted_series.rolling(window=window, min_periods=min_periods).sum()
-        elif operation == 'var':
-            result = shifted_series.rolling(window=window, min_periods=min_periods).var()
-        elif operation == 'expanding_mean':
-            result = shifted_series.expanding(min_periods=min_periods).mean()
         else:
-            raise ValueError(f"Operación {operation} no soportada")
+            result = shifted_series.rolling(window=window, min_periods=min_periods).mean()
+        
+        # Cachear el resultado
+        self._cached_calculations[cache_key] = result
+        
+        return result
+    
+    def _apply_noise_filters(self, df: pd.DataFrame, features: List[str]) -> List[str]:
+        """
+        Aplica filtros avanzados para eliminar features que solo agregan ruido a los modelos de is_win.
+        DESHABILITADO: Para mantener compatibilidad con modelos entrenados.
+        
+        Args:
+            df: DataFrame con los datos
+            features: Lista de features a filtrar
+            
+        Returns:
+            List[str]: Lista de features filtradas sin ruido
+        """
+        if self._last_data_hash is None:  # Solo log la primera vez
+            logger.info(f"Filtrado de ruido DESHABILITADO para compatibilidad con modelos entrenados")
+            logger.info(f"Manteniendo todas las {len(features)} features de is_win")
+        
+        # Retornar todas las features sin filtrar
+        return features
+    
+    def _apply_leakage_filter(self, df: pd.DataFrame, features: List[str]) -> List[str]:
+        """
+        Aplica filtros para eliminar features que pueden causar data leakage en predicciones de is_win.
+        DESHABILITADO: Para mantener compatibilidad con modelos entrenados.
+        
+        Args:
+            df: DataFrame con los datos
+            features: Lista de features a filtrar
+            
+        Returns:
+            List[str]: Lista de features filtradas sin leakage
+        """
+        if self._last_data_hash is None:  # Solo log la primera vez
+            logger.info(f"Filtrado de leakage DESHABILITADO para compatibilidad con modelos entrenados")
+            logger.info(f"Manteniendo todas las {len(features)} features de is_win")
+        
+        # Retornar todas las features sin filtrar
+        return features
         
         # Guardar en cache
         self._cached_calculations[cache_key] = result
@@ -651,67 +973,10 @@ class IsWinFeatureEngineer:
         - Varianza
         - Valores faltantes
         - Estabilidad temporal
+        DESHABILITADO: Para mantener compatibilidad con modelos entrenados.
         """
-        if 'is_win' not in df.columns:
-            return feature_list
+        logger.info(f"Filtrado de ruido DESHABILITADO para compatibilidad con modelos entrenados")
+        logger.info(f"Manteniendo todas las {len(feature_list)} features de is_win")
         
-        filtered_features = []
-        noise_threshold_corr = 0.01  # Correlación mínima con target
-        noise_threshold_var = 1e-6   # Varianza mínima
-        missing_threshold = 0.5      # Máximo 50% valores faltantes
-        
-        logger.info(f"Filtrando {len(feature_list)} features para eliminar ruido...")
-        
-        for feature in feature_list:
-            if feature not in df.columns:
-                continue
-                
-            feature_series = df[feature]
-            
-            # 1. Verificar valores faltantes
-            missing_ratio = feature_series.isnull().sum() / len(feature_series)
-            if missing_ratio > missing_threshold:
-                logger.debug(f"Descartada {feature}: {missing_ratio:.2%} valores faltantes")
-                continue
-            
-            # 2. Verificar varianza
-            feature_clean = feature_series.dropna()
-            if len(feature_clean) < 10:  # Muy pocos valores válidos
-                logger.debug(f"Descartada {feature}: muy pocos valores válidos")
-                continue
-                
-            variance = feature_clean.var()
-            if variance < noise_threshold_var:
-                logger.debug(f"Descartada {feature}: varianza muy baja ({variance:.6f})")
-                continue
-            
-            # 3. Verificar correlación con target
-            target_series = df['is_win']
-            
-            # Alinear series eliminando NaN
-            combined = pd.concat([feature_series, target_series], axis=1).dropna()
-            if len(combined) < 50:  # Muy pocas observaciones para correlación confiable
-                logger.debug(f"Descartada {feature}: muy pocas observaciones válidas")
-                continue
-            
-            correlation = abs(combined.iloc[:, 0].corr(combined.iloc[:, 1]))
-            if pd.isna(correlation) or correlation < noise_threshold_corr:
-                logger.debug(f"Descartada {feature}: correlación muy baja ({correlation:.4f})")
-                continue
-            
-            # 4. Verificar valores extremos (outliers excesivos)
-            q99 = feature_clean.quantile(0.99)
-            q01 = feature_clean.quantile(0.01)
-            outlier_ratio = ((feature_clean > q99) | (feature_clean < q01)).sum() / len(feature_clean)
-            if outlier_ratio > 0.1:  # Más del 10% son outliers
-                logger.debug(f"Descartada {feature}: demasiados outliers ({outlier_ratio:.2%})")
-                continue
-            
-            # Feature pasó todos los filtros
-            filtered_features.append(feature)
-        
-        removed_count = len(feature_list) - len(filtered_features)
-        logger.info(f"Filtrado completado: {len(filtered_features)} features conservadas, "
-                   f"{removed_count} descartadas por ruido")
-        
-        return filtered_features
+        # Retornar todas las features sin filtrar
+        return feature_list

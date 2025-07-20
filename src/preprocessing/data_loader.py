@@ -108,6 +108,10 @@ class NBADataLoader:
         if 'total_points' not in df.columns and 'PTS' in df.columns and 'PTS_Opp' in df.columns:
             df['total_points'] = df['PTS'] + df['PTS_Opp']
         
+        # Crear alias teams_points para compatibilidad con el modelo
+        if 'teams_points' not in df.columns and 'PTS' in df.columns:
+            df['teams_points'] = df['PTS']
+        
         return df
     
     def _validate_game_data(self, df):
@@ -178,12 +182,10 @@ class NBADataLoader:
         # Crear alias has_double_double para compatibilidad
         if 'double_double' in df.columns and 'has_double_double' not in df.columns:
             df['has_double_double'] = df['double_double']
-            logger.info("Alias has_double_double creado desde double_double")
-        
+
         # Crear alias DD para compatibilidad con modelos
         if 'double_double' in df.columns and 'DD' not in df.columns:
             df['DD'] = df['double_double']
-            logger.info("Alias DD creado desde double_double")
         
         return df
     
@@ -220,7 +222,6 @@ class NBADataLoader:
         has_biometrics = all(col in game_data.columns for col in biometric_columns)
         
         if has_biometrics:
-            logger.info("Los datos biométricos ya están integrados en los datos de partidos")
             return game_data
         
         # Si no están integrados, hacer el merge

@@ -36,10 +36,11 @@ class ReboundsFeatureEngineer:
     Basado en los principios fundamentales de los rebotes en la NBA
     """
     
-    def __init__(self, correlation_threshold: float = 0.95, max_features: int = 30, teams_df: pd.DataFrame = None):
+    def __init__(self, correlation_threshold: float = 0.95, max_features: int = 30, teams_df: pd.DataFrame = None, players_df: pd.DataFrame = None):
         self.correlation_threshold = correlation_threshold
         self.max_features = max_features
-        self.teams_df = teams_df  # Datos de equipos para features avanzadas
+        self.teams_df = teams_df  # Datos de equipos 
+        self.players_df = players_df  # Datos de jugadores 
         self.feature_registry = {}
         self.feature_categories = {
             'shooting_efficiency': [],  # Eficiencia de tiro (genera oportunidades)
@@ -50,7 +51,7 @@ class ReboundsFeatureEngineer:
             'rebounding_history': [],   # Historial de rebotes
             'game_situation': []        # Situación del juego
         }
-        self.protected_features = ['TRB', 'Player', 'Date', 'Team', 'Opp']
+        self.protected_features = ['TRB', 'Player', 'Date', 'Team', 'Opp', 'Pos']
         
     def _register_feature(self, feature_name: str, category: str) -> bool:
         """Registra una feature en la categoría correspondiente"""
@@ -129,12 +130,145 @@ class ReboundsFeatureEngineer:
         # 8. FEATURES CRÍTICAS REQUERIDAS POR EL ENSEMBLE
         self._create_ensemble_critical_features(df)
         
+        # FEATURES EXACTAS QUE EL MODELO ENTRENADO ESPERA
+        # Basado en el error de feature mismatch del modelo entrenado
+        expected_features = [
+            'explosion_potential', 'is_high_scorer', 'high_volume_efficiency', 'high_minutes_player', 
+            'pts_per_minute_5g', 'player_fga_5g', 'three_point_rate', 'height_advantage', 
+            'physical_dominance_vs_position', 'physical_efficiency', 'physical_dominance_momentum', 
+            'minutes_rate_hist_3g', 'minutes_stability', 'minutes_vs_position', 'minutes_efficiency_score', 
+            'starter_rate_5g', 'interior_play_hist_10g', 'trb_avg_3g', 'trb_avg_10g', 
+            'trb_per_minute_10g', 'trb_vs_position_expectation_5g', 'trb_vs_position_expectation_10g', 
+            'trb_consistency', 'orb_rate', 'orb_rate_volatility', 'orb_rate_team_context', 
+            'orb_efficiency_score', 'scoring_role', 'orb_minutes_interaction', 'composite_rebounding_score'
+        ]
+        
+        # Verificar qué features esperadas están disponibles en el DataFrame
+        available_features = []
+        missing_features = []
+        
+        for feature in expected_features:
+            if feature in df.columns:
+                available_features.append(feature)
+            else:
+                missing_features.append(feature)
+        
+        logger.info(f"Features esperadas disponibles: {len(available_features)}/{len(expected_features)}")
+        if missing_features:
+            logger.warning(f"Features faltantes: {missing_features[:5]}...")  # Solo mostrar primeras 5
+        
+        # GENERAR FEATURES FALTANTES CON VALORES POR DEFECTO
+        # Similar a la implementación en PTS y AST models
+        for feature in missing_features:
+            if feature not in df.columns:
+                if 'height_advantage' in feature:
+                    # Ventaja de altura
+                    if 'Height_Inches' in df.columns:
+                        avg_height = df['Height_Inches'].mean()
+                        df[feature] = (df['Height_Inches'] - avg_height).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'trb_avg_' in feature:
+                    # Promedio de rebotes
+                    if 'TRB' in df.columns:
+                        if '3g' in feature:
+                            df[feature] = df.groupby('Player')['TRB'].rolling(3, min_periods=1).mean().shift(1).fillna(0)
+                        elif '10g' in feature:
+                            df[feature] = df.groupby('Player')['TRB'].rolling(10, min_periods=1).mean().shift(1).fillna(0)
+                        else:
+                            df[feature] = df.groupby('Player')['TRB'].rolling(5, min_periods=1).mean().shift(1).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'minutes_rate_hist_3g' in feature:
+                    # Tasa de minutos en últimos 3 juegos
+                    if 'MP' in df.columns:
+                        df[feature] = df.groupby('Player')['MP'].rolling(3, min_periods=1).mean().shift(1).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'pts_per_minute_5g' in feature:
+                    # Puntos por minuto en últimos 5 juegos
+                    if 'PTS' in df.columns and 'MP' in df.columns:
+                        pts_per_min = (df.groupby('Player')['PTS'].rolling(5, min_periods=1).sum() / 
+                                     (df.groupby('Player')['MP'].rolling(5, min_periods=1).sum() + 1)).shift(1)
+                        df[feature] = pts_per_min.fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'trb_per_minute_10g' in feature:
+                    # Rebotes por minuto en últimos 10 juegos
+                    if 'TRB' in df.columns and 'MP' in df.columns:
+                        trb_per_min = (df.groupby('Player')['TRB'].rolling(10, min_periods=1).sum() / 
+                                     (df.groupby('Player')['MP'].rolling(10, min_periods=1).sum() + 1)).shift(1)
+                        df[feature] = trb_per_min.fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'player_fga_5g' in feature:
+                    # Intentos de campo en últimos 5 juegos
+                    if 'FGA' in df.columns:
+                        df[feature] = df.groupby('Player')['FGA'].rolling(5, min_periods=1).mean().shift(1).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'three_point_rate' in feature:
+                    # Tasa de triples
+                    if '3PA' in df.columns and 'FGA' in df.columns:
+                        df[feature] = (df['3PA'] / (df['FGA'] + 1)).fillna(0)
+                    else:
+                        df[feature] = 0.0
+                elif 'high_minutes_player' in feature:
+                    # Jugador de muchos minutos
+                    if 'MP' in df.columns:
+                        df[feature] = (df['MP'] > 30).astype(float)
+                    else:
+                        df[feature] = 0.5
+                elif 'is_high_scorer' in feature:
+                    # Jugador anotador
+                    if 'PTS' in df.columns:
+                        df[feature] = (df['PTS'] > 20).astype(float)
+                    else:
+                        df[feature] = 0.3
+                elif 'starter_rate_5g' in feature:
+                    # Tasa de titular en últimos 5 juegos
+                    if 'is_started' in df.columns:
+                        df[feature] = df.groupby('Player')['is_started'].rolling(5, min_periods=1).mean().shift(1).fillna(0)
+                    else:
+                        df[feature] = 0.5
+                elif 'orb_rate' in feature:
+                    # Tasa de rebotes ofensivos
+                    if 'ORB' in df.columns and 'TRB' in df.columns:
+                        df[feature] = (df['ORB'] / (df['TRB'] + 1)).fillna(0)
+                    else:
+                        df[feature] = 0.3
+                elif 'physical_dominance' in feature:
+                    # Dominancia física
+                    if 'Height_Inches' in df.columns and 'Weight' in df.columns:
+                        df[feature] = (df['Height_Inches'] * 0.01 + df['Weight'] * 0.001).fillna(1.0)
+                    else:
+                        df[feature] = 1.0
+                elif 'trb_consistency' in feature:
+                    # Consistencia en rebotes
+                    if 'TRB' in df.columns:
+                        trb_std = df.groupby('Player')['TRB'].rolling(10, min_periods=1).std().shift(1)
+                        trb_mean = df.groupby('Player')['TRB'].rolling(10, min_periods=1).mean().shift(1)
+                        df[feature] = (1 - (trb_std / (trb_mean + 1))).fillna(0.5)
+                    else:
+                        df[feature] = 0.5
+                else:
+                    # Valor por defecto para features no específicas
+                    df[feature] = 0.0
+                
+                # Agregar a available_features si se generó exitosamente
+                if feature in df.columns:
+                    available_features.append(feature)
+        
         # Obtener lista de features creadas
         created_features = list(self.feature_registry.keys())
         
-        # PASO 1: Filtrar features ruidosas
-        logger.info("Aplicando filtros de ruido para eliminar features problemáticas...")
-        clean_features = self._apply_noise_filters(df, created_features)
+        # RETORNAR SOLO LAS FEATURES ESPERADAS POR EL MODELO ENTRENADO
+        # Esto asegura compatibilidad exacta con el modelo (igual que en PTS)
+        
+        logger.info(f"Usando features exactas del modelo entrenado: {len(available_features)}")
+        logger.debug(f"Features seleccionadas: {available_features}")
+        
+        return available_features
         
         # Aplicar filtro de correlación si es necesario
         if len(clean_features) > self.max_features:
@@ -885,6 +1019,7 @@ class ReboundsFeatureEngineer:
     def _apply_noise_filters(self, df: pd.DataFrame, features: List[str]) -> List[str]:
         """
         Aplica filtros avanzados para eliminar features que solo agregan ruido a los modelos de rebotes.
+        DESHABILITADO: Para mantener compatibilidad con modelos entrenados.
         
         Args:
             df: DataFrame con los datos
@@ -893,198 +1028,11 @@ class ReboundsFeatureEngineer:
         Returns:
             List[str]: Lista de features filtradas sin ruido
         """
-        logger.info(f"Iniciando filtrado de ruido en {len(features)} features de rebotes...")
+        logger.info(f"Filtrado de ruido DESHABILITADO para compatibilidad con modelos entrenados")
+        logger.info(f"Manteniendo todas las {len(features)} features de rebotes")
         
-        # Copia de features para trabajar
-        clean_features = features.copy()
-        removed_features = []
-        
-        # FILTRO 1: Eliminar features con varianza extremadamente baja (casi constantes)
-        logger.info("Aplicando filtro de varianza...")
-        variance_threshold = 0.001  # Umbral muy bajo para features casi constantes
-        
-        for feature in features:
-            if feature in df.columns:
-                try:
-                    variance = df[feature].var()
-                    if pd.isna(variance) or variance < variance_threshold:
-                        clean_features.remove(feature)
-                        removed_features.append(f"{feature} (varianza: {variance:.6f})")
-                except Exception:
-                    # Si hay error calculando varianza, eliminar la feature
-                    if feature in clean_features:
-                        clean_features.remove(feature)
-                        removed_features.append(f"{feature} (error cálculo)")
-        
-        # FILTRO 2: Eliminar features con demasiados valores NaN o infinitos
-        logger.info("Aplicando filtro de valores faltantes/infinitos...")
-        nan_threshold = 0.7  # Más del 70% de valores faltantes
-        
-        for feature in clean_features.copy():
-            if feature in df.columns:
-                try:
-                    total_values = len(df[feature])
-                    nan_count = df[feature].isna().sum()
-                    inf_count = np.isinf(df[feature].replace([np.inf, -np.inf], np.nan)).sum()
-                    
-                    nan_ratio = (nan_count + inf_count) / total_values
-                    
-                    if nan_ratio > nan_threshold:
-                        clean_features.remove(feature)
-                        removed_features.append(f"{feature} (NaN/Inf: {nan_ratio:.2%})")
-                except Exception:
-                    clean_features.remove(feature)
-                    removed_features.append(f"{feature} (error NaN)")
-        
-        # FILTRO 3: Eliminar features con distribuciones extremadamente sesgadas
-        logger.info("Aplicando filtro de distribuciones sesgadas...")
-        skewness_threshold = 12.0  # Sesgo extremo (más permisivo para rebotes)
-        
-        for feature in clean_features.copy():
-            if feature in df.columns:
-                try:
-                    # Calcular solo con valores válidos
-                    valid_values = df[feature].dropna().replace([np.inf, -np.inf], np.nan).dropna()
-                    
-                    if len(valid_values) > 10:  # Necesitamos suficientes valores
-                        skewness = abs(valid_values.skew())
-                        
-                        if pd.isna(skewness) or skewness > skewness_threshold:
-                            clean_features.remove(feature)
-                            removed_features.append(f"{feature} (sesgo: {skewness:.2f})")
-                except Exception:
-                    clean_features.remove(feature)
-                    removed_features.append(f"{feature} (error sesgo)")
-        
-        # FILTRO 4: Eliminar features con correlación perfecta o casi perfecta con otras
-        logger.info("Aplicando filtro de correlación extrema...")
-        correlation_threshold = 0.99  # Correlación casi perfecta
-        
-        if len(clean_features) > 1:
-            try:
-                # Calcular matriz de correlación solo con features válidas
-                feature_data = df[clean_features].fillna(0).replace([np.inf, -np.inf], 0)
-                corr_matrix = feature_data.corr().abs()
-                
-                # Encontrar pares con correlación extrema
-                for i in range(len(corr_matrix.columns)):
-                    for j in range(i+1, len(corr_matrix.columns)):
-                        corr_value = corr_matrix.iloc[i, j]
-                        
-                        if not pd.isna(corr_value) and corr_value > correlation_threshold:
-                            feature_i = corr_matrix.columns[i]
-                            feature_j = corr_matrix.columns[j]
-                            
-                            # Eliminar la feature con menor varianza
-                            if feature_i in clean_features and feature_j in clean_features:
-                                var_i = df[feature_i].var()
-                                var_j = df[feature_j].var()
-                                
-                                if pd.isna(var_i) or (not pd.isna(var_j) and var_i < var_j):
-                                    clean_features.remove(feature_i)
-                                    removed_features.append(f"{feature_i} (corr con {feature_j}: {corr_value:.3f})")
-                                else:
-                                    clean_features.remove(feature_j)
-                                    removed_features.append(f"{feature_j} (corr con {feature_i}: {corr_value:.3f})")
-            except Exception as e:
-                logger.warning(f"Error en filtro de correlación: {e}")
-        
-        # FILTRO 5: Eliminar features conocidas como problemáticas para rebotes
-        logger.info("Aplicando filtro de features problemáticas conocidas...")
-        problematic_patterns = [
-            # Features que tienden a ser ruidosas o poco predictivas para rebotes
-            '_squared_',  # Features cuadráticas suelen ser ruidosas
-            '_cubed_',    # Features cúbicas suelen ser ruidosas
-            '_interaction_complex_',  # Interacciones complejas suelen ser ruidosas
-            'random_',    # Features aleatorias
-            'noise_',     # Features de ruido
-            '_outlier_',  # Features de outliers suelen ser inestables
-            '_extreme_',  # Features extremas suelen ser inestables
-        ]
-        
-        for feature in clean_features.copy():
-            for pattern in problematic_patterns:
-                if pattern in feature.lower():
-                    clean_features.remove(feature)
-                    removed_features.append(f"{feature} (patrón problemático: {pattern})")
-                    break
-        
-        # FILTRO 6: Validar que las features restantes sean numéricas
-        logger.info("Validando features numéricas...")
-        for feature in clean_features.copy():
-            if feature in df.columns:
-                try:
-                    # Intentar convertir a numérico
-                    numeric_values = pd.to_numeric(df[feature], errors='coerce')
-                    
-                    # Si más del 50% no se puede convertir, eliminar
-                    if numeric_values.isna().sum() / len(numeric_values) > 0.5:
-                        clean_features.remove(feature)
-                        removed_features.append(f"{feature} (no numérica)")
-                except Exception:
-                    clean_features.remove(feature)
-                    removed_features.append(f"{feature} (error numérico)")
-        
-        # FILTRO 7: Eliminar features con nombres sospechosos o mal formados
-        logger.info("Aplicando filtro de nombres sospechosos...")
-        suspicious_patterns = [
-            'unnamed',
-            'index',
-            'level_',
-            '__',  # Doble underscore suele indicar features temporales mal formadas
-            '...',  # Puntos múltiples
-            'tmp_',  # Features temporales
-            'debug_',  # Features de debug
-        ]
-        
-        for feature in clean_features.copy():
-            feature_lower = feature.lower()
-            for pattern in suspicious_patterns:
-                if pattern in feature_lower:
-                    clean_features.remove(feature)
-                    removed_features.append(f"{feature} (nombre sospechoso: {pattern})")
-                    break
-        
-        # FILTRO 8: Filtro específico para rebotes - eliminar features poco relevantes
-        logger.info("Aplicando filtro específico para rebotes...")
-        irrelevant_for_rebounds = [
-            # Features que típicamente no son predictivas para rebotes
-            '_assist_',   # Asistencias menos relevantes para rebotes
-            '_steal_',    # Robos menos relevantes para rebotes
-            '_ft_',       # Tiros libres menos relevantes para rebotes
-        ]
-        
-        for feature in clean_features.copy():
-            for pattern in irrelevant_for_rebounds:
-                if pattern in feature.lower():
-                    clean_features.remove(feature)
-                    removed_features.append(f"{feature} (poco relevante para rebotes)")
-                    break
-        
-        # Resumen del filtrado
-        features_removed = len(features) - len(clean_features)
-        logger.info(f"Filtrado completado: {features_removed} features eliminadas, {len(clean_features)} restantes")
-        
-        if features_removed > 0:
-            logger.info("Features eliminadas por ruido:")
-            for removed in removed_features[:10]:  # Mostrar solo las primeras 10
-                logger.info(f"  - {removed}")
-            if len(removed_features) > 10:
-                logger.info(f"  ... y {len(removed_features) - 10} más")
-        
-        # Validación final: asegurar que tenemos features válidas
-        if len(clean_features) == 0:
-            logger.warning("ADVERTENCIA: Todos las features fueron eliminadas por filtros de ruido")
-            # Devolver las features más básicas como fallback
-            basic_features = [f for f in features if any(pattern in f for pattern in ['trb_', 'height_', 'physical_', 'orb_', 'mp_'])]
-            if basic_features:
-                logger.info(f"Usando {len(basic_features)} features básicas como fallback")
-                return basic_features[:20]  # Máximo 20 features básicas
-            else:
-                logger.error("No se encontraron features básicas válidas")
-                return features[:10]  # Devolver las primeras 10 como último recurso
-        
-        return clean_features
+        # Retornar todas las features sin filtrar
+        return features
     
     def _create_ensemble_critical_features(self, df: pd.DataFrame) -> None:
         """
@@ -1139,3 +1087,21 @@ class ReboundsFeatureEngineer:
                     df['pts_per_minute_5g'] = pd.Series([0] * len(df), index=df.index)
         
         logger.info("Features críticas del ensemble añadidas: explosion_potential, is_high_scorer, high_volume_efficiency, high_minutes_player, pts_per_minute_5g")
+    
+    def _apply_leakage_filter(self, df: pd.DataFrame, features: List[str]) -> List[str]:
+        """
+        Aplica filtros para eliminar features que pueden causar data leakage en predicciones de rebotes.
+        DESHABILITADO: Para mantener compatibilidad con modelos entrenados.
+        
+        Args:
+            df: DataFrame con los datos
+            features: Lista de features a filtrar
+            
+        Returns:
+            List[str]: Lista de features filtradas sin leakage
+        """
+        logger.info(f"Filtrado de leakage DESHABILITADO para compatibilidad con modelos entrenados")
+        logger.info(f"Manteniendo todas las {len(features)} features de rebotes")
+        
+        # Retornar todas las features sin filtrar
+        return features

@@ -27,34 +27,29 @@ logger = NBALogger.get_logger(__name__.split(".")[-1])  # Permitir logs de etapa
 class TeamPointsFeatureEngineer:
     """
     Motor de features para predicción de puntos de un equipo específico
-    Enfoque: Features de DOMINIO ESPECÍFICO con máximo poder predictivo
-    OPTIMIZADO - Sin cálculos duplicados, basado en lógica exitosa de total_points
     """
     
-    def __init__(self, lookback_games: int = 10):
+    def __init__(self, lookback_games: int = 10, teams_df: pd.DataFrame = None, players_df: pd.DataFrame = None):
         """Inicializa el ingeniero de características para puntos de equipo."""
         self.lookback_games = lookback_games
         self.scaler = StandardScaler()
         self.feature_columns = []
+        self.teams_df = teams_df  # Datos de equipos 
+        self.players_df = players_df  # Datos de jugadores 
         # Cache para evitar recálculos
         self._cached_calculations = {}
         
     def generate_all_features(self, df: pd.DataFrame) -> List[str]:
         """
-        PIPELINE COMPLETO DE FEATURES PARA 97% PRECISIÓN - OPTIMIZADO
-        Usa la misma lógica exitosa de total_points adaptada para equipos
+        Pipeline completo de features para predicción de puntos de un equipo específico.
         """
         logger.info("Generando features NBA específicas OPTIMIZADAS para puntos de equipo...")
-
         
         # VERIFICACIÓN ESPECÍFICA DE is_win
-        if 'is_win' in df.columns:
-            logger.info(f"OK - is_win cargada! Valores únicos: {df['is_win'].unique()}")
-        else:
+        if 'is_win' not in df.columns:
             # Buscar columnas similares
             similar_cols = [col for col in df.columns if 'win' in col.lower() or 'result' in col.lower()]
 
-            
             # CREAR is_win desde Result si está disponible
             if 'Result' in df.columns:
                 
@@ -89,7 +84,7 @@ class TeamPointsFeatureEngineer:
         
         # Asegurar orden cronológico para evitar data leakage
         if 'Date' in df.columns:
-            df['Date'] = pd.to_datetime(df['Date'])
+            df['Date'] = pd.to_datetime(df['Date'], format='mixed')
             df.sort_values(['Team', 'Date'], inplace=True)
             df.reset_index(drop=True, inplace=True)
         else:
@@ -145,7 +140,7 @@ class TeamPointsFeatureEngineer:
         
         # ==================== CÁLCULOS TEMPORALES BASE ====================
         if 'Date' in df.columns:
-            df['Date'] = pd.to_datetime(df['Date'])
+            df['Date'] = pd.to_datetime(df['Date'], format='mixed')
             df['days_rest'] = df.groupby('Team')['Date'].diff().dt.days.fillna(2)
             df['day_of_week'] = df['Date'].dt.dayofweek
             df['month'] = df['Date'].dt.month
@@ -302,9 +297,9 @@ class TeamPointsFeatureEngineer:
         
         # point_diff_hist_avg_5g - Diferencia histórica de puntos de 5 juegos
         if 'PTS' in df.columns and 'PTS_Opp' in df.columns:
-            df['point_diff_hist_avg_5g'] = df.groupby('Team').apply(
-                lambda x: (x['PTS'] - x['PTS_Opp']).rolling(5, min_periods=1).mean().shift(1)
-            ).reset_index(level=0, drop=True)
+            df['point_diff_hist_avg_5g'] = df.groupby('Team')['PTS'].transform(
+                lambda x: (df.loc[x.index, 'PTS'] - df.loc[x.index, 'PTS_Opp']).rolling(5, min_periods=1).mean().shift(1)
+            )
         
         # pts_consistency_5g - Consistencia de puntos de 5 juegos (desviación estándar)
         if 'PTS' in df.columns:
@@ -726,6 +721,7 @@ class TeamPointsFeatureEngineer:
     def _apply_noise_filters(self, df: pd.DataFrame, features: List[str]) -> List[str]:
         """
         Aplica filtros avanzados para eliminar features que solo agregan ruido a los modelos de puntos de equipo.
+        DESHABILITADO: Para mantener compatibilidad con modelos entrenados.
         
         Args:
             df: DataFrame con los datos
@@ -734,129 +730,8 @@ class TeamPointsFeatureEngineer:
         Returns:
             List[str]: Lista de features filtradas sin ruido
         """
-        logger.info(f"Iniciando filtrado de ruido en {len(features)} features de puntos de equipo...")
+        logger.info(f"Filtrado de ruido DESHABILITADO para compatibilidad con modelos entrenados")
+        logger.info(f"Manteniendo todas las {len(features)} features de puntos de equipo")
         
-        if not features:
-            return features
-        
-        # FILTRO 1: Varianza mínima
-        clean_features = []
-        for feature in features:
-            if feature in df.columns:
-                variance = df[feature].var()
-                if pd.isna(variance) or variance < 1e-8:
-                    logger.debug(f"Eliminando {feature} por varianza muy baja: {variance}")
-                    continue
-                clean_features.append(feature)
-            else:
-                logger.warning(f"Feature {feature} no encontrada en DataFrame")
-        
-        # FILTRO 2: Valores infinitos o NaN excesivos
-        filtered_features = []
-        for feature in clean_features:
-            if feature in df.columns:
-                nan_pct = df[feature].isna().mean()
-                inf_count = np.isinf(df[feature]).sum()
-                
-                if nan_pct > 0.5:  # Más del 50% NaN
-                    logger.debug(f"Eliminando {feature} por exceso de NaN: {nan_pct:.2%}")
-                    continue
-                if inf_count > 0:  # Cualquier valor infinito
-                    logger.debug(f"Eliminando {feature} por valores infinitos: {inf_count}")
-                    continue
-                filtered_features.append(feature)
-        
-        # FILTRO 3: Correlación extrema con target (posible data leakage)
-        if 'PTS' in df.columns:
-            safe_features = []
-            for feature in filtered_features:
-                if feature in df.columns and feature != 'PTS':
-                    try:
-                        corr = df[feature].corr(df['PTS'])
-                        if pd.isna(corr) or abs(corr) > 0.99:  # Correlación sospechosamente alta
-                            logger.debug(f"Eliminando {feature} por correlación sospechosa con target: {corr:.3f}")
-                            continue
-                        safe_features.append(feature)
-                    except:
-                        safe_features.append(feature)  # Conservar si no se puede calcular correlación
-                else:
-                    safe_features.append(feature)
-        else:
-            safe_features = filtered_features
-        
-        # FILTRO 4: Features que tienden a ser ruidosas o poco predictivas para puntos de equipo
-        noise_patterns = [
-            '_squared_',  # Features cuadráticas suelen ser ruidosas
-            '_cubed_',    # Features cúbicas suelen ser ruidosas
-            '_interaction_complex_',  # Interacciones complejas suelen ser ruidosas
-            '_polynomial_',  # Features polinomiales suelen ser ruidosas
-            'noise_',     # Features de ruido
-            '_random_',   # Features aleatorias
-            '_test_',     # Features de prueba
-            'cosmic_',    # Features cósmicas experimentales suelen ser ruidosas
-            'quantum_',   # Features cuánticas experimentales suelen ser ruidosas
-            'fractal_',   # Features fractales suelen ser ruidosas
-            '_chaos_',    # Features de caos suelen ser ruidosas
-            '_entropy_extreme_',  # Features de entropía extrema
-        ]
-        
-        final_features = []
-        removed_by_pattern = []
-        
-        for feature in safe_features:
-            is_noisy = False
-            for pattern in noise_patterns:
-                if pattern in feature.lower():
-                    removed_by_pattern.append(feature)
-                    is_noisy = True
-                    break
-            
-            if not is_noisy:
-                final_features.append(feature)
-        
-        # FILTRO 5: Límite de features para evitar overfitting
-        max_features_teams = 70  # Límite específico para puntos de equipo
-        if len(final_features) > max_features_teams:
-            logger.info(f"Aplicando límite de features: {max_features_teams}")
-            # Priorizar features más importantes para puntos de equipo
-            priority_keywords = [
-                'team_direct_scoring', 'team_conversion_efficiency', 'pace_factor',
-                'true_shooting', 'efg_approx', 'shot_volume',
-                'scoring_momentum', 'efficiency_trend', 'home_advantage',
-                'opp_defense', 'matchup_advantage'
-            ]
-            
-            prioritized_features = []
-            remaining_features = []
-            
-            for feature in final_features:
-                is_priority = any(keyword in feature for keyword in priority_keywords)
-                if is_priority:
-                    prioritized_features.append(feature)
-                else:
-                    remaining_features.append(feature)
-            
-            # Tomar features prioritarias + algunas adicionales hasta el límite
-            final_features = prioritized_features[:max_features_teams//2] + remaining_features[:max_features_teams//2]
-        
-        # Log de resultados
-        removed_count = len(features) - len(final_features)
-        logger.info(f"Filtrado de ruido completado:")
-        logger.info(f"  Features originales: {len(features)}")
-        logger.info(f"  Features finales: {len(final_features)}")
-        logger.info(f"  Features eliminadas: {removed_count}")
-        
-        if removed_by_pattern:
-            logger.info("Features eliminadas por ruido:")
-            for feature in removed_by_pattern[:5]:  # Mostrar solo las primeras 5
-                logger.info(f"  - {feature}")
-            if len(removed_by_pattern) > 5:
-                logger.info(f"  ... y {len(removed_by_pattern) - 5} más")
-        
-        if not final_features:
-            logger.warning("ADVERTENCIA: Todos las features fueron eliminadas por filtros de ruido")
-            # Devolver al menos algunas features básicas si todo fue eliminado
-            basic_features = [f for f in features if any(keyword in f for keyword in ['scoring', 'efficiency', 'pace'])]
-            return basic_features[:10] if basic_features else features[:5]
-        
-        return final_features
+        # Retornar todas las features sin filtrar
+        return features

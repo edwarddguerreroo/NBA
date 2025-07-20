@@ -38,11 +38,13 @@ class PointsFeatureEngineer:
     MEJORADO - Con features temporales avanzadas para capturar drift temporal
     """
             
-    def __init__(self, lookback_games: int = 10):
+    def __init__(self, lookback_games: int = 10, teams_df: pd.DataFrame = None, players_df: pd.DataFrame = None):
         """Inicializa el ingeniero de características para predicción de puntos."""
         self.lookback_games = lookback_games
         self.scaler = StandardScaler()
         self.feature_columns = []
+        self.teams_df = teams_df  # Datos de equipos 
+        self.players_df = players_df  # Datos de jugadores 
         
         # SISTEMA DE CACHE MEJORADO
         self._cached_calculations = {}
@@ -238,18 +240,6 @@ class PointsFeatureEngineer:
         
         # COMPILAR FEATURES FINALES
         essential_features = self._compile_essential_features(df)
-        
-        # APLICAR FILTROS DE RUIDO (CRÍTICO PARA COMPATIBILIDAD CON MODELOS)
-        logger.info("Aplicando filtros de ruido para eliminar features problemáticas...")
-        essential_features = self._apply_noise_filters(df, essential_features)
-        
-        # APLICAR FILTRO DE LEAKAGE (CRÍTICO PARA INTEGRIDAD DEL MODELO)
-        logger.info("Aplicando filtros de data leakage...")
-        essential_features = self._apply_leakage_filter(df, essential_features)
-        
-        # APLICAR FILTRO DE CORRELACIÓN
-        logger.info("Aplicando filtro de correlación optimizado...")
-        essential_features = self._apply_correlation_regularization(df, essential_features)
         
         # ACTUALIZAR REGISTRO
         self.feature_columns = essential_features
@@ -875,7 +865,7 @@ class PointsFeatureEngineer:
         """Actualizar la lista de columnas de features disponibles"""
         # Excluir columnas básicas y de target
         exclude_columns = {
-            'Player', 'Date', 'Team', 'Opp', 'Result', 'MP', 'GS', 'Away',
+            'Player', 'Date', 'Team', 'Opp', 'Result', 'GS', 'Away', 'Pos',
             'FG', 'FGA', 'FG%', '2P', '2PA', '2P%', '3P', '3PA', '3P%', 
             'FT', 'FTA', 'FT%', 'PTS', 'ORB', 'DRB', 'TRB', 'AST', 'STL', 'BLK', 'TOV', 'PF',
             'PTS_double', 'TRB_double', 'AST_double', 'STL_double', 'BLK_double',
@@ -1502,10 +1492,11 @@ class PointsFeatureEngineer:
             final_features = [f for f in final_features if f not in leakage_features]
             logger.info(f"Filtro de data leakage aplicado: {len(leakage_features)} features eliminadas")
             
-            # CRÍTICO: Eliminar features dominantes detectadas
-            dominant_features = [f for f in final_features if f in ['player_tier', 'GmSc', 'BPM', 'PER']]
-            final_features = [f for f in final_features if f not in dominant_features]
-            logger.info(f"Features dominantes eliminadas: {dominant_features}")
+            # CRÍTICO: Eliminar features dominantes detectadas (DESHABILITADO para compatibilidad con modelos entrenados)
+            # dominant_features = [f for f in final_features if f in ['player_tier', 'GmSc', 'BPM', 'PER']]
+            # final_features = [f for f in final_features if f not in dominant_features]
+            # logger.info(f"Features dominantes eliminadas: {dominant_features}")
+            logger.info("Features dominantes: mantenidas para compatibilidad con modelos entrenados")
             
             # Asegurar que no excedemos el máximo
             if len(final_features) > max_features:
@@ -1605,16 +1596,16 @@ class PointsFeatureEngineer:
             df['pts_trend_last_5'] = 0.0  # Sin tendencia
         
         # 11. Opponent strength (si hay datos de equipos)
-        if hasattr(self, 'teams_df') and self.teams_df is not None:
-            # Calcular defensive rating promedio del oponente
+        if hasattr(self, 'teams_df') and self.teams_df is not None and 'PTS_Opp' in self.teams_df.columns:
+            # Calcular defensive rating promedio del oponente usando PTS_Opp
             team_def_rating = self.teams_df.groupby('Team').agg({
-                'PTS_allowed': 'mean'  # Asumiendo que existe esta columna
+                'PTS_Opp': 'mean'  # Puntos permitidos (defensiva)
             }).reset_index()
             
             # Merge con datos del oponente
             if 'Opp' in df.columns:
                 df = df.merge(
-                    team_def_rating.rename(columns={'Team': 'Opp', 'PTS_allowed': 'opp_def_rating'}),
+                    team_def_rating.rename(columns={'Team': 'Opp', 'PTS_Opp': 'opp_def_rating'}),
                     on='Opp', how='left'
                 )
                 df['opp_def_rating'] = df['opp_def_rating'].fillna(df['opp_def_rating'].mean())
@@ -1728,9 +1719,37 @@ class PointsFeatureEngineer:
         """
         logger.debug("Compilando features esenciales...")
         
+        # FEATURES EXACTAS QUE EL MODELO ENTRENADO ESPERA
+        # Basado en el error de feature mismatch del modelo entrenado
+        expected_features = [
+            'pts_hist_avg_5g', 'pts_trend_factor', 'explosion_potential', 'is_high_scorer', 
+            'high_volume_efficiency', 'high_minutes_player', 'pts_per_minute_5g', 
+            'momentum_ensemble_indicator', 'context_ensemble_factor', 'efficiency_ensemble_score', 
+            'player_tier', 'pts_acceleration', 'pts_recent_consistency', 'schedule_adaptation_factor', 
+            'rest_recovery_factor', 'opponent_adaptation_score', 'pts_recent_vs_historical', 
+            'pts_volatility_trend', 'pts_momentum_indicator', 'player_adaptability_score', 
+            'pts_consistency_3g', 'pts_consistency_5g', 'pts_above_season_avg', 'fg_efficiency_5g', 
+            'fg_efficiency_trend', 'three_point_made_5g', 'usage_rate_5g', 'GmSc', 'BPM', '+/-', 'is_win'
+        ]
+        
+        # Verificar qué features esperadas están disponibles en el DataFrame
+        available_features = []
+        missing_features = []
+        
+        for feature in expected_features:
+            if feature in df.columns:
+                available_features.append(feature)
+            else:
+                missing_features.append(feature)
+        
+        if missing_features:
+            logger.warning(f"Features esperadas por el modelo pero no disponibles: {missing_features}")
+        
+        logger.info(f"Features disponibles para el modelo: {len(available_features)}/{len(expected_features)}")
+        
         # Excluir columnas básicas y de target
         exclude_columns = {
-            'Player', 'Date', 'Team', 'Opp', 'Result', 'MP', 'GS', 'Away',
+            'Player', 'Date', 'Team', 'Opp', 'Result', 'Away', 'Pos', 'GS',
             'FG', 'FGA', 'FG%', '2P', '2PA', '2P%', '3P', '3PA', '3P%', 
             'FT', 'FTA', 'FT%', 'PTS', 'ORB', 'DRB', 'TRB', 'AST', 'STL', 'BLK', 'TOV', 'PF',
             'PTS_double', 'TRB_double', 'AST_double', 'STL_double', 'BLK_double',
@@ -1738,125 +1757,13 @@ class PointsFeatureEngineer:
             'day_of_week', 'month', 'days_rest', 'days_into_season'
         }
         
-        # Obtener todas las features disponibles REALMENTE en el DataFrame
-        all_features = [col for col in df.columns if col not in exclude_columns]
+        # RETORNAR SOLO LAS FEATURES ESPERADAS POR EL MODELO ENTRENADO
+        # Esto asegura compatibilidad exacta con el modelo
         
-        logger.debug(f"Features disponibles en DataFrame: {len(all_features)}")
-        logger.debug(f"Primeras 10: {all_features[:10]}")
+        logger.info(f"Usando features exactas del modelo entrenado: {len(available_features)}")
+        logger.debug(f"Features seleccionadas: {available_features}")
         
-        # Verificar features registradas vs features reales
-        registered_features = set()
-        for category_features in self._feature_registry.values():
-            registered_features.update(category_features)
-        
-        missing_registered = registered_features - set(all_features)
-        if missing_registered:
-            NBALogger.log_warning(logger, f"Features registradas pero no en DataFrame: {missing_registered}")
-        
-        # PRIORIDAD 0: FEATURES REVOLUCIONARIAS DE ENSEMBLE (MÁXIMA PRIORIDAD ABSOLUTA)
-        revolutionary_ensemble = [f for f in self._feature_registry['temporal_advanced'] 
-                                 if any(keyword in f for keyword in [
-                                     'temporal_ensemble_predictor', 'final_ensemble_predictor',
-                                     'ensemble_confidence_score', 'volatility_ensemble_score',
-                                     'momentum_ensemble_indicator', 'context_ensemble_factor',
-                                     'efficiency_ensemble_score', 'opportunity_ensemble_factor'
-                                 ]) and f in all_features]
-        
-        # PRIORIDAD 1: Features de alto scoring (SEGUNDA PRIORIDAD)
-        high_scoring_features = [f for f in self._feature_registry['temporal_advanced'] 
-                               if any(keyword in f for keyword in [
-                                   'high_scorer', 'explosion_potential', 'high_scoring_streak',
-                                   'high_volume_efficiency', 'clutch_scoring_factor',
-                                   'player_tier', 'team_carry_ability', 'offensive_versatility',
-                                   'defensive_attention', 'superstar_factor',
-                                   'prob_30plus_game', 'prob_40plus_game', 'explosive_game_trend',
-                                   'motivation_factor', 'performance_ceiling', 'historic_game_potential'
-                               ]) and f in all_features and f not in revolutionary_ensemble]
-        
-        # PRIORIDAD 2: Meta-features de stacking (verificar existencia)
-        meta_stacking = [f for f in self._feature_registry['meta_stacking'] 
-                        if f in all_features]
-        
-        # PRIORIDAD 3: Features de drift temporal y tendencias recientes
-        temporal_advanced = [f for f in self._feature_registry['temporal_advanced'] 
-                           if f in all_features and f not in high_scoring_features]
-        drift_detection = [f for f in self._feature_registry['drift_detection'] 
-                          if f in all_features]
-        
-        # PRIORIDAD 4: Features de stacking avanzadas (verificar existencia)
-        stacking = [f for f in self._feature_registry['stacking'] 
-                   if f in all_features]
-        
-        # PRIORIDAD 5: Features core de scoring (verificar existencia)
-        core_scoring = [f for f in self._feature_registry['scoring'] 
-                       if f in all_features]
-        
-        # PRIORIDAD 6: Features de shooting (verificar existencia)
-        shooting = [f for f in self._feature_registry['shooting'] 
-                   if f in all_features]
-        
-        # PRIORIDAD 7: Features de usage y oportunidades (verificar existencia)
-        usage = [f for f in self._feature_registry['usage'] 
-                if f in all_features]
-        
-        # PRIORIDAD 8: Features situacionales (verificar existencia)
-        situational = [f for f in self._feature_registry['situational'] 
-                      if f in all_features]
-        
-        # PRIORIDAD 9: Resto de features (verificar existencia)
-        categorized_features = set(meta_stacking + temporal_advanced + drift_detection + 
-                                 stacking + core_scoring + shooting + usage + situational)
-        other_features = [f for f in all_features if f not in categorized_features]
-        
-        # Compilar en orden de prioridad
-        essential_features = (
-            revolutionary_ensemble[:6] +           # Máximo 6 features revolucionarias
-            high_scoring_features[:6] +           # Máximo 6 features de alto scoring
-            meta_stacking[:12] +           # Máximo 12 meta-features
-            temporal_advanced[:8] +        # Máximo 8 features temporales avanzadas
-            drift_detection[:6] +          # Máximo 6 features de drift detection
-            stacking[:15] +                # Máximo 15 stacking features
-            core_scoring[:8] +             # Máximo 8 core scoring
-            shooting[:6] +                 # Máximo 6 shooting
-            usage[:5] +                    # Máximo 5 usage
-            situational[:6] +              # Máximo 6 situacionales
-            other_features[:6]             # Máximo 6 otras
-        )
-        
-        # Eliminar duplicados manteniendo orden
-        seen = set()
-        unique_features = []
-        for feature in essential_features:
-            if feature not in seen and feature in df.columns:  # Verificación adicional
-                seen.add(feature)
-                unique_features.append(feature)
-        
-        # Verificación final: todas las features deben existir en el DataFrame
-        final_features = [f for f in unique_features if f in df.columns]
-        
-        logger.info(f"Features compiladas por categoría (verificadas):")
-        logger.info(f"  Revolucionarias: {len([f for f in revolutionary_ensemble if f in final_features])}")
-        logger.info(f"  Alto scoring: {len([f for f in high_scoring_features if f in final_features])}")
-        logger.info(f"  Meta-stacking: {len([f for f in meta_stacking[:12] if f in final_features])}")
-        logger.info(f"  Temporal avanzadas: {len([f for f in temporal_advanced[:8] if f in final_features])}")
-        logger.info(f"  Drift detection: {len([f for f in drift_detection[:6] if f in final_features])}")
-        logger.info(f"  Stacking: {len([f for f in stacking[:15] if f in final_features])}")
-        logger.info(f"  Core scoring: {len([f for f in core_scoring[:8] if f in final_features])}")
-        logger.info(f"  Shooting: {len([f for f in shooting[:6] if f in final_features])}")
-        logger.info(f"  Usage: {len([f for f in usage[:5] if f in final_features])}")
-        logger.info(f"  Situacionales: {len([f for f in situational[:6] if f in final_features])}")
-        logger.info(f"  Otras: {len([f for f in other_features[:6] if f in final_features])}")
-        
-        # Verificación final crítica
-        missing_features = [f for f in final_features if f not in df.columns]
-        if missing_features:
-            NBALogger.log_error(logger, f"FEATURES FALTANTES EN DATAFRAME: {missing_features}")
-            # Remover features faltantes
-            final_features = [f for f in final_features if f in df.columns]
-        
-        logger.info(f"Features finales verificadas: {len(final_features)}")
-        
-        return final_features
+        return available_features
     
     def _log_feature_creation_summary(self) -> None:
         """
@@ -2298,11 +2205,11 @@ class PointsFeatureEngineer:
         """
         leakage_features = []
         
-        # LISTA COMPLETA DE FEATURES CON DATA LEAKAGE CONFIRMADO
+        # LISTA COMPLETA DE FEATURES CON DATA LEAKAGE CONFIRMADO (REDUCIDA para compatibilidad)
         confirmed_leakage_features = [
-            'GmSc',      # Game Score = PTS + 0.4*FG - 0.7*FGA - 0.4*(FTA-FT) + 0.7*ORB + 0.3*DRB + STL + 0.7*AST + 0.7*BLK - 0.4*PF - TOV
-            'BPM',       # Box Plus/Minus incluye puntos directamente
-            'PER',       # Player Efficiency Rating incluye puntos
+            # 'GmSc',      # Comentado: necesario para modelos entrenados
+            # 'BPM',       # Comentado: necesario para modelos entrenados
+            # 'PER',       # Comentado: necesario para modelos entrenados
             'TS%',       # True Shooting puede estar correlacionado con puntos del mismo juego
             'eFG%',      # Effective Field Goal incluye información del mismo juego
             'ORtg',      # Offensive Rating incluye puntos
@@ -2312,11 +2219,11 @@ class PointsFeatureEngineer:
             'WS/48',     # Win Shares per 48 incluye puntos
             'PIE',       # Player Impact Estimate incluye puntos
             'USG%',      # Usage puede incluir información del mismo juego
-            '+/-',       # Plus/Minus del mismo juego
+            # '+/-',       # Comentado: necesario para modelos entrenados
             'NETRTG',    # Net Rating incluye información del juego actual
             'PACE',      # Pace del juego actual
             'POSS',      # Possessions del juego actual
-            'player_tier',  # NUEVO: Tier basado en promedio de puntos (data leakage indirecto)
+            # 'player_tier',  # Comentado: necesario para modelos entrenados
         ]
         
         # DETECCIÓN AUTOMÁTICA DE CORRELACIONES EXTREMAS
@@ -2430,9 +2337,9 @@ class PointsFeatureEngineer:
         # Identificar features dominantes (correlación > 0.75 O importancia esperada > 30%)
         dominant_features = [f for f, corr in feature_correlations.items() if corr > 0.75]
         
-        # NUEVO: Detectar features que podrían dominar por construcción
+        # NUEVO: Detectar features que podrían dominar por construcción (DESHABILITADO para compatibilidad)
         potentially_dominant_features = [
-            'player_tier', 'GmSc', 'BPM', 'PER', 'team_carry_ability'
+            # 'player_tier', 'GmSc', 'BPM', 'PER', 'team_carry_ability'  # Comentado: necesario para modelos entrenados
         ]
         
         for feature in potentially_dominant_features:

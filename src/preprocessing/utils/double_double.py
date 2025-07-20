@@ -7,10 +7,6 @@ import traceback
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("double_double.log", mode='w'),
-        logging.StreamHandler()
-    ]
 )
 
 logger = logging.getLogger('DoubleDouble')
@@ -50,11 +46,6 @@ def calculate_double_triple_doubles(df):
         dd_count = df['double_double'].sum()
         td_count = df['triple_double'].sum()
         logger.info(f"Se identificaron {dd_count} doble-dobles y {td_count} triple-dobles")
-        
-        # Verificar casos con PTS=0
-        zero_pts_dd = df[(df['PTS'] < 1) & (df['double_double'] == 1)]
-        if not zero_pts_dd.empty:
-            logger.info(f"VALIDACIÓN: Hay {len(zero_pts_dd)} doble-dobles sin puntos (legítimos)")
         
         return df
         
