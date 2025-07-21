@@ -795,7 +795,8 @@ class TotalPointsModel(BaseNBATotalModel):
                  device: Optional[str] = None,
                  optimization_method: str = 'random',
                  bayesian_n_calls: int = 20,
-                 bayesian_acquisition: str = 'EI'):
+                 bayesian_acquisition: str = 'EI',
+                 df_players: Optional[pd.DataFrame] = None):
         """
         Inicializa el modelo de total de puntos.
         
@@ -805,13 +806,16 @@ class TotalPointsModel(BaseNBATotalModel):
             optimization_method: Método de optimización ('random', 'bayesian')
             bayesian_n_calls: Número de evaluaciones para optimización bayesiana
             bayesian_acquisition: Función de adquisición ('EI', 'PI', 'LCB')
+            df_players: DataFrame con datos de jugadores (opcional)
         """
         super().__init__(
             target_column='game_total_points',  # Target específico para totales
             model_type='regression'
         )
         
-        self.feature_engineer = TotalPointsFeatureEngineer()
+        # Inicializar feature engineer con datos de jugadores
+        self.feature_engineer = TotalPointsFeatureEngineer(players_df=df_players)
+        self.df_players = df_players
         self.optimize_hyperparams = optimize_hyperparams
         self.device_preference = device
         self.optimization_method = optimization_method.lower()

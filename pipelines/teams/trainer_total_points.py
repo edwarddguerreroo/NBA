@@ -113,17 +113,18 @@ class TotalPointsTrainer:
             game_data_path, biometrics_path, teams_path
         )
         
-        # Inicializar modelo con nueva arquitectura
-        self.model = TotalPointsModel(
-            optimize_hyperparams=True,
-            optimization_method=optimization_method,
-            bayesian_n_calls=n_optimization_trials,  # Mapear n_optimization_trials a bayesian_n_calls
-            device=device
-        )
+        # Configuración del modelo (se inicializará después de cargar datos)
+        self.model_config = {
+            'optimize_hyperparams': True,
+            'optimization_method': optimization_method,
+            'bayesian_n_calls': n_optimization_trials,
+            'device': device
+        }
         
         # Datos y resultados
         self.df_teams = None
         self.df_players = None
+        self.model = None  # Se inicializará después de cargar datos
         self.training_results = None
         self.predictions = None
         self.test_data = None
@@ -165,6 +166,13 @@ class TotalPointsTrainer:
         logger.info(f"  | Mediana: {total_pts_stats['50%']:.1f}")
         logger.info(f"  | Min/Max: {total_pts_stats['min']:.0f}/{total_pts_stats['max']:.0f}")
         logger.info(f"  | Desv. Estándar: {total_pts_stats['std']:.1f}")
+        
+        # Inicializar modelo con datos de jugadores
+        logger.info("Inicializando modelo con datos de jugadores...")
+        self.model = TotalPointsModel(
+            df_players=self.df_players,
+            **self.model_config
+        )
         
         return self.df_teams, self.df_players
     
@@ -789,10 +797,9 @@ MODELOS BASE:
             logger.info(f"   • Fecha: {datetime.now().isoformat()}")
             logger.info(f"   • Dispositivo: auto")
             
-            # Guardar modelo completo en results/ para referencia
-            complete_model_path = os.path.join(self.output_dir, 'total_points_complete_model.joblib')
-            self.model.save_model(complete_model_path)
-            logger.info(f"Modelo completo guardado en: {complete_model_path}")
+            # Guardar modelo de producción en .joblib (único lugar)
+            self.model.save_production_model()
+            logger.info("Modelo de producción guardado en .joblib/total_points_model.joblib")
             
         except Exception as e:
             logger.error(f"Error guardando modelo: {e}")

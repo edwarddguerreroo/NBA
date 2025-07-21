@@ -111,7 +111,10 @@ class TotalPointsFeatureEngineer:
         # PASO 7: Features ultra-predictivas basadas en feedback más reciente
         self._create_ultra_predictive_features(df)
         
-        # PASO 8: Features de interacción final
+        # PASO 8: Features sofisticadas basadas en top features confirmadas
+        self._create_sophisticated_features(df)
+        
+        # PASO 9: Features de interacción final
         self._create_final_interactions(df)
         
         # Aplicar filtros de calidad
@@ -135,6 +138,17 @@ class TotalPointsFeatureEngineer:
     # Nota: is_win se excluye solo si viene de datos externos, pero si la creamos internamente 
     # para features de momentum, se mantiene como feature válida
             
+        # PASO 10: Features de ausencias de jugadores (requerido)
+        if self.players_df is not None and not self.players_df.empty:
+            logger.info("Generando features de ausencias de jugadores...")
+            df = self.create_injury_features(df, self.players_df)
+        else:
+            raise ValueError("❌ ERROR: Se requieren datos de jugadores (players_df) para generar features de ausencias. "
+                           "Esto es obligatorio para predicciones precisas.")
+        
+        # PASO 11: Análisis de contexto especial aplicado
+        context_analysis = self.analyze_special_context_adjustments(df)
+        
         # PASO 1: Filtrar features ruidosas
         logger.info("Aplicando filtros de ruido para eliminar features problemáticas...")
         clean_features = self._apply_noise_filters(df, all_features)
@@ -558,6 +572,104 @@ class TotalPointsFeatureEngineer:
         # Factor de fin de semana (más espectáculo = más puntos)
         if 'is_weekend' in df.columns:
             df['game_weekend_factor'] = df['is_weekend'] * 1.5
+        
+        # ==================== NUEVAS FEATURES BASADAS EN ANÁLISIS DE ERRORES ====================
+        
+        # 1. FEATURE DE INICIO DE TEMPORADA (captura volatilidad inicial)
+        if 'days_into_season' in df.columns:
+            df['is_early_season'] = np.where(df['days_into_season'] <= 14, 1, 0)  # Primeras 2 semanas
+            df['early_season_volatility_factor'] = np.where(
+                df['is_early_season'] == 1, -8.0,  # Reduce predicciones en inicio de temporada
+                0.0
+            )
+        else:
+            df['is_early_season'] = 0
+            df['early_season_volatility_factor'] = 0.0
+        
+        # 2. FEATURE DE FIN DE TEMPORADA / POST ALL-STAR (tanking, descanso)
+        if 'days_into_season' in df.columns:
+            df['is_late_season'] = np.where(df['days_into_season'] >= 180, 1, 0)  # Últimas semanas
+            df['late_season_factor'] = np.where(
+                df['is_late_season'] == 1, -5.0,  # Reduce predicciones en final de temporada
+                0.0
+            )
+        else:
+            df['is_late_season'] = 0
+            df['late_season_factor'] = 0.0
+        
+        # 3. FEATURE DE CAMBIO DRÁSTICO DE EQUIPO (continuidad del roster)
+        # Equipos que tuvieron cambios significativos
+        major_roster_changes = {
+            'POR': ['2023-10-25', '2024-01-15'],  # Post-Lillard trade
+            'PHO': ['2023-10-25', '2024-01-15'],  # Cambios significativos
+            'DAL': ['2023-10-25', '2024-01-15'],  # Cambios de roster
+        }
+        
+        def get_roster_continuity_factor(row):
+            team = row['Team']
+            date_str = str(row.get('Date', ''))
+            
+            if team in major_roster_changes:
+                change_dates = major_roster_changes[team]
+                for change_date in change_dates:
+                    if change_date in date_str or date_str.startswith(change_date[:7]):
+                        return -6.0  # Reduce predicciones para equipos con cambios
+            return 0.0
+        
+        df['roster_continuity_factor'] = df.apply(get_roster_continuity_factor, axis=1)
+        
+        # 4. FEATURE DE POTENCIAL PRÓRROGA (basada en historial de equipos)
+        # Equipos que tienden a jugar partidos cerrados
+        overtime_prone_teams = ['MIA', 'BOS', 'LAL', 'GSW', 'PHI']
+        df['overtime_risk_factor'] = np.where(
+            df['Team'].isin(overtime_prone_teams), 2.0,  # Ajuste positivo para riesgo de OT
+            0.0
+        )
+        
+        # 5. FEATURE DE POTENCIAL BLOWOUT (palizas extremas)
+        # Equipos con grandes diferencias de talento
+        blowout_risk_teams = ['DET', 'CHA', 'WAS', 'POR']  # Equipos más débiles
+        blowout_risk_opponents = ['BOS', 'MIL', 'DEN', 'PHO']  # Equipos más fuertes
+        
+        def get_blowout_risk_factor(row):
+            team = row['Team']
+            opp = row.get('Opp', '')
+            
+            # Si un equipo débil juega contra uno fuerte
+            if team in blowout_risk_teams and opp in blowout_risk_opponents:
+                return -4.0  # Reduce predicción por riesgo de blowout
+            # Si un equipo fuerte juega contra uno débil
+            elif team in blowout_risk_opponents and opp in blowout_risk_teams:
+                return -3.0  # Reduce predicción por riesgo de blowout
+            return 0.0
+        
+        if 'Opp' in df.columns:
+            df['blowout_risk_factor'] = df.apply(get_blowout_risk_factor, axis=1)
+        else:
+            df['blowout_risk_factor'] = 0.0
+        
+        # 6. FEATURE DE RENDIMIENTO ANÓMALO (basada en tendencias recientes)
+        # Detectar equipos con rendimiento muy por encima/debajo de su promedio
+        if 'team_pts_avg_5g' in df.columns and 'team_pts_avg_10g' in df.columns:
+            df['anomalous_performance_factor'] = np.where(
+                abs(df['team_pts_avg_5g'] - df['team_pts_avg_10g']) > 15,  # Diferencia significativa
+                -3.0,  # Reduce predicción por volatilidad
+                0.0
+            )
+        else:
+            df['anomalous_performance_factor'] = 0.0
+        
+        # 7. FEATURE COMBINADA DE CONTEXTO ESPECIAL
+        special_context_features = [
+            'early_season_volatility_factor', 'late_season_factor', 
+            'roster_continuity_factor', 'blowout_risk_factor', 
+            'anomalous_performance_factor'
+        ]
+        
+        if all(col in df.columns for col in special_context_features):
+            df['special_context_adjustment'] = sum(df[col] for col in special_context_features)
+        else:
+            df['special_context_adjustment'] = 0.0
     
     def _create_final_interactions(self, df: pd.DataFrame) -> None:
         """Features de interacción final optimizadas sin multicolinealidad - ADAPTADO PARA TOTAL"""
@@ -622,6 +734,41 @@ class TotalPointsFeatureEngineer:
             df['game_final_total_projection'] = (
                 df['game_enhanced_total_projection'] +
                 df['game_contextual_total_adjustment']
+            )
+        
+        # ==================== AJUSTE FINAL CON CONTEXTO ESPECIAL ====================
+        # Aplicar ajustes de contexto especial a la proyección final
+        if 'game_final_total_projection' in df.columns and 'special_context_adjustment' in df.columns:
+            df['game_final_total_projection'] += df['special_context_adjustment']
+            
+            # Log de ajustes aplicados para debugging
+            special_adjustments = df[df['special_context_adjustment'] != 0][['Team', 'Date', 'special_context_adjustment']]
+            if not special_adjustments.empty:
+                logger.info(f"Aplicados ajustes de contexto especial a {len(special_adjustments)} partidos")
+                for _, row in special_adjustments.head(3).iterrows():
+                    logger.info(f"  • {row['Team']} ({row['Date']}): {row['special_context_adjustment']:.1f}")
+        
+        # ==================== AJUSTE FINAL POR AUSENCIAS DE JUGADORES ====================
+        # Aplicar ajustes por ausencias de jugadores a la proyección final
+        if 'game_final_total_projection' in df.columns and 'absence_adjustment_factor' in df.columns:
+            df['game_final_total_projection'] += df['absence_adjustment_factor']
+            
+            # Log de ajustes por ausencias aplicados
+            absence_adjustments = df[df['absence_adjustment_factor'] != 0][['Team', 'Date', 'absence_adjustment_factor', 'missing_offensive_potential']]
+            if not absence_adjustments.empty:
+                logger.info(f"Aplicados ajustes por ausencias a {len(absence_adjustments)} partidos")
+                for _, row in absence_adjustments.head(3).iterrows():
+                    logger.info(f"  • {row['Team']} ({row['Date']}): Ajuste {row['absence_adjustment_factor']:.1f}, "
+                              f"Potencial perdido: {row['missing_offensive_potential']:.1f}")
+        
+        # ==================== VALIDACIÓN Y LIMITES FINALES ====================
+        # Asegurar que las predicciones estén en rangos realistas para NBA
+        if 'game_final_total_projection' in df.columns:
+            # Límites realistas para totales NBA (170-310 puntos)
+            df['game_final_total_projection'] = np.clip(
+                df['game_final_total_projection'], 
+                170,  # Mínimo realista
+                310   # Máximo realista
             )
         
         # ==================== AJUSTES ESPECÍFICOS POR RANGO ====================
@@ -710,6 +857,16 @@ class TotalPointsFeatureEngineer:
                 'game_altitude_factor', 'game_rivalry_factor', 'game_rest_total_factor',
                 'game_urgency_factor', 'game_weekend_factor'
             ],
+            'special_context_factors': [
+                'is_early_season', 'early_season_volatility_factor', 'is_late_season', 
+                'late_season_factor', 'roster_continuity_factor', 'overtime_risk_factor',
+                'blowout_risk_factor', 'anomalous_performance_factor', 'special_context_adjustment'
+            ],
+            'injury_absence_factors': [
+                'missing_players_count', 'missing_offensive_potential', 
+                'missing_players_percentage', 'absence_impact_category', 
+                'absence_adjustment_factor'
+            ],
             'momentum_features': [
                 'combined_win_pct_5g', 'combined_recent_momentum',
                 'game_momentum_context'
@@ -755,6 +912,225 @@ class TotalPointsFeatureEngineer:
                    f"{len(validation_report['missing_features'])} faltantes")
         
         return validation_report 
+    
+    def analyze_special_context_adjustments(self, df: pd.DataFrame) -> Dict[str, any]:
+        """
+        Analiza los ajustes de contexto especial aplicados y reporta estadísticas.
+        
+        Args:
+            df: DataFrame con las features generadas
+            
+        Returns:
+            Diccionario con análisis de ajustes aplicados
+        """
+        analysis = {
+            'total_adjustments_applied': 0,
+            'adjustments_by_type': {},
+            'teams_with_adjustments': {},
+            'largest_adjustments': []
+        }
+        
+        if 'special_context_adjustment' not in df.columns:
+            return analysis
+        
+        # Contar ajustes aplicados
+        adjustments = df[df['special_context_adjustment'] != 0]
+        analysis['total_adjustments_applied'] = len(adjustments)
+        
+        if adjustments.empty:
+            return analysis
+        
+        # Análisis por tipo de ajuste
+        adjustment_types = [
+            'early_season_volatility_factor', 'late_season_factor',
+            'roster_continuity_factor', 'blowout_risk_factor',
+            'anomalous_performance_factor'
+        ]
+        
+        for adj_type in adjustment_types:
+            if adj_type in df.columns:
+                type_adjustments = df[df[adj_type] != 0]
+                analysis['adjustments_by_type'][adj_type] = {
+                    'count': len(type_adjustments),
+                    'avg_adjustment': type_adjustments[adj_type].mean(),
+                    'total_adjustment': type_adjustments[adj_type].sum()
+                }
+        
+        # Análisis por equipo
+        if 'Team' in df.columns:
+            team_adjustments = adjustments.groupby('Team')['special_context_adjustment'].agg([
+                'count', 'mean', 'sum'
+            ]).sort_values('count', ascending=False)
+            
+            analysis['teams_with_adjustments'] = team_adjustments.head(10).to_dict('index')
+        
+        # Ajustes más grandes
+        largest_adjustments = adjustments.nlargest(5, 'special_context_adjustment')[
+            ['Team', 'Date', 'special_context_adjustment']
+        ]
+        analysis['largest_adjustments'] = largest_adjustments.to_dict('records')
+        
+        # Log del análisis
+        logger.info(f"Análisis de contexto especial: {analysis['total_adjustments_applied']} ajustes aplicados")
+        if analysis['adjustments_by_type']:
+            for adj_type, stats in analysis['adjustments_by_type'].items():
+                logger.info(f"  • {adj_type}: {stats['count']} ajustes, avg: {stats['avg_adjustment']:.1f}")
+        
+        return analysis
+    
+    def create_injury_features(self, df_teams: pd.DataFrame, df_players: pd.DataFrame) -> pd.DataFrame:
+            """
+            Crea features de lesiones y ausencias de jugadores de manera optimizada.
+            
+            Args:
+                df_teams: DataFrame con datos de equipos por partido.
+                df_players: DataFrame con datos de jugadores por partido.
+                
+            Returns:
+                DataFrame df_teams enriquecido con features de ausencias.
+            """
+            logger.info("🔍 Generando features de ausencias de jugadores (versión optimizada)...")
+            
+            if df_players is None or df_players.empty:
+                logger.warning("DataFrame de jugadores vacío - saltando features de ausencias.")
+                # Añadir todas las columnas con valores por defecto si no hay datos de jugadores
+                df_teams['missing_players_count'] = 0
+                df_teams['missing_offensive_potential'] = 0.0
+                df_teams['is_top_scorer_out'] = 0
+                df_teams['num_key_players_missing'] = 0
+                df_teams['percent_of_team_scoring_absent'] = 0.0
+                df_teams['missing_players_percentage'] = 0.0
+                df_teams['absence_impact_category'] = 'none'
+                df_teams['absence_adjustment_factor'] = 0.0
+                return df_teams
+
+            # --- PASO 1: Pre-cálculos de Jugadores y Equipos (se hace una sola vez) ---
+            logger.info("  1. Pre-calculando estadísticas de jugadores y equipos...")
+
+            # Calcular PPG para todos los jugadores
+            player_ppg_stats = df_players.groupby('Player')['PTS'].mean().to_dict()
+
+            # Identificar jugadores importantes y top scorers por equipo
+            team_important_players = {}
+            team_top_scorers = {}
+            team_total_potential = {}
+
+            for team in df_teams['Team'].unique():
+                team_players_data = df_players[df_players['Team'] == team]
+                player_game_counts = team_players_data['Player'].value_counts()
+                active_players = player_game_counts[player_game_counts >= 2].index
+                
+                if active_players.empty:
+                    team_important_players[team] = []
+                    continue
+
+                active_player_ppg = {p: player_ppg_stats.get(p, 0) for p in active_players}
+                active_player_ppg_series = pd.Series(active_player_ppg).sort_values(ascending=False)
+                
+                if not active_player_ppg_series.empty:
+                    important_threshold = max(8.0, active_player_ppg_series.quantile(0.6))
+                    important_players_list = active_player_ppg_series[active_player_ppg_series >= important_threshold].index.tolist()
+
+                    if len(important_players_list) < 3 and len(active_player_ppg_series) >= 3:
+                        important_players_list = active_player_ppg_series.head(3).index.tolist()
+                    
+                    team_important_players[team] = important_players_list
+                    team_top_scorers[team] = active_player_ppg_series.index[0]
+                    team_total_potential[team] = sum(player_ppg_stats.get(p, 0) for p in important_players_list)
+
+            # --- PASO 2: Mapear jugadores que jugaron en cada partido ---
+            logger.info("  2. Mapeando jugadores presentes en cada partido...")
+            
+            # Crear un set de jugadores por cada partido para búsquedas rápidas
+            players_in_game = df_players.groupby(['Team', 'Date'])['Player'].apply(set).rename('Played_Players')
+            
+            # Unir esta información al DataFrame de equipos
+            df_teams_merged = df_teams.merge(players_in_game, on=['Team', 'Date'], how='left')
+            df_teams_merged['Played_Players'] = df_teams_merged['Played_Players'].apply(lambda x: x if isinstance(x, set) else set())
+
+            # --- PASO 3: Calcular todas las features en una sola función .apply ---
+            logger.info("  3. Calculando todas las features de ausencias...")
+
+            def calculate_absence_features(row):
+                team = row['Team']
+                important_roster = set(team_important_players.get(team, []))
+                played_players = row['Played_Players']
+                
+                if not important_roster:
+                    return pd.Series([0, 0.0, 0, 0, 0.0, 0.0, 'none', 0.0])
+
+                missing_players = important_roster - played_players
+                missing_count = len(missing_players)
+                missing_potential = sum(player_ppg_stats.get(p, 0) for p in missing_players)
+                
+                top_scorer = team_top_scorers.get(team)
+                is_top_scorer_out = 1 if top_scorer and top_scorer in missing_players else 0
+
+                total_potential = team_total_potential.get(team, 0)
+                percent_scoring_absent = (missing_potential / total_potential * 100) if total_potential > 0 else 0
+                
+                # Porcentaje de roster importante ausente
+                missing_players_percentage = (missing_count / len(important_roster)) * 100 if important_roster else 0
+                
+                # Categorizar impacto y factor de ajuste
+                if missing_potential >= 30: 
+                    category = 'critical'
+                    adjustment_factor = -12.0
+                elif missing_potential >= 20: 
+                    category = 'significant'
+                    adjustment_factor = -8.0
+                elif missing_potential >= 10: 
+                    category = 'moderate'
+                    adjustment_factor = -4.0
+                elif missing_potential > 0: 
+                    category = 'minor'
+                    adjustment_factor = -2.0
+                else: 
+                    category = 'none'
+                    adjustment_factor = 0.0
+
+                return pd.Series([
+                    missing_count,                    # missing_players_count
+                    missing_potential,                # missing_offensive_potential
+                    is_top_scorer_out,                # is_top_scorer_out
+                    missing_count,                    # num_key_players_missing (igual a missing_count)
+                    percent_scoring_absent,           # percent_of_team_scoring_absent
+                    missing_players_percentage,       # missing_players_percentage
+                    category,                         # absence_impact_category
+                    adjustment_factor                 # absence_adjustment_factor
+                ])
+
+            # Aplicar la función para crear las nuevas columnas
+            feature_columns = [
+                'missing_players_count', 
+                'missing_offensive_potential', 
+                'is_top_scorer_out', 
+                'num_key_players_missing',
+                'percent_of_team_scoring_absent',
+                'missing_players_percentage',
+                'absence_impact_category',
+                'absence_adjustment_factor'
+            ]
+            df_teams_merged[feature_columns] = df_teams_merged.apply(calculate_absence_features, axis=1)
+            
+            # --- PASO 4: Limpieza final y logging ---
+            logger.info("  4. Finalizando y generando reportes...")
+            
+            # Eliminar la columna temporal
+            df_final = df_teams_merged.drop(columns=['Played_Players'])
+
+            # Logging de resultados
+            total_absences = df_final['missing_players_count'].sum()
+            logger.info(f"✅ Features de ausencias de jugadores completadas:")
+            logger.info(f"   • Total de ausencias importantes detectadas: {int(total_absences)}")
+            logger.info(f"   • Partidos con top scorer ausente: {int(df_final['is_top_scorer_out'].sum())}")
+            
+            impact_stats = df_final['absence_impact_category'].value_counts()
+            logger.info(f"   • Distribución por impacto:")
+            for category, count in impact_stats.items():
+                logger.info(f"     - {category.capitalize()}: {count} partidos")
+                
+            return df_final
     
     def _log_feature_generation_start(self, feature_type: str):
         """Log inicio de generación de features"""
@@ -1429,3 +1805,277 @@ class TotalPointsFeatureEngineer:
             )
 
         logger.info(f"Creadas {len([col for col in df.columns if any(keyword in col for keyword in ['ultra', 'boost', 'enhanced', 'interaction']) and col not in df.columns])} características ultra-predictivas")
+    
+    def _create_sophisticated_features(self, df: pd.DataFrame) -> None:
+        """
+        Crea características sofisticadas basadas en las top features confirmadas por el modelo.
+        Estas features están diseñadas para maximizar el poder predictivo basado en patrones
+        identificados como altamente valiosos.
+        
+        Args:
+            df: DataFrame con datos de equipos (modificado in-place)
+        """
+        if df.empty:
+            return
+
+        logger.info("Creando características sofisticadas basadas en top features confirmadas")
+
+        # ==================== FEATURES SOFISTICADAS DE WIN RATE ====================
+        # El modelo valora mucho win_rate, expandir esto
+        if 'is_win' in df.columns:
+            # Win rate ponderado por fuerza del oponente
+            if 'Opp' in df.columns:
+                # Calcular fuerza defensiva del oponente
+                opp_def_strength = df.groupby('Opp')['PTS_Opp'].transform(
+                    lambda x: x.rolling(10, min_periods=3).mean().shift(1)
+                ).rank(pct=True).fillna(0.5)
+                
+                df['team_win_rate_weighted_by_opponent_strength'] = (
+                    df.groupby('Team')['is_win'].transform(
+                        lambda x: x.rolling(10, min_periods=1).mean().shift(1)
+                    ) * (1 + opp_def_strength * 0.3)  # Bonus por vencer oponentes fuertes
+                )
+            
+            # Racha de scoring en últimos 5 juegos
+            df['team_scoring_streak_last_5_games'] = df.groupby('Team')['is_win'].transform(
+                lambda x: x.rolling(5, min_periods=1).sum().shift(1)
+            ) * 1.5  # Ponderación por importancia
+            
+            # Win rate con contexto de temporada mejorado
+            if 'days_into_season' in df.columns:
+                # Ventaja de cancha local por período de temporada
+                home_advantage_by_period = np.where(
+                    df['days_into_season'] > 200, 1.1,  # Playoffs/final temporada
+                    np.where(df['days_into_season'] > 100, 1.05,  # Mitad temporada
+                            1.0)  # Inicio temporada
+                )
+                
+                df['home_court_advantage_by_season_period'] = (
+                    df['team_is_home'] * home_advantage_by_period * 1.2
+                )
+
+        # ==================== FEATURES SOFISTICADAS DE THREE POINT RATIO ====================
+        # Three point ratio situacional vs defensas top/bottom
+        if 'three_point_ratio_ma_5' in df.columns and 'Opp' in df.columns:
+            # Calcular ranking defensivo del oponente vs 3P
+            opp_3p_def_ranking = df.groupby('Opp')['3P%_Opp'].transform(
+                lambda x: x.rolling(10, min_periods=3).mean().shift(1)
+            ).rank(pct=True).fillna(0.5)
+            
+            # Three point ratio situacional
+            df['three_point_ratio_situational'] = (
+                df['three_point_ratio_ma_5'] * 
+                (1 + (1 - opp_3p_def_ranking) * 0.4)  # Bonus vs defensas débiles vs 3P
+            )
+            
+            # Three point ratio con momentum defensivo del oponente
+            opp_3p_def_trend = df.groupby('Opp')['3P%_Opp'].transform(
+                lambda x: x.rolling(5, min_periods=3).apply(
+                    lambda y: np.polyfit(np.arange(len(y)), y, 1)[0] if len(y) >= 3 else 0
+                ).shift(1)
+            ).fillna(0)
+            
+            df['three_point_ratio_vs_defensive_momentum'] = (
+                df['three_point_ratio_ma_5'] * (1 - opp_3p_def_trend * 2.0)
+            )
+
+        # ==================== FEATURES SOFISTICADAS DE GAME PACE ====================
+        # Ritmo relativo al promedio de temporada
+        if 'game_pace_avg_5g' in df.columns:
+            # Calcular promedio de ritmo de temporada
+            season_pace_avg = df['game_pace_avg_5g'].rolling(50, min_periods=10).mean().shift(1)
+            
+            df['game_pace_relative_to_season_average'] = (
+                df['game_pace_avg_5g'] / (season_pace_avg + 1e-6) * 1.3
+            )
+            
+            # Ritmo ajustado por fatiga de back-to-back
+            if 'days_rest' in df.columns:
+                b2b_fatigue_factor = np.where(
+                    df['days_rest'] == 0, 0.85,  # Back-to-back reduce ritmo
+                    np.where(df['days_rest'] == 1, 0.95,  # 1 día
+                            np.where(df['days_rest'] >= 3, 1.08, 1.0))  # 3+ días boost
+                )
+                
+                df['back_to_back_fatigue_adjusted_pace'] = (
+                    df['game_pace_avg_5g'] * b2b_fatigue_factor * 1.2
+                )
+
+        # ==================== FEATURES SOFISTICADAS DE SHOOTING EFFICIENCY ====================
+        # Eficiencia de tiro bajo presión (juegos cerrados)
+        if 'game_shooting_efficiency_avg_5g' in df.columns:
+            # Calcular si el juego será cerrado basado en proyecciones
+            if 'game_total_scoring_projection' in df.columns:
+                close_game_threshold = 10  # Diferencia esperada
+                projected_diff = abs(
+                    df['team_direct_scoring_projection'] - df['opp_direct_scoring_projection']
+                )
+                
+                close_game_factor = np.where(
+                    projected_diff < close_game_threshold, 1.15,  # Bonus para juegos cerrados
+                    1.0
+                )
+                
+                df['shooting_efficiency_under_pressure'] = (
+                    df['game_shooting_efficiency_avg_5g'] * close_game_factor * 1.3
+                )
+            
+            # Eficiencia de tiro con tendencia defensiva del oponente
+            if 'def_efficiency_combined_3' in df.columns:
+                df['shooting_efficiency_vs_defensive_trend'] = (
+                    df['game_shooting_efficiency_avg_5g'] * 
+                    (1 + (1 - df['def_efficiency_combined_3']) * 0.5)
+                )
+
+        # ==================== FEATURES SOFISTICADAS DE REST DAYS ====================
+        # Interacción de días de descanso con ritmo
+        if 'days_rest' in df.columns and 'game_pace_avg_5g' in df.columns:
+            # Factor de descanso sofisticado
+            rest_factor = np.where(
+                df['days_rest'] == 0, 0.8,   # Back-to-back
+                np.where(df['days_rest'] == 1, 0.9,   # 1 día
+                        np.where(df['days_rest'] == 2, 1.0,   # 2 días
+                                np.where(df['days_rest'] >= 4, 1.15, 1.05)))  # 4+ días
+            )
+            
+            df['rest_days_interaction_with_pace'] = (
+                df['game_pace_avg_5g'] * rest_factor * 1.4
+            )
+            
+            # Descanso vs oponente (ventaja de descanso)
+            if 'Opp' in df.columns:
+                opp_rest = df.groupby('Opp')['days_rest'].transform(
+                    lambda x: x.shift(1)
+                ).fillna(2)
+                
+                rest_advantage = df['days_rest'] - opp_rest
+                df['rest_advantage_vs_opponent'] = rest_advantage * 0.5
+
+        # ==================== FEATURES SOFISTICADAS DE MOMENTUM DEFENSIVO ====================
+        # Momentum defensivo del oponente
+        if 'Opp' in df.columns and 'PTS_Opp' in df.columns:
+            # Tendencia defensiva del oponente
+            opp_def_trend = df.groupby('Opp')['PTS_Opp'].transform(
+                lambda x: x.rolling(5, min_periods=3).apply(
+                    lambda y: np.polyfit(np.arange(len(y)), y, 1)[0] if len(y) >= 3 else 0
+                ).shift(1)
+            ).fillna(0)
+            
+            df['opponent_defensive_trend_momentum'] = (
+                -opp_def_trend * 2.0  # Negativo = mejor defensa
+            )
+            
+            # Consistencia defensiva del oponente
+            opp_def_consistency = df.groupby('Opp')['PTS_Opp'].transform(
+                lambda x: x.rolling(10, min_periods=3).std().shift(1)
+            ).fillna(10)
+            
+            df['opponent_defensive_consistency'] = (
+                1 / (opp_def_consistency + 1) * 1.5  # Menor std = más consistente
+            )
+
+        # ==================== FEATURES SOFISTICADAS DE VOLUMEN DE TIROS ====================
+        # Volumen de tiros con contexto situacional
+        if '3PA_3PA_Opp_total' in df.columns:
+            # Volumen de 3P vs tendencia defensiva del oponente
+            if '3P%_Opp_ma_5' in df.columns:
+                df['three_point_volume_vs_defensive_trend'] = (
+                    df['3PA_3PA_Opp_total'] * 
+                    (1 + (1 - df['3P%_Opp_ma_5']) * 0.3)  # Más tiros vs defensas débiles
+                )
+            
+            # Volumen de tiros con contexto de temporada
+            if 'days_into_season' in df.columns:
+                season_volume_factor = np.where(
+                    df['days_into_season'] > 200, 1.1,  # Playoffs = más tiros
+                    np.where(df['days_into_season'] > 100, 1.05,  # Mitad temporada
+                            1.0)
+                )
+                
+                df['three_point_volume_season_context'] = (
+                    df['3PA_3PA_Opp_total'] * season_volume_factor * 1.2
+                )
+
+        # ==================== FEATURES SOFISTICADAS DE EFICIENCIA COMBINADA ====================
+        # Eficiencia ofensiva vs defensiva con contexto
+        if 'off_efficiency_combined_3' in df.columns and 'def_efficiency_combined_3' in df.columns:
+            # Balance ofensivo-defensivo sofisticado
+            df['offensive_defensive_balance_sophisticated'] = (
+                (df['off_efficiency_combined_3'] - df['def_efficiency_combined_3']) * 2.0
+            )
+            
+            # Eficiencia con contexto de presión
+            if 'days_into_season' in df.columns:
+                pressure_factor = np.where(
+                    df['days_into_season'] > 200, 1.2,  # Playoffs = más presión
+                    np.where(df['days_into_season'] > 100, 1.1,  # Mitad temporada
+                            1.0)
+                )
+                
+                df['efficiency_under_season_pressure'] = (
+                    df['off_efficiency_combined_3'] * pressure_factor * 1.3
+                )
+
+        # ==================== FEATURES SOFISTICADAS DE PROYECCIÓN TOTAL ====================
+        # Proyección total con ajustes situacionales
+        if 'game_hybrid_total_projection' in df.columns:
+            # Ajuste por contexto de temporada
+            if 'days_into_season' in df.columns:
+                season_context = np.where(
+                    df['days_into_season'] > 200, 1.08,  # Playoffs = más puntos
+                    np.where(df['days_into_season'] > 100, 1.04,  # Mitad temporada
+                            1.0)
+                )
+                
+                df['game_total_projection_season_adjusted'] = (
+                    df['game_hybrid_total_projection'] * season_context * 1.2
+                )
+            
+            # Ajuste por ventaja de descanso
+            if 'rest_advantage_vs_opponent' in df.columns:
+                df['game_total_projection_rest_adjusted'] = (
+                    df['game_hybrid_total_projection'] * 
+                    (1 + df['rest_advantage_vs_opponent'] * 0.1) * 1.1
+                )
+
+        # ==================== INTERACCIONES SOFISTICADAS ====================
+        # Interacciones entre features sofisticadas
+        if all(col in df.columns for col in ['team_win_rate_weighted_by_opponent_strength', 'three_point_ratio_situational']):
+            df['win_rate_three_pt_sophisticated_interaction'] = (
+                df['team_win_rate_weighted_by_opponent_strength'] * 
+                df['three_point_ratio_situational'] * 0.8
+            )
+        
+        if all(col in df.columns for col in ['game_pace_relative_to_season_average', 'shooting_efficiency_under_pressure']):
+            df['pace_efficiency_sophisticated_interaction'] = (
+                df['game_pace_relative_to_season_average'] * 
+                df['shooting_efficiency_under_pressure'] * 0.6
+            )
+        
+        if all(col in df.columns for col in ['rest_days_interaction_with_pace', 'home_court_advantage_by_season_period']):
+            df['rest_home_sophisticated_interaction'] = (
+                df['rest_days_interaction_with_pace'] * 
+                df['home_court_advantage_by_season_period'] * 0.7
+            )
+
+        # ==================== FEATURES DE PREDICCIÓN FINAL SOFISTICADAS ====================
+        # Combinación ponderada de features sofisticadas
+        sophisticated_features = [
+            'team_win_rate_weighted_by_opponent_strength', 'three_point_ratio_situational',
+            'game_pace_relative_to_season_average', 'shooting_efficiency_under_pressure',
+            'rest_days_interaction_with_pace', 'home_court_advantage_by_season_period'
+        ]
+        
+        available_sophisticated = [f for f in sophisticated_features if f in df.columns]
+        if len(available_sophisticated) >= 3:
+            # Crear feature combinada sofisticada
+            combined_sophisticated_value = 0
+            sophisticated_weights = [0.0070, 0.0069, 0.0068, 0.0067, 0.0066, 0.0065]  # Pesos basados en importancia
+            
+            for i, feature in enumerate(available_sophisticated[:len(sophisticated_weights)]):
+                if feature in df.columns:
+                    combined_sophisticated_value += df[feature] * (sophisticated_weights[i] * 100)
+            
+            df['sophisticated_combined_features'] = combined_sophisticated_value
+
+        logger.info(f"Creadas {len([col for col in df.columns if any(keyword in col for keyword in ['sophisticated', 'situational', 'momentum', 'balance']) and col not in df.columns])} características sofisticadas")
